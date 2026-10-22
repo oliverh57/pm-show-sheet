@@ -371,3 +371,5 @@ button.big { padding: 9px 16px; font: 600 12px var(--font-head); }
 .update-bar button.primary { background: #000; color: #fff; border-color: #000; padding: 4px 12px; }
 .version-line { margin-top: 18px; }
 .version-line .link { font-size: inherit; }
+
+.app-version { font: 500 10px var(--font-mono); color: var(--muted); margin-left: -4px; }

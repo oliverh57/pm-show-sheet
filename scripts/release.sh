@@ -15,7 +15,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Version must look like 1.2.3"; exit 1; }
-[ -z "$(git status --porcelain)" ] || { echo "Commit or stash changes first."; exit 1; }
+[ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "Commit or stash changes first."; exit 1; }
 [ "$(git branch --show-current)" = "main" ] || { echo "Release from main."; exit 1; }
 git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null && { echo "v$VERSION already exists."; exit 1; }
 

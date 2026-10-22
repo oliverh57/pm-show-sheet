@@ -18,7 +18,7 @@ import { UpdateBar, VersionLine } from "./components/UpdateBar";
 import { addImages, addWatchFolder, extension, newId, newShow } from "./model/ops";
 import type { Show } from "./model/types";
 import { SHOW_ID, useStore, type View } from "./store";
-import { useAutoUpdate } from "./updates";
+import { useAutoUpdate, useUpdates } from "./updates";
 
 const LAST_BUNDLE_KEY = "pm.lastBundle";
 const SAVE_DELAY_MS = 600;
@@ -139,10 +139,12 @@ function Toolbar() {
   const canUndo = useStore((s) => s.past.length > 0);
   const canRedo = useStore((s) => s.future.length > 0);
   const { update, undo, redo, setColumnsOpen, setView, openAddMedia, close } = useStore.getState();
+  const appVersion = useUpdates((s) => s.current);
 
   return (
     <header className="toolbar">
       <img src={logo} className="logo" alt="PIXELMAPPERS" />
+      {appVersion && <span className="app-version">v{appVersion}</span>}
       <DraftInput className="show-name" value={show.name} onCommit={(v) => update((s) => { s.name = v.toUpperCase(); })} />
       <span className={`save save-${saveState}`} title={saveError ?? bundle}>
         {{ saved: "Saved", saving: "Saving…", unsaved: "Unsaved", error: "Save failed" }[saveState]}
