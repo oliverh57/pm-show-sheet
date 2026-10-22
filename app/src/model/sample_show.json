@@ -1,0 +1,482 @@
+{
+  "id": "show_sample_glass_hall",
+  "name": "NORTHERN STATIC | GLASS HALL 2026 (SAMPLE)",
+  "columns": [
+    {
+      "id": "num",
+      "label": "#",
+      "dept": "CORE",
+      "type": "text",
+      "width": 44
+    },
+    {
+      "id": "name",
+      "label": "NAME",
+      "dept": "CORE",
+      "type": "text",
+      "width": 210
+    },
+    {
+      "id": "audio",
+      "label": "AUDIO VERSION",
+      "dept": "CORE",
+      "type": "text",
+      "width": 92
+    },
+    {
+      "id": "tc",
+      "label": "TC START",
+      "dept": "CORE",
+      "type": "tc",
+      "width": 108
+    },
+    {
+      "id": "st_viz",
+      "label": "VIZ",
+      "dept": "STATUS",
+      "type": "tick",
+      "width": 44
+    },
+    {
+      "id": "st_auto",
+      "label": "AUTO",
+      "dept": "STATUS",
+      "type": "tick",
+      "width": 44
+    },
+    {
+      "id": "st_lx",
+      "label": "LX",
+      "dept": "STATUS",
+      "type": "tick",
+      "width": 44
+    },
+    {
+      "id": "st_vid",
+      "label": "VID",
+      "dept": "STATUS",
+      "type": "tick",
+      "width": 44
+    },
+    {
+      "id": "colour_1",
+      "label": "COLOUR",
+      "dept": "COLOUR",
+      "type": "colour",
+      "index": 0,
+      "width": 52
+    },
+    {
+      "id": "colour_2",
+      "label": "COLOUR",
+      "dept": "COLOUR",
+      "type": "colour",
+      "index": 1,
+      "width": 52
+    },
+    {
+      "id": "colour_3",
+      "label": "COLOUR",
+      "dept": "COLOUR",
+      "type": "colour",
+      "index": 2,
+      "width": 52
+    },
+    {
+      "id": "colour_4",
+      "label": "COLOUR",
+      "dept": "COLOUR",
+      "type": "colour",
+      "index": 3,
+      "width": 52
+    },
+    {
+      "id": "colref",
+      "label": "COLOUR REF",
+      "dept": "COLOUR",
+      "type": "text",
+      "width": 130
+    },
+    {
+      "id": "hero",
+      "label": "RENDER",
+      "dept": "CONTENT",
+      "type": "image",
+      "width": 210
+    },
+    {
+      "id": "content_notes",
+      "label": "CONTENT NOTES",
+      "dept": "CONTENT",
+      "type": "longtext",
+      "width": 260,
+      "editable": true,
+      "on_slide": true
+    },
+    {
+      "id": "lx_notes",
+      "label": "LIGHTING NOTES",
+      "dept": "LX",
+      "type": "longtext",
+      "width": 220,
+      "on_slide": true
+    },
+    {
+      "id": "video_notes",
+      "label": "VIDEO DESIGN NOTES",
+      "dept": "VIDEO",
+      "type": "longtext",
+      "width": 240,
+      "on_slide": true
+    },
+    {
+      "id": "notch",
+      "label": "NOTCH LAYER",
+      "dept": "VIDEO",
+      "type": "text",
+      "width": 110
+    },
+    {
+      "id": "cam_fx",
+      "label": "CAMERA SUMMARY & FX",
+      "dept": "CAMERAS",
+      "type": "longtext",
+      "width": 220,
+      "on_slide": true
+    },
+    {
+      "id": "cam_dir",
+      "label": "CAMERA DIRECTION",
+      "dept": "CAMERAS",
+      "type": "longtext",
+      "width": 300,
+      "editable": true,
+      "on_slide": true
+    }
+  ],
+  "set_order": [
+    "s_opener",
+    "s_lights",
+    "s_harbour",
+    "s_glass",
+    "s_tide",
+    "s_green",
+    "s_red",
+    "s_static",
+    "s_summer",
+    "s_seven"
+  ],
+  "archive": [
+    "s_waves",
+    "s_ember",
+    "s_quiet"
+  ],
+  "songs": {
+    "s_opener": {
+      "id": "s_opener",
+      "fields": {
+        "num": "29",
+        "name": "Signal Fire",
+        "audio": "012025",
+        "tc": "01:00:00:00",
+        "cam_dir": "NO CAMERAS"
+      },
+      "statuses": {},
+      "colours": []
+    },
+    "s_lights": {
+      "id": "s_lights",
+      "fields": {
+        "num": "18",
+        "name": "Low Lights",
+        "audio": "012025",
+        "tc": "02:00:00:00",
+        "video_notes": "Full screen camera, landscape. Notch treatment as RGB split. Big riffs: show the drums.",
+        "notch": "03 Multiples",
+        "cam_fx": "3D glasses effect, B+W, scan lines",
+        "cam_dir": "CLEAN ENGINEERING. Guitar and drums in ME2. Audience in parts of the chorus."
+      },
+      "statuses": {
+        "st_viz": true
+      },
+      "colours": [
+        {
+          "hex": "#C8102E",
+          "label": "L106"
+        },
+        {
+          "hex": "#F4F1E8",
+          "label": "OW"
+        }
+      ]
+    },
+    "s_harbour": {
+      "id": "s_harbour",
+      "fields": {
+        "num": "4",
+        "name": "Harbour",
+        "audio": "Spotify",
+        "tc": "03:00:00:00",
+        "content_notes": "Use the arena colours, not the festival version (colours applied in the server).",
+        "video_notes": "Cameras overlaid on content in verses",
+        "notch": "01 Glitch",
+        "cam_fx": "Low scan lines + LUT 10 100%",
+        "cam_dir": "CLEAN ENGINEERING ME1: long lens on the singer"
+      },
+      "statuses": {
+        "st_viz": true
+      },
+      "colours": [
+        {
+          "hex": "#1F4FD8",
+          "label": "L201"
+        },
+        {
+          "hex": "#FFFFFF",
+          "label": "OW"
+        }
+      ]
+    },
+    "s_glass": {
+      "id": "s_glass",
+      "fields": {
+        "num": "21",
+        "name": "Glass Hall",
+        "audio": "012025",
+        "tc": "04:00:00:00",
+        "lx_notes": "No front keylight for most of this song",
+        "video_notes": "No cameras in this song (artist request)",
+        "notch": "02 Film Looks",
+        "cam_fx": "High contrast, B+W",
+        "cam_dir": "NO CAMERAS"
+      },
+      "statuses": {
+        "st_viz": true,
+        "st_lx": true
+      },
+      "colours": []
+    },
+    "s_tide": {
+      "id": "s_tide",
+      "fields": {
+        "num": "13",
+        "name": "Tide Line",
+        "audio": "012025",
+        "tc": "05:00:00:00",
+        "notch": "03 Multiples",
+        "cam_fx": "Background removal. High contrast B+W",
+        "cam_dir": "Portrait framing. Long lens on the singer"
+      },
+      "statuses": {
+        "st_viz": true
+      },
+      "colours": []
+    },
+    "s_green": {
+      "id": "s_green",
+      "fields": {
+        "num": "5",
+        "name": "Green Room",
+        "audio": "012025",
+        "tc": "06:00:00:00",
+        "colref": "Washed green",
+        "notch": "00 Pass Thru",
+        "cam_fx": "Low sat, high contrast. Tint to green",
+        "cam_dir": "ME1: wide"
+      },
+      "statuses": {
+        "st_viz": true
+      },
+      "colours": [
+        {
+          "hex": "#2E9E4F",
+          "label": "L139"
+        }
+      ]
+    },
+    "s_red": {
+      "id": "s_red",
+      "fields": {
+        "num": "14",
+        "name": "Red Weather",
+        "audio": "020425",
+        "tc": "07:00:00:00",
+        "colref": "Red & hints of OW",
+        "content_notes": "TODO: rescale. Content coloured red in the server, delivered in B&W.",
+        "video_notes": "Cut content on the hard cuts. Split chorus 3 into an outro.",
+        "notch": "00 Pass Thru",
+        "cam_fx": "Tinted B+W, high contrast"
+      },
+      "statuses": {
+        "st_viz": true
+      },
+      "colours": [
+        {
+          "hex": "#C8102E",
+          "label": "L106"
+        },
+        {
+          "hex": "#F4F1E8",
+          "label": "OW"
+        }
+      ]
+    },
+    "s_static": {
+      "id": "s_static",
+      "fields": {
+        "num": "23",
+        "name": "Static",
+        "audio": "Spotify",
+        "tc": "08:00:00:00",
+        "colref": "CTB",
+        "content_notes": "Brightness and contrast pass",
+        "notch": "00 Pass Thru",
+        "cam_fx": "High contrast, warm LUT. ME1 verses, ME1 + ME2 choruses"
+      },
+      "statuses": {
+        "st_viz": true
+      },
+      "colours": [
+        {
+          "hex": "#8FB8E8",
+          "label": "L201"
+        }
+      ]
+    },
+    "s_summer": {
+      "id": "s_summer",
+      "fields": {
+        "num": "3",
+        "name": "Long Summer",
+        "audio": "012025",
+        "tc": "09:00:00:00",
+        "content_notes": "IMAG with overlays",
+        "video_notes": "Big Notch song. Clean images please.",
+        "notch": "02 Film Looks",
+        "cam_fx": "Remove sepia. Feedback, B+W",
+        "cam_dir": "Landscape framing for letterbox full screen. Audience on choruses. Cut between all four members."
+      },
+      "statuses": {
+        "st_viz": true,
+        "st_vid": true
+      },
+      "colours": [],
+      "segues_into_next": true
+    },
+    "s_seven": {
+      "id": "s_seven",
+      "fields": {
+        "num": "2",
+        "name": "Seven Days",
+        "audio": "Spotify",
+        "tc": "09:00:00:00",
+        "content_notes": "IMAG with overlays",
+        "video_notes": "Big Notch song. Clean images please. Mirror mapping on centre.",
+        "notch": "04 Grading",
+        "cam_fx": "High contrast. Invert at end. Background removal on choruses.",
+        "cam_dir": "Drummer at the intro on ME1, bassist on ME2. Choppy cuts in the chorus."
+      },
+      "statuses": {
+        "st_viz": true
+      },
+      "colours": []
+    },
+    "s_waves": {
+      "id": "s_waves",
+      "fields": {
+        "num": "12",
+        "name": "Waves",
+        "audio": "Spotify",
+        "content_notes": "Reusing another song's edit. Already in the server as 12_Waves",
+        "notch": "04 Grading",
+        "cam_fx": "Background subtraction, B+W",
+        "cam_dir": "NO IMAG"
+      },
+      "statuses": {
+        "st_viz": true
+      },
+      "colours": []
+    },
+    "s_ember": {
+      "id": "s_ember",
+      "fields": {
+        "num": "24",
+        "name": "Ember",
+        "audio": "Spotify",
+        "colref": "Red then sea green",
+        "content_notes": "Only have the full edit",
+        "video_notes": "No cameras in this song (artist request)",
+        "cam_dir": "NO CAMERAS"
+      },
+      "statuses": {
+        "st_viz": true
+      },
+      "colours": [
+        {
+          "hex": "#C8102E",
+          "label": "L106"
+        },
+        {
+          "hex": "#2BB3A3",
+          "label": "L116"
+        }
+      ]
+    },
+    "s_quiet": {
+      "id": "s_quiet",
+      "fields": {
+        "num": "9",
+        "name": "Quiet Hours",
+        "audio": "Spotify",
+        "notch": "00 Pass Thru",
+        "cam_fx": "NO IMAG",
+        "cam_dir": "NO IMAG"
+      },
+      "statuses": {
+        "st_viz": true
+      },
+      "colours": []
+    }
+  },
+  "sessions": [
+    {
+      "id": "global",
+      "label": "GLOBAL NOTES",
+      "notes": [
+        {
+          "id": "n_global_1",
+          "song_id": null,
+          "text": "All song transitions need a pass",
+          "tc": "",
+          "from": "JS",
+          "assignee": "Lighting",
+          "done": false
+        }
+      ]
+    },
+    {
+      "id": "sess_1610pm",
+      "label": "16/10 PM NOTES",
+      "notes": [
+        {
+          "id": "n_1610_1",
+          "song_id": "s_lights",
+          "text": "Q7 too steppy",
+          "tc": "02:01:12:00",
+          "from": "MP",
+          "assignee": "Lighting",
+          "done": true
+        },
+        {
+          "id": "n_1610_2",
+          "song_id": "s_glass",
+          "text": "Live doesn't line up with programmed viz",
+          "tc": "",
+          "from": "MP",
+          "assignee": "",
+          "done": false
+        }
+      ]
+    }
+  ]
+}

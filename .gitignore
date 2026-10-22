@@ -1,0 +1,26 @@
+# Media and local-only material
+Exmaple Content/
+*.showsheet/
+.DS_Store
+
+# Build output and dependencies
+node_modules/
+app/dist/
+app/src-tauri/target/
+app/src-tauri/gen/schemas/
+
+# Secrets: never commit (the updater signing key lives in ~/.tauri and in GitHub secrets)
+*.key
+*.p12
+credentials.json
+.state/
+.env
+
+# Python
+.venv/
+__pycache__/
+
+# Local tooling
+.claude/
+*.tsbuildinfo
+dist/

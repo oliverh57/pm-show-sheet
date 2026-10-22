@@ -1,0 +1,77 @@
+# Builds, signs and publishes PM Show Sheet whenever a version tag is pushed (scripts/release.sh does that).
+# Installed apps pick the release up through latest.json; new installs get it from install.sh.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri -> target
+
+      - name: Cache rcodesign
+        id: rcodesign
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/rcodesign
+          key: rcodesign-0.29.0-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install rcodesign
+        if: steps.rcodesign.outputs.cache-hit != 'true'
+        run: cargo install apple-codesign --version 0.29.0 --locked
+
+      - name: Install dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Build universal app
+        working-directory: app
+        run: npm run tauri build -- --target universal-apple-darwin --bundles app
+
+      - name: Sign and package
+        env:
+          PMSS_CODESIGN_P12: ${{ secrets.PMSS_CODESIGN_P12 }}
+          PMSS_CODESIGN_P12_PASSWORD: ${{ secrets.PMSS_CODESIGN_P12_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          NOTES="$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")"
+          scripts/package-release.sh "$VERSION" "$NOTES"
+          printf '%s' "$NOTES" > dist/release/notes.md
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/release/PM-Show-Sheet.app.tar.gz \
+            dist/release/PM-Show-Sheet.app.tar.gz.sig \
+            dist/release/latest.json \
+            --title "PM Show Sheet ${GITHUB_REF_NAME}" \
+            --notes-file dist/release/notes.md

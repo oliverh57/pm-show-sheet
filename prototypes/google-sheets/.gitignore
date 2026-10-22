@@ -1,0 +1,6 @@
+credentials.json
+.state/
+.venv/
+out/
+show.json
+__pycache__/
