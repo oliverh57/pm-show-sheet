@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a2a2e"/>
+      <stop offset="1" stop-color="#0c0c0e"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".10"/>
+      <stop offset=".5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+  </defs>
+  <!-- macOS squircle: 824px body on the 1024 grid -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#sheen)"/>
+  <rect x="101.5" y="101.5" width="821" height="821" rx="183.5" fill="none" stroke="#ffffff" stroke-opacity=".08" stroke-width="3"/>
+
+  <!-- soft glow under the colour chips -->
+  <g filter="url(#glow)" opacity=".55">
+    <rect x="214" y="236" width="104" height="104" rx="26" fill="#ff2d78"/>
+    <rect x="214" y="384" width="104" height="104" rx="26" fill="#ffb020"/>
+    <rect x="214" y="532" width="104" height="104" rx="26" fill="#22c3e6"/>
+    <rect x="214" y="680" width="104" height="104" rx="26" fill="#7a5cff"/>
+  </g>
+
+  <!-- running order: colour chip + song title + timecode -->
+  <rect x="214" y="236" width="104" height="104" rx="26" fill="#ff2d78"/>
+  <rect x="362" y="252" width="400" height="40" rx="20" fill="#ffffff"/>
+  <rect x="362" y="306" width="180" height="20" rx="10" fill="#ffffff" fill-opacity=".38"/>
+
+  <rect x="214" y="384" width="104" height="104" rx="26" fill="#ffb020"/>
+  <rect x="362" y="400" width="300" height="40" rx="20" fill="#ffffff"/>
+  <rect x="362" y="454" width="180" height="20" rx="10" fill="#ffffff" fill-opacity=".38"/>
+
+  <rect x="214" y="532" width="104" height="104" rx="26" fill="#22c3e6"/>
+  <rect x="362" y="548" width="448" height="40" rx="20" fill="#ffffff"/>
+  <rect x="362" y="602" width="180" height="20" rx="10" fill="#ffffff" fill-opacity=".38"/>
+
+  <rect x="214" y="680" width="104" height="104" rx="26" fill="#7a5cff"/>
+  <rect x="362" y="696" width="344" height="40" rx="20" fill="#ffffff"/>
+  <rect x="362" y="750" width="180" height="20" rx="10" fill="#ffffff" fill-opacity=".38"/>
+</svg>

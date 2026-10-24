@@ -51,6 +51,10 @@ jobs:
 
       - name: Build universal app
         working-directory: app
+        env:
+          # The Google sign-in client (a "Desktop app" OAuth client). If these are unset, each Mac picks the client file once.
+          PM_GOOGLE_CLIENT_ID: ${{ secrets.PM_GOOGLE_CLIENT_ID }}
+          PM_GOOGLE_CLIENT_SECRET: ${{ secrets.PM_GOOGLE_CLIENT_SECRET }}
         run: npm run tauri build -- --target universal-apple-darwin --bundles app
 
       - name: Sign and package

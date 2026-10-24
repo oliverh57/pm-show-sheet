@@ -1,0 +1,152 @@
+// The window around a show: sidebar, the read-only banner, and toasts.
+import logo from "../assets/logo.png";
+import { backend } from "../backend";
+import { describeLocation, driveRoot, moveOpenShow, openInDrive } from "../library";
+import { showCover } from "../model/ops";
+import { useStore, type View } from "../store";
+import { SyncBadge } from "./OtherPages";
+import { Avatar, GoogleDriveMark, Icon, type IconName } from "./icons";
+
+const NAV: { view: View; label: string; icon: IconName }[] = [
+  { view: "songs", label: "Songs", icon: "music" },
+  { view: "media", label: "Media", icon: "film" },
+];
+const COLLAB_NAV: { view: View; label: string; icon: IconName }[] = [
+  { view: "share", label: "Share & publish", icon: "share" },
+  { view: "sheet", label: "Sheet view", icon: "sheet" },
+];
+
+/** Ask for a folder in Google Drive (starting at the top, so shared drives are there) and move the open show into it. */
+export async function chooseAndMove() {
+  const { bundle, user, toast } = useStore.getState();
+  if (!bundle) return;
+  const start = driveRoot(bundle) ?? driveRoot((await backend.showsFolder(user?.email ?? null)) ?? "") ?? undefined;
+  const folder = await backend.chooseFolder("Move this show to a folder in Google Drive…", start);
+  if (!folder) return;
+  try {
+    const moved = await moveOpenShow(folder);
+    toast(`Moved to ${describeLocation(moved)}`);
+  } catch (e) {
+    toast(String(e).replace(/^Error: /, ""));
+  }
+}
+
+export function Sidebar({ onClose }: { onClose: () => void }) {
+  const show = useStore((s) => s.show)!;
+  const bundle = useStore((s) => s.bundle)!;
+  const view = useStore((s) => s.view);
+  const user = useStore((s) => s.user);
+  const others = useStore((s) => s.others);
+  const readOnly = useStore((s) => s.readOnly);
+  const saveState = useStore((s) => s.saveState);
+  const saveError = useStore((s) => s.saveError);
+  const canUndo = useStore((s) => s.past.length > 0);
+  const canRedo = useStore((s) => s.future.length > 0);
+  const { setView, undo, redo } = useStore.getState();
+  const cover = showCover(show);
+
+  const item = ({ view: v, label, icon }: (typeof NAV)[number]) => (
+    <button key={v} className={view === v || (v === "media" && view === "import") ? "on" : ""} onClick={() => setView(v)}>
+      <Icon name={icon} /> {label}
+      {v === "songs" && <span className="count">{show.set_order.length}</span>}
+    </button>
+  );
+
+  return (
+    <aside className="side">
+      <div className="side-top">
+        <div className="side-bar">
+          <button className="back" onClick={onClose}><Icon name="chevL" size="sm" /> All shows</button>
+          {!readOnly && <>
+            <button className="icon" onClick={undo} disabled={!canUndo} title="Undo (⌘Z)" aria-label="Undo"><Icon name="undo" size="sm" /></button>
+            <button className="icon" onClick={redo} disabled={!canRedo} title="Redo (⇧⌘Z)" aria-label="Redo"><Icon name="redo" size="sm" /></button>
+          </>}
+        </div>
+        <button className={`show-switch ${view === "settings" ? "on" : ""}`} onClick={() => setView("settings")} title="Show settings">
+          <div className="art">{cover ? <img src={backend.mediaUrl(bundle, cover)} alt="" /> : <img src={logo} alt="" style={{ filter: "var(--logo-filter)", objectFit: "contain", padding: 6 }} />}</div>
+          <div className="nm">{show.name}<div className="sub">{[show.venue, show.date].filter(Boolean).join(" · ") || "Show settings"}</div></div>
+        </button>
+      </div>
+      <nav className="nav">{NAV.map(item)}<div className="sep" />{COLLAB_NAV.map(item)}</nav>
+      <div className="side-foot">
+        {others.length > 0 && (
+          <div className="here" title={others.map((o) => `${o.name} (${o.email})`).join("\n")}>
+            <span className="avatars">{others.slice(0, 3).map((o) => <Avatar key={o.email} name={o.name} />)}</span>
+            <span className="nm">{others.length === 1 ? `${others[0].name.split(" ")[0]} also has this open` : `${others.length} others have this open`}</span>
+          </div>
+        )}
+        <JobsProgress />
+        <div className={`sync ${saveState === "saving" ? "saving" : saveState === "error" ? "error" : ""}`} title={saveError ?? bundle}>
+          {readOnly ? <b>Read only</b> : <>
+            {saveState === "saving" && "Saving…"}
+            {saveState === "unsaved" && "Unsaved changes"}
+            {saveState === "error" && "Couldn't save"}
+            {saveState === "saved" && <>Saved to <b>Google Drive</b></>}
+          </>}
+          <div className="loc" title={bundle}>{describeLocation(bundle)}</div>
+        </div>
+        {!readOnly && <button className="sync-line" onClick={() => setView("share")}><SyncBadge /></button>}
+        <div className="row">
+          <button className="sm" style={{ flex: 1 }} onClick={() => openInDrive(bundle)} title="Open this show's folder on drive.google.com">
+            <GoogleDriveMark className="ico sm" /> Open in Drive
+          </button>
+        </div>
+        {user && (
+          <div className="user">
+            <Avatar name={user.name} picture={user.picture} /><span className="nm">{user.email}</span>
+            <button className={`icon ${view === "prefs" ? "on" : ""}`} onClick={() => setView("prefs")} title="Settings (⌘,)" aria-label="Settings"><Icon name="settings" size="sm" /></button>
+          </div>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+/** Across the top of a read-only show: why, and the way out. */
+export function ReadOnlyBanner() {
+  const readOnly = useStore((s) => s.readOnly);
+  if (!readOnly) return null;
+  return (
+    <div className="readonly-banner">
+      <Icon name="alert" size="sm" />
+      <span>{readOnly} Move it into the Pixelmappers Google Drive to edit it.</span>
+      <button className="sm" onClick={() => chooseAndMove()}><GoogleDriveMark className="ico sm" /> Move to Google Drive…</button>
+    </div>
+  );
+}
+
+export function Toasts() {
+  const toasts = useStore((s) => s.toasts);
+  return <div className="toasts">{toasts.map((t) => <div key={t.id} className="toast"><Icon name="check" />{t.text}</div>)}</div>;
+}
+
+/** Above the Drive status while clips or thumbnails are being made: how far along, and the thumbnails waiting to be picked. */
+function JobsProgress() {
+  const jobs = useStore((s) => s.jobs);
+  const picks = useStore((s) => s.stillPicks.length);
+  const { setView, openPicks } = useStore.getState();
+  const active = jobs.some((j) => j.status === "queued" || j.status === "running");
+  if (!active && !picks) return null;
+  const done = jobs.filter((j) => j.status === "done" || j.status === "error").length;
+  const running = jobs.find((j) => j.status === "running");
+  const clips = jobs.some((j) => j.kind !== "thumbnail");
+  const fraction = jobs.length ? (done + (running?.progress ?? 0)) / jobs.length : 1;
+  return (
+    <button className="jobs-progress" onClick={() => (clips ? setView("media") : openPicks())} title={clips ? "See them on the Media page" : "Pick each song's thumbnail"}>
+      {active ? (
+        <>
+          <div className="jp-line">
+            <span className="spinner" />
+            <span className="t">{clips ? "Cutting clips" : "Making thumbnails"}</span>
+            <span className="n">{Math.min(done + 1, jobs.length)} of {jobs.length}</span>
+          </div>
+          <div className="jp-bar"><i style={{ width: `${Math.round(fraction * 100)}%` }} /></div>
+          <div className="jp-sub">{running?.label ?? "Starting…"}{picks ? ` · ${picks} thumbnail${picks === 1 ? "" : "s"} to pick` : ""}</div>
+        </>
+      ) : (
+        <div className="jp-line"><span className="t">Pick {picks} thumbnail{picks === 1 ? "" : "s"}</span><span className="n">Pick →</span></div>
+      )}
+    </button>
+  );
+}
+

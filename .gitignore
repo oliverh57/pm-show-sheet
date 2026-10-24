@@ -24,3 +24,7 @@ __pycache__/
 .claude/
 *.tsbuildinfo
 dist/
+
+# tsc output from tsconfig.node.json (vite reads it ahead of vite.config.ts)
+app/vite.config.js
+app/vite.config.d.ts

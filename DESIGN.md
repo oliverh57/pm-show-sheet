@@ -39,6 +39,7 @@ Today this lives in hand-built Google Sheets (three past shows were reviewed for
 |---|---|
 | App type | Desktop app on macOS only (Tauri recommended, see §10) |
 | Project storage | Hybrid bundle: project data, generated clips, approved renders and stills are copied in; large source records are only linked, with relink tools |
+| Where shows live | In a "Pixelmappers Show Sheets" folder in the user's Google Drive, synced by Google Drive for desktop; the app lists that folder as "All shows". A folder can be chosen instead if Drive isn't installed (2026-10-22) |
 | Team sync | Live multi-user editing through **Firestore** (managed, no server to run), with offline cache |
 | Google sync | Runs inside whichever app is open; one machine at a time holds a sync lock. When no app is open, nothing syncs |
 | Sign-in | Google Workspace, restricted to the Pixelmappers domain |
@@ -400,7 +401,7 @@ Pixelmappers Show Sheets/<Show name>/
 
 ### 8.8 Auth and scopes
 - Google sign-in with OAuth (PKCE with a loopback redirect), restricted to the Workspace domain. The OAuth app is "Internal", so Google verification isn't needed.
-- Scopes: `drive.file` (only files the app creates or opens), `spreadsheets`, `presentations`, plus `openid email profile`. The Firebase Auth Google provider uses the same account.
+- Scopes: `drive` (full Drive, so the Sheet and deck can be created inside each show's `.showsheet` folder, which Drive for desktop made), plus `openid email profile`. `drive.file` was used first but only reaches files the app created, which kept the Sheet and deck in a separate folder. The Firebase Auth Google provider uses the same account.
 - Firestore security rules: only domain users can access, and per-show membership is optional later.
 
 ### 8.9 Quotas

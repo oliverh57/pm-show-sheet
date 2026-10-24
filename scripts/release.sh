@@ -6,6 +6,8 @@
 # Sets the version in package.json, tauri.conf.json and Cargo.toml, commits, tags v0.2.0 with the
 # notes as the tag message, and pushes. The Release workflow then builds, signs and publishes it,
 # and installed apps update themselves within a few hours (or on next launch).
+#
+# Add the version's notes to app/src/whatsNew.ts first: the app shows them once after updating.
 
 set -euo pipefail
 

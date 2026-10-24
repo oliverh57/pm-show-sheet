@@ -3,9 +3,11 @@
 // Space/Enter big view · Esc back · 1–9 assign to running-order song 1–9.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { backend, IMAGE_EXTENSIONS, type FolderFile } from "../backend";
-import { addImages, addWatchFolder, groupSessions, removeWatchFolder, setHero } from "../model/ops";
+import { addImages, categories, deptCategory, ensureCategory, groupSessions, setHero } from "../model/ops";
 import type { InboxState } from "../model/types";
 import { SHOW_ID, useStore } from "../store";
+import { unlinkWatchFolder, useWatchFolders, watchFolders } from "../watchFolders";
+import { SaveCopy } from "./SaveCopy";
 
 type Filter = "todo" | "approved" | "rejected" | "all";
 type Item = FolderFile & { folderId: string };
@@ -17,7 +19,8 @@ export function RenderInbox() {
   const bundle = useStore((s) => s.bundle)!;
   const selected = useStore((s) => s.selectedSongId);
   const update = useStore((s) => s.update);
-  const folders = show.watch_folders ?? [];
+  const startImport = useStore((s) => s.startImport);
+  const folders = useWatchFolders();
 
   const [items, setItems] = useState<Item[]>([]);
   const [inbox, setInbox] = useState<InboxState>({});
@@ -25,6 +28,7 @@ export function RenderInbox() {
   const [cursor, setCursor] = useState<string | null>(null);
   const [loupe, setLoupe] = useState(false);
   const [songId, setSongId] = useState<string>(selected && selected !== SHOW_ID ? selected : show.set_order[0] ?? "");
+  const [category, setCategory] = useState(deptCategory("CONTENT"));
   const [makeHero, setMakeHero] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
@@ -33,7 +37,7 @@ export function RenderInbox() {
   // Keyed on paths so a new (but equal) folders array doesn't restart polling.
   const folderKey = folders.map((f) => `${f.id}=${f.path}`).join("|");
   const refresh = useCallback(async () => {
-    const current = useStore.getState().show?.watch_folders ?? [];
+    const current = watchFolders();
     const lists = await Promise.all(current.map(async (f) => {
       try {
         return (await backend.listFolder(f.path, IMAGE_EXTENSIONS)).map((x) => ({ ...x, folderId: f.id }));
@@ -73,6 +77,14 @@ export function RenderInbox() {
   useEffect(() => {
     if (!current && visible.length === 0) setLoupe(false);
   }, [current, visible.length]);
+  // Moving to a render takes the song it was approved for, else its folder's song; and its folder's category.
+  useEffect(() => {
+    if (!current) return;
+    const folder = folders.find((f) => f.id === current.folderId);
+    const song = inbox[current.path]?.song_id ?? folder?.song_id;
+    if (song && show.songs[song]) setSongId(song);
+    setCategory(folder?.image_col ?? deptCategory("CONTENT"));
+  }, [current?.path]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (current) gridRef.current?.querySelector(`[data-path="${CSS.escape(current.path)}"]`)?.scrollIntoView({ block: "nearest" });
   }, [current?.path]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -95,7 +107,7 @@ export function RenderInbox() {
       const existing = inbox[it.path];
       const rel = existing?.imported_as ?? (await backend.importMedia(bundle, it.path, "renders"));
       update((s) => {
-        addImages(s, songId, [rel]);
+        addImages(s, songId, [rel], ensureCategory(s, category));
         if (makeHero) setHero(s, songId, rel);
       });
       await persist({ ...inbox, [it.path]: { flag: "approved", song_id: songId, imported_as: rel } });
@@ -117,9 +129,10 @@ export function RenderInbox() {
     await persist(next);
   }
 
+  /** Choose a folder, then say which song and category its renders are for, as when adding any media. */
   async function addFolder() {
     const path = await backend.chooseFolder("Choose the folder Depence exports renders into");
-    if (path) update((s) => { addWatchFolder(s, path); });
+    if (path) startImport([path]);
   }
 
   function onKeyDown(e: React.KeyboardEvent) {
@@ -147,11 +160,11 @@ export function RenderInbox() {
   return (
     <div className="inbox" ref={rootRef} tabIndex={0} onKeyDown={onKeyDown}>
       <aside className="inbox-side">
-        <h3>WATCH FOLDERS</h3>
+        <h3>WATCH FOLDERS · THIS MAC</h3>
         {folders.map((f) => (
           <div key={f.id} className="watch">
-            <span title={f.path}>{f.label}</span>
-            <button className="icon" onClick={() => update((s) => removeWatchFolder(s, f.id))} title="Stop watching">×</button>
+            <span title={f.path}>{f.label}{f.song_id && show.songs[f.song_id] ? <span className="muted"> · {songName(f.song_id)}</span> : null}</span>
+            <button className="icon" onClick={() => unlinkWatchFolder(f.id)} title="Stop watching">×</button>
           </div>
         ))}
         <button onClick={addFolder} disabled={!backend.isDesktop}>+ Watch a folder…</button>
@@ -220,11 +233,19 @@ export function RenderInbox() {
                 {show.archive.length > 0 && <optgroup label="Archive">{show.archive.map((id) => <option key={id} value={id}>{show.songs[id].fields.name}</option>)}</optgroup>}
               </select>
             </label>
-            <label className="check"><input type="checkbox" checked={makeHero} onChange={() => setMakeHero(!makeHero)} /> Make it the song's hero</label>
+            <label className="field">
+              <span className="field-label">CATEGORY</span>
+              <select value={category} onChange={(e) => setCategory(e.target.value)}>
+                {!categories(show).some((c) => c.id === category) && <option value={category}>Content</option>}
+                {categories(show).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </label>
+            <label className="check"><input type="checkbox" checked={makeHero} onChange={() => setMakeHero(!makeHero)} /> Make it the song's main image</label>
             <div className="row-actions">
               <button className="primary" onClick={() => approve(current)}>Approve (P)</button>
               <button onClick={() => reject(current)}>Reject (X)</button>
               {flagOf(current) && <button className="link" onClick={() => clear(current)}>Clear (U)</button>}
+              <SaveCopy path={current.path} />
             </div>
             {message && <p className="muted small">{message}</p>}
           </>

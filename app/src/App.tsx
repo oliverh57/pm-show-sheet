@@ -1,65 +1,108 @@
 import { useEffect, useRef, useState } from "react";
 import "@fontsource/lexend/400.css";
 import "@fontsource/lexend/600.css";
-import "@fontsource/roboto/400.css";
-import "@fontsource/roboto/500.css";
 import "@fontsource/roboto-mono/400.css";
 import "./App.css";
-import logo from "./assets/logo.png";
-import { backend, IMAGE_EXTENSIONS, sampleShow } from "./backend";
-import { AddMediaDialog, guessType } from "./components/AddMediaDialog";
+import { backend, IMAGE_EXTENSIONS } from "./backend";
+import { AppSettings, HomeSettings } from "./components/AppSettings";
 import { ColumnsDialog } from "./components/ColumnsDialog";
-import { DraftInput } from "./components/fields";
-import { Grid } from "./components/Grid";
-import { RenderInbox } from "./components/RenderInbox";
-import { SongCards } from "./components/SongCards";
-import { SongWorkspace } from "./components/SongWorkspace";
-import { UpdateBar, VersionLine } from "./components/UpdateBar";
-import { addImages, addWatchFolder, extension, newId, newShow } from "./model/ops";
-import type { Show } from "./model/types";
-import { SHOW_ID, useStore, type View } from "./store";
-import { useAutoUpdate, useUpdates } from "./updates";
+import { DriveSetup, useDriveCheck } from "./components/DriveSetup";
+import { ToolsSetup, useToolsCheck } from "./components/ToolsSetup";
+import { Home } from "./components/Home";
+import { ImportPage } from "./components/ImportPage";
+import { MediaPage } from "./components/MediaPage";
+import { SettingsPage, SharePage, SheetPage } from "./components/OtherPages";
+import { ReadOnlyBanner, Sidebar, Toasts } from "./components/Shell";
+import { SignIn } from "./components/SignIn";
+import { SongDrawer } from "./components/SongDrawer";
+import { SongsPage } from "./components/SongsPage";
+import { UpdateBar, WhatsNew } from "./components/UpdateBar";
+import { addImages, deptCategory, ensureCategory, extension } from "./model/ops";
+import { useAdoptWatchFolders } from "./watchFolders";
+import { useStore, type View } from "./store";
+import { useAutoUpdate } from "./updates";
+import { useGoogleSync } from "./google/sync";
 
-const LAST_BUNDLE_KEY = "pm.lastBundle";
 const SAVE_DELAY_MS = 600;
 
-function rememberBundle(path: string) {
-  try { localStorage.setItem(LAST_BUNDLE_KEY, path); } catch { /* storage unavailable */ }
-}
-function lastBundle(): string | null {
-  try { return localStorage.getItem(LAST_BUNDLE_KEY); } catch { return null; }
-}
-function baseName(path: string) {
-  return path.split("/").pop() ?? path;
-}
-
 export default function App() {
+  const user = useStore((s) => s.user);
+  const authChecked = useStore((s) => s.authChecked);
   const show = useStore((s) => s.show);
   const view = useStore((s) => s.view);
   const columnsOpen = useStore((s) => s.columnsOpen);
-  const addMedia = useStore((s) => s.addMedia);
+  const drawerSongId = useStore((s) => s.drawerSongId);
+  const importSeq = useStore((s) => s.importSeq);
+  const dragging = useFileDrop();
+  const [driveReady, skipDrive] = useDriveCheck(user?.email);
+  const [toolsReady, skipTools] = useToolsCheck(Boolean(user));
+  useAuthCheck();
   useAutosave();
   useShortcuts();
-  useFileDrop();
   useAutoUpdate();
+  useGoogleSync();
+  usePresence();
+  useAdoptWatchFolders();
 
-  if (!show) return <><UpdateBar /><Welcome /></>;
+  if (!authChecked) return null;
+  if (!user) return <div className="app"><UpdateBar /><WhatsNew /><SignIn /></div>;
+  if (!show && (driveReady === null || toolsReady === null)) return null;
+  if (!show && !driveReady) return <div className="app"><UpdateBar /><WhatsNew /><DriveSetup onDone={skipDrive} /></div>;
+  if (!show && !toolsReady) return <div className="app"><UpdateBar /><WhatsNew /><ToolsSetup onDone={skipTools} /></div>;
+  if (!show) return <div className="app"><UpdateBar /><WhatsNew />{view === "prefs" ? <HomeSettings /> : <Home />}<Toasts /></div>;
+
+  const page = { songs: <SongsPage />, media: <MediaPage />, import: <ImportPage key={importSeq} />, share: <SharePage />, sheet: <SheetPage />, settings: <SettingsPage />, prefs: <AppSettings /> }[view];
   return (
     <div className="app">
       <UpdateBar />
-      <Toolbar />
-      {view === "songs" && (
-        <main className="songs-view">
-          <SongCards />
-          <SongWorkspace />
-        </main>
-      )}
-      {view === "inbox" && <RenderInbox />}
-      {view === "sheet" && <main className="sheet-view"><Grid /></main>}
+      <WhatsNew />
+      <div className="shell">
+        <Sidebar onClose={closeShow} />
+        <section className="main">
+          <ReadOnlyBanner />
+          <div className="main-scroll" id="main-scroll">{page}</div>
+        </section>
+      </div>
+      {drawerSongId && show.songs[drawerSongId] && <SongDrawer key={drawerSongId} />}
       {columnsOpen && <ColumnsDialog />}
-      {addMedia && <AddMediaDialog />}
+      {dragging && <div className="drop-overlay">Drop to add media</div>}
+      <Toasts />
     </div>
   );
+}
+
+const PRESENCE_EVERY_MS = 30000;
+
+/** Tell other Macs this show is open here (a small file in the bundle, synced by Drive), and see who else has it open. */
+function usePresence() {
+  const bundle = useStore((s) => s.bundle);
+  const user = useStore((s) => s.user);
+  const readOnly = useStore((s) => s.readOnly);
+  useEffect(() => {
+    if (!bundle || !user || readOnly) return;
+    const beat = () => backend.presenceBeat(bundle, user.email, user.name).then((o) => useStore.getState().setOthers(o)).catch(() => {});
+    beat();
+    const t = window.setInterval(beat, PRESENCE_EVERY_MS);
+    const leave = () => { backend.presenceLeave(bundle, user.email); };
+    window.addEventListener("beforeunload", leave);
+    return () => {
+      window.clearInterval(t);
+      window.removeEventListener("beforeunload", leave);
+      leave();
+      useStore.getState().setOthers([]);
+    };
+  }, [bundle, user, readOnly]);
+}
+
+async function closeShow() {
+  await saveNow();
+  useStore.getState().close();
+}
+
+function useAuthCheck() {
+  useEffect(() => {
+    backend.currentUser().then((u) => useStore.getState().setUser(u), () => useStore.getState().setUser(null));
+  }, []);
 }
 
 function useAutosave() {
@@ -73,8 +116,8 @@ function useAutosave() {
 }
 
 async function saveNow() {
-  const { show, bundle, setSaveState } = useStore.getState();
-  if (!show || !bundle) return;
+  const { show, bundle, setSaveState, readOnly } = useStore.getState();
+  if (!show || !bundle || readOnly || useStore.getState().saveState === "saved") return;
   setSaveState("saving");
   try {
     await backend.save(bundle, show);
@@ -85,19 +128,21 @@ async function saveNow() {
   }
 }
 
-const VIEW_KEYS: Record<string, View> = { "1": "songs", "2": "inbox", "3": "sheet" };
+const VIEW_KEYS: Record<string, View> = { "1": "songs", "2": "media", "3": "share", "4": "sheet" };
 
 function useShortcuts() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const { undo, redo, setView, show, drawerSongId, closeDrawer } = useStore.getState();
+      if ((e.metaKey || e.ctrlKey) && e.key === ",") { e.preventDefault(); return setView("prefs"); }
+      if (!show) return;
+      if (e.key === "Escape" && drawerSongId && !document.querySelector(".modal-backdrop")) return closeDrawer();
       if (!(e.metaKey || e.ctrlKey)) return;
       const inField = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
-      const { undo, redo, setView, openAddMedia, show } = useStore.getState();
-      if (!show) return;
       const key = e.key.toLowerCase();
       if (key === "z" && !inField) (e.shiftKey ? redo : undo)();
       else if (key === "s") saveNow();
-      else if (key === "i") openAddMedia();
+      else if (key === "i") { setView("media"); useStore.getState().setMediaTab("add"); }
       else if (VIEW_KEYS[key]) setView(VIEW_KEYS[key]);
       else return;
       e.preventDefault();
@@ -108,112 +153,24 @@ function useShortcuts() {
 }
 
 /**
- * Files dropped from Finder. Images dropped on a song are added to it straight away; folders
- * dropped on the render inbox become watch folders; everything else opens Add media pre-filled.
+ * Files dropped from Finder. Images dropped on a song card go straight onto that song; folders dropped
+ * on the render inbox become watch folders; everything else goes to "What is this media?".
  */
-function useFileDrop() {
+function useFileDrop(): boolean {
+  const [dragging, setDragging] = useState(false);
   useEffect(() => backend.onFileDrop(async (paths, x, y) => {
-    const { bundle, view, selectedSongId, update, focusSong, openAddMedia, addMedia } = useStore.getState();
+    const { bundle, update, focusSong, startImport, toast } = useStore.getState();
     if (!bundle || paths.length === 0) return;
-    if (addMedia) return openAddMedia({ ...addMedia, files: [...(addMedia.files ?? []), ...paths] });
     const target = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-song-id]");
     const songId = target?.dataset.songId ?? null;
     const allImages = paths.every((p) => IMAGE_EXTENSIONS.includes(extension(p)));
     if (songId && allImages) {
       const rels = await Promise.all(paths.map((p) => backend.importMedia(bundle, p, "renders")));
-      update((s) => addImages(s, songId, rels));
-      return focusSong(songId, "renders");
+      update((s) => addImages(s, songId, rels, ensureCategory(s, deptCategory("CONTENT"))));
+      toast(`Added ${rels.length} image${rels.length === 1 ? "" : "s"}`);
+      return focusSong(songId, "media");
     }
-    const type = guessType(paths, Boolean(songId));
-    if (view === "inbox" && type === "watch_folder") return update((s) => { for (const p of paths) addWatchFolder(s, p); });
-    openAddMedia({ type, songId: songId ?? (selectedSongId !== SHOW_ID ? selectedSongId : null), files: paths });
-  }), []);
-}
-
-function Toolbar() {
-  const show = useStore((s) => s.show)!;
-  const bundle = useStore((s) => s.bundle)!;
-  const view = useStore((s) => s.view);
-  const saveState = useStore((s) => s.saveState);
-  const saveError = useStore((s) => s.saveError);
-  const canUndo = useStore((s) => s.past.length > 0);
-  const canRedo = useStore((s) => s.future.length > 0);
-  const { update, undo, redo, setColumnsOpen, setView, openAddMedia, close } = useStore.getState();
-  const appVersion = useUpdates((s) => s.current);
-
-  return (
-    <header className="toolbar">
-      <img src={logo} className="logo" alt="PIXELMAPPERS" />
-      {appVersion && <span className="app-version">v{appVersion}</span>}
-      <DraftInput className="show-name" value={show.name} onCommit={(v) => update((s) => { s.name = v.toUpperCase(); })} />
-      <span className={`save save-${saveState}`} title={saveError ?? bundle}>
-        {{ saved: "Saved", saving: "Saving…", unsaved: "Unsaved", error: "Save failed" }[saveState]}
-      </span>
-      <div className="spacer" />
-      <nav className="views">
-        {([["songs", "Songs"], ["inbox", "Render inbox"], ["sheet", "Sheet"]] as [View, string][]).map(([id, label], i) => (
-          <button key={id} className={view === id ? "active" : ""} onClick={() => setView(id)} title={`⌘${i + 1}`}>{label}</button>
-        ))}
-      </nav>
-      <button className="primary add-media-btn" onClick={() => openAddMedia()} title="⌘I">+ Add media</button>
-      <div className="spacer" />
-      <button onClick={undo} disabled={!canUndo} title="Undo (⌘Z)">Undo</button>
-      <button onClick={redo} disabled={!canRedo} title="Redo (⇧⌘Z)">Redo</button>
-      <button onClick={() => setColumnsOpen(true)}>Columns</button>
-      <button onClick={async () => { await saveNow(); close(); }} title={bundle}>Close</button>
-    </header>
-  );
-}
-
-function Welcome() {
-  const load = useStore((s) => s.load);
-  const [name, setName] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const last = backend.isDesktop ? lastBundle() : null; // browser preview shows don't outlive the page
-
-  async function run(fn: () => Promise<void>) {
-    setError(null);
-    try { await fn(); } catch (e) { setError(String(e)); }
-  }
-
-  async function createFrom(show: Show, fileName: string) {
-    const path = await backend.chooseNewBundle(fileName);
-    if (!path) return;
-    await backend.create(path, show);
-    rememberBundle(path);
-    load(show, path);
-  }
-
-  async function openPath(path: string) {
-    const show = await backend.open(path);
-    rememberBundle(path);
-    load(show, path);
-  }
-
-  return (
-    <div className="welcome">
-      <img src={logo} className="welcome-logo" alt="PIXELMAPPERS" />
-      <h1>SHOW SHEET</h1>
-      <div className="welcome-card">
-        <label className="field">
-          <span className="field-label">NEW SHOW</span>
-          <input autoFocus placeholder="e.g. ARTIST | VENUE 2026" value={name} onChange={(e) => setName(e.target.value)}
-                 onKeyDown={(e) => e.key === "Enter" && name.trim() && run(() => createFrom(newShow(name.trim()), name.trim()))} />
-        </label>
-        <button className="primary" disabled={!name.trim()} onClick={() => run(() => createFrom(newShow(name.trim()), name.trim()))}>
-          Create show…
-        </button>
-        <div className="welcome-actions">
-          <button onClick={() => run(async () => { const p = await backend.chooseBundle(); if (p) await openPath(p); })}>Open show…</button>
-          {last && <button onClick={() => run(() => openPath(last))} title={last}>Reopen {baseName(last)}</button>}
-          <button onClick={() => run(() => createFrom({ ...structuredClone(sampleShow), id: newId("show") }, "Sample show"))}>
-            Try the sample show…
-          </button>
-        </div>
-        {error && <p className="error">{error}</p>}
-        {!backend.isDesktop && <p className="muted small">Browser preview: shows live in memory only. Run the desktop app to save bundles.</p>}
-      </div>
-      <VersionLine />
-    </div>
-  );
+    startImport(paths); // folders dropped on the inbox too: they're asked their song and category
+  }, (over) => setDragging(over && Boolean(useStore.getState().show))), []);
+  return dragging;
 }

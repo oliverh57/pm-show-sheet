@@ -4,14 +4,25 @@
 //! MyShow.showsheet/
 //!   project.json        show data (same shape the Google prototype publishes)
 //!   project.json.bak    previous save
-//!   media/{renders,grabs,clips,layout,inspo}/
+//!   media/{renders,grabs,crops,clips,layout,inspo}/
 //!   thumbs/  proxies/
 //! ```
 //! The frontend owns the schema; Rust only moves JSON and files around.
 
 use serde_json::Value;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use tauri::{AppHandle, Emitter};
+
+mod files;
+mod google;
+mod ltc;
+mod shows;
+mod stream;
+mod thumbs;
+mod tools;
 
 const PROJECT: &str = "project.json";
 const MEDIA_KINDS: [&str; 5] = ["renders", "grabs", "clips", "layout", "inspo"];
@@ -71,15 +82,29 @@ fn media_import(bundle: String, source: String, kind: String) -> Result<String, 
     let dir = PathBuf::from(&bundle).join("media").join(&kind);
     fs::create_dir_all(&dir).map_err(err("create media folder"))?;
     let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("file").to_string();
-    let ext = src.extension().and_then(|s| s.to_str()).map(|e| format!(".{e}")).unwrap_or_default();
-    let mut name = format!("{stem}{ext}");
-    let mut n = 2;
-    while dir.join(&name).exists() {
-        name = format!("{stem}_{n}{ext}");
-        n += 1;
-    }
+    let ext = src.extension().and_then(|s| s.to_str()).unwrap_or_default().to_string();
+    let name = unique_name(&dir, &stem, &ext);
     fs::copy(&src, dir.join(&name)).map_err(err("copy media"))?;
     Ok(format!("media/{kind}/{name}"))
+}
+
+/// `stem.ext`, or `stem_2.ext`, `stem_3.ext`… if that name is taken in `dir`.
+fn unique_name(dir: &Path, stem: &str, ext: &str) -> String {
+    let dot = if ext.is_empty() { String::new() } else { format!(".{ext}") };
+    let mut name = format!("{stem}{dot}");
+    let mut n = 2;
+    while dir.join(&name).exists() {
+        name = format!("{stem}_{n}{dot}");
+        n += 1;
+    }
+    name
+}
+
+/// A name safe to use as a file name: "03 Be Quiet / Drive" → "03 Be Quiet - Drive".
+fn safe_stem(name: &str) -> String {
+    let cleaned: String = name.chars().map(|c| if "/\\:*?\"<>|".contains(c) { '-' } else { c }).collect();
+    let trimmed = cleaned.trim().trim_start_matches('.').to_string();
+    if trimmed.is_empty() { "clip".into() } else { trimmed }
 }
 
 /// Per-machine files kept beside project.json (render-cull decisions hold local paths, so they aren't show data).
@@ -145,16 +170,22 @@ fn list_folder(folder: String, extensions: Vec<String>) -> Result<Vec<FolderFile
 }
 
 /// Apps opened from Finder don't inherit the shell PATH, so look in the usual Homebrew places too.
-fn ffprobe_path() -> Option<PathBuf> {
-    ["/opt/homebrew/bin/ffprobe", "/usr/local/bin/ffprobe"]
+pub(crate) fn tool_path(name: &str) -> Option<PathBuf> {
+    ["/opt/homebrew/bin", "/usr/local/bin"]
         .iter()
-        .map(PathBuf::from)
+        .map(|d| Path::new(d).join(name))
         .find(|p| p.exists())
         .or_else(|| {
-            std::env::var_os("PATH").and_then(|paths| {
-                std::env::split_paths(&paths).map(|d| d.join("ffprobe")).find(|p| p.exists())
-            })
+            std::env::var_os("PATH").and_then(|paths| std::env::split_paths(&paths).map(|d| d.join(name)).find(|p| p.exists()))
         })
+}
+
+fn ffprobe_path() -> Option<PathBuf> {
+    tool_path("ffprobe")
+}
+
+fn ffmpeg_path() -> Result<PathBuf, String> {
+    tool_path("ffmpeg").ok_or_else(|| "ffmpeg isn't installed. Install it with: brew install ffmpeg".to_string())
 }
 
 /// Duration, picture and sound details of a media file, via ffprobe. `available: false` if ffprobe isn't installed.
@@ -193,15 +224,309 @@ fn probe_media(path: String) -> Result<Value, String> {
     }))
 }
 
+#[derive(Clone, serde::Serialize)]
+struct Progress {
+    id: String,
+    fraction: f64,
+}
+
+/// Scan a file's audio for LTC (see ltc.rs). Emits `ltc-progress` events while it reads.
+#[tauri::command]
+async fn ltc_scan(app: AppHandle, path: String) -> Result<ltc::LtcResult, String> {
+    let ffmpeg = ffmpeg_path()?;
+    let info = probe_media(path.clone())?;
+    let channels = info["audio_channels"].as_u64().ok_or("This file has no audio to read timecode from")? as usize;
+    let duration = info["duration"].as_f64().unwrap_or(0.0);
+    tauri::async_runtime::spawn_blocking(move || {
+        ltc::scan_file(&ffmpeg, &path, channels, duration, None, |fraction| {
+            let _ = app.emit("ltc-progress", Progress { id: path.clone(), fraction });
+            true
+        })
+    })
+    .await
+    .map_err(err("scan for timecode"))?
+}
+
+/// Cut `start`–`end` (seconds) of a record into a 720p H.264 clip in media/clips/, for Drive and the
+/// slides. Emits `clip-progress` events with `job` as the id. Returns the bundle-relative path.
+/// When the record carries LTC on `ltc_channel` the clip keeps it, on one side of a stereo track, and
+/// its name ends `_LTC-L` or `_LTC-R` to say which (that's how the app knows a file has timecode).
+/// A clip with the same name is replaced, so cutting a song again doesn't leave copies behind; the
+/// clip is written to a .part file first, so a cut that's cut short never looks like a finished clip.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn clip_cut(app: AppHandle, job: String, bundle: String, source: String, start: f64, end: f64, name: String, ltc_channel: Option<usize>) -> Result<String, String> {
+    let ffmpeg = ffmpeg_path()?;
+    if end <= start {
+        return Err("The clip's end is before its start".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = PathBuf::from(&bundle).join("media").join("clips");
+        fs::create_dir_all(&dir).map_err(err("create clips folder"))?;
+        let channels = probe_media(source.clone()).ok().and_then(|i| i["audio_channels"].as_u64()).unwrap_or(2) as usize;
+        let (pan, suffix) = match ltc_channel.map(|ltc| clip_pan(ltc, channels)) {
+            Some((pan, side)) => (Some(pan), format!("_LTC-{side}")),
+            None => (None, String::new()),
+        };
+        let file = format!("{}{suffix}.mp4", safe_stem(&name));
+        let part = dir.join(format!(".{file}.part"));
+        let length = end - start;
+        let mut child = Command::new(ffmpeg)
+            .args(["-v", "error", "-nostdin", "-y", "-ss", &format!("{start:.3}"), "-i", &source, "-t", &format!("{length:.3}")])
+            .args(["-map", "0:v:0", "-map", "0:a:0?", "-vf", "scale=-2:720", "-c:v", "libx264", "-preset", "veryfast"])
+            .args(["-b:v", "2500k", "-maxrate", "3000k", "-bufsize", "6000k", "-pix_fmt", "yuv420p"])
+            .args(pan.iter().flat_map(|p| ["-af".to_string(), p.clone()]))
+            .args(["-c:a", "aac", "-b:a", "256k", "-ac", "2", "-movflags", "+faststart", "-progress", "pipe:1", "-f", "mp4"])
+            .arg(&part)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(err("run ffmpeg"))?;
+        if let Some(out) = child.stdout.take() {
+            for line in BufReader::new(out).lines().map_while(Result::ok) {
+                if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.parse::<f64>().ok()) {
+                    let _ = app.emit("clip-progress", Progress { id: job.clone(), fraction: (us / 1e6 / length).clamp(0.0, 0.99) });
+                }
+            }
+        }
+        let output = child.wait_with_output().map_err(err("wait for ffmpeg"))?;
+        if !output.status.success() {
+            let _ = fs::remove_file(&part);
+            let msg = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("ffmpeg couldn't cut the clip: {}", msg.lines().last().unwrap_or("unknown error")));
+        }
+        fs::rename(&part, dir.join(&file)).map_err(err("save clip"))?;
+        Ok(format!("media/clips/{file}"))
+    })
+    .await
+    .map_err(err("cut clip"))?
+}
+
+/// The ffmpeg audio filter for a clip of a record with LTC on channel `ltc` of `channels`: the LTC on
+/// one side (left if it's the record's first channel, otherwise right) and the rest of the record,
+/// mixed to mono, on the other. Returns the filter and the LTC side, 'L' or 'R'.
+fn clip_pan(ltc: usize, channels: usize) -> (String, char) {
+    let programme: Vec<usize> = (0..channels.max(ltc + 1)).filter(|c| *c != ltc).collect();
+    let mix = match programme.len() {
+        0 => format!("0*c{ltc}"),
+        1 => format!("c{}", programme[0]),
+        n => programme.iter().map(|c| format!("{:.4}*c{c}", 1.0 / n as f64)).collect::<Vec<_>>().join("+"),
+    };
+    if ltc == 0 {
+        (format!("pan=stereo|c0=c{ltc}|c1={mix}"), 'L')
+    } else {
+        (format!("pan=stereo|c0={mix}|c1=c{ltc}"), 'R')
+    }
+}
+
+/// The ffmpeg audio filter for a saved copy: every channel in `keep`, in order (mono for one, stereo for two).
+fn keep_filter(keep: &[usize]) -> Option<String> {
+    let layout = match keep.len() {
+        0 => return None,
+        1 => "mono".to_string(),
+        2 => "stereo".to_string(),
+        n => format!("{n}c"),
+    };
+    let map: Vec<String> = keep.iter().enumerate().map(|(i, c)| format!("c{i}=c{c}")).collect();
+    Some(format!("pan={layout}|{}", map.join("|")))
+}
+
+/// Copy `from` to `to` a megabyte at a time, so a big record (or one still coming down from Drive) shows progress.
+fn copy_with_progress(from: &Path, to: &Path, mut progress: impl FnMut(f64)) -> Result<(), String> {
+    use std::io::{Read, Write};
+    let mut src = fs::File::open(from).map_err(err("open the file"))?;
+    let total = src.metadata().map(|m| m.len()).unwrap_or(0).max(1) as f64;
+    let mut dst = fs::File::create(to).map_err(err("create the copy"))?;
+    let mut buf = vec![0u8; 1 << 20];
+    let (mut done, mut reported) = (0u64, 0.0);
+    loop {
+        let n = src.read(&mut buf).map_err(err("read the file"))?;
+        if n == 0 {
+            break;
+        }
+        dst.write_all(&buf[..n]).map_err(err("write the copy"))?;
+        done += n as u64;
+        let fraction = done as f64 / total;
+        if fraction - reported >= 0.01 {
+            progress(fraction.min(0.99));
+            reported = fraction;
+        }
+    }
+    dst.sync_all().map_err(err("write the copy"))
+}
+
+/// How to save a copy: which audio channel (the LTC) to leave out, and whether to keep just the audio.
+#[derive(Clone, Copy, Default)]
+struct SaveOpts {
+    drop: Option<usize>,
+    audio_only: bool,
+}
+
+/// Write a copy of `source` to `part` with ffmpeg, without the `drop` channel: with `audio_only` just
+/// the audio as 24-bit WAV, otherwise the picture copied untouched and the audio re-encoded.
+fn save_with_ffmpeg(ffmpeg: &Path, source: &str, part: &Path, ext: &str, opts: SaveOpts, mut progress: impl FnMut(f64)) -> Result<(), String> {
+    let info = probe_media(source.to_string())?;
+    let channels = info["audio_channels"].as_u64().ok_or("This file has no audio")? as usize;
+    let keep: Vec<usize> = (0..channels).filter(|c| Some(*c) != opts.drop).collect();
+    let filter = keep_filter(&keep).ok_or("There's no audio left once the timecode channel is taken out")?;
+    let filter = opts.drop.map(|_| ["-af".to_string(), filter]);
+    let duration = info["duration"].as_f64().unwrap_or(0.0).max(1.0);
+    let mut cmd = Command::new(ffmpeg);
+    cmd.args(["-v", "error", "-nostdin", "-y", "-i", source]);
+    if opts.audio_only {
+        cmd.args(["-vn", "-map", "0:a:0"]).args(filter.iter().flatten()).args(["-c:a", "pcm_s24le", "-f", "wav"]);
+    } else {
+        let mp4 = matches!(ext, "mp4" | "m4v");
+        let format = match ext {
+            "mp4" | "m4v" => "mp4",
+            "mkv" => "matroska",
+            "avi" => "avi",
+            "mxf" => "mxf",
+            _ => "mov",
+        };
+        cmd.args(["-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy"]).args(filter.iter().flatten());
+        cmd.args(if mp4 { ["-c:a", "aac", "-b:a", "320k"].as_slice() } else { ["-c:a", "pcm_s24le"].as_slice() });
+        cmd.args(["-f", format]);
+    }
+    let mut child = cmd.args(["-progress", "pipe:1"]).arg(part).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(err("run ffmpeg"))?;
+    if let Some(out) = child.stdout.take() {
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.parse::<f64>().ok()) {
+                progress((us / 1e6 / duration).clamp(0.0, 0.99));
+            }
+        }
+    }
+    let output = child.wait_with_output().map_err(err("wait for ffmpeg"))?;
+    if !output.status.success() {
+        let msg = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("ffmpeg couldn't save the copy: {}", msg.lines().last().unwrap_or("unknown error")));
+    }
+    Ok(())
+}
+
+/// Save a copy of `source` at `dest`: copied as it is, or through ffmpeg (see save_with_ffmpeg) to
+/// leave out the LTC channel or keep just the audio. The copy is written beside `dest` as a hidden
+/// .part file first, so a save that fails never leaves half a file.
+fn save_copy(source: &str, dest: &str, opts: SaveOpts, progress: impl FnMut(f64)) -> Result<(), String> {
+    let (from, to) = (Path::new(source), PathBuf::from(dest));
+    let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    if !from.is_file() {
+        return Err(format!("{} isn't on this Mac", name(from)));
+    }
+    if from.canonicalize().ok() == to.canonicalize().ok() {
+        return Err("Choose somewhere else to save the copy".into());
+    }
+    let ext = to.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).unwrap_or_default();
+    let part = to.with_file_name(format!(".{}.part", name(&to)));
+    let result = if opts.drop.is_none() && !opts.audio_only {
+        copy_with_progress(from, &part, progress)
+    } else {
+        ffmpeg_path().and_then(|ffmpeg| save_with_ffmpeg(&ffmpeg, source, &part, &ext, opts, progress))
+    };
+    match result.and_then(|_| fs::rename(&part, &to).map_err(err("save the copy"))) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = fs::remove_file(&part);
+            Err(e)
+        }
+    }
+}
+
+/// Save a copy of a media file where the user chose (see save_copy). Emits `save-progress` events with `job` as the id.
+#[tauri::command]
+async fn media_save(app: AppHandle, job: String, source: String, dest: String, drop_channel: Option<usize>, audio_only: bool) -> Result<(), String> {
+    let opts = SaveOpts { drop: drop_channel, audio_only };
+    tauri::async_runtime::spawn_blocking(move || {
+        save_copy(&source, &dest, opts, |fraction| {
+            let _ = app.emit("save-progress", Progress { id: job.clone(), fraction });
+        })
+    })
+    .await
+    .map_err(err("save copy"))?
+}
+
+/// Save the frame at `time` seconds of a video into media/grabs/ as a JPEG. Returns the bundle-relative path.
+#[tauri::command]
+async fn frame_grab(bundle: String, source: String, time: f64, name: String) -> Result<String, String> {
+    let ffmpeg = ffmpeg_path()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = PathBuf::from(&bundle).join("media").join("grabs");
+        fs::create_dir_all(&dir).map_err(err("create grabs folder"))?;
+        let file = unique_name(&dir, &safe_stem(&name), "jpg");
+        let output = Command::new(ffmpeg)
+            .args(["-v", "error", "-nostdin", "-y", "-ss", &format!("{time:.3}"), "-i", &source, "-frames:v", "1", "-q:v", "3"])
+            .arg(dir.join(&file))
+            .output()
+            .map_err(err("run ffmpeg"))?;
+        if !output.status.success() || !dir.join(&file).exists() {
+            return Err("ffmpeg couldn't grab that frame".into());
+        }
+        Ok(format!("media/grabs/{file}"))
+    })
+    .await
+    .map_err(err("grab frame"))?
+}
+
+/// Crop an image into media/crops/ as a JPEG. `x`, `y`, `w`, `h` are fractions of the picture as
+/// shown (ffmpeg applies the EXIF rotation first). Images ffmpeg can't crop directly (iPhone HEICs
+/// are tiled, which ffmpeg won't filter simply) go through a JPEG copy made by sips, which keeps the
+/// rotation flag. Returns the bundle-relative path.
+#[tauri::command]
+async fn image_crop(bundle: String, source: String, x: f64, y: f64, w: f64, h: f64, name: String) -> Result<String, String> {
+    let ffmpeg = ffmpeg_path()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = PathBuf::from(&bundle).join("media").join("crops");
+        fs::create_dir_all(&dir).map_err(err("create crops folder"))?;
+        let file = unique_name(&dir, &safe_stem(&name), "jpg");
+        let crop = format!("crop=iw*{w:.5}:ih*{h:.5}:iw*{x:.5}:ih*{y:.5}");
+        let run = |input: &Path| {
+            Command::new(&ffmpeg)
+                .args(["-v", "error", "-nostdin", "-y", "-i"])
+                .arg(input)
+                .args(["-vf", &crop, "-frames:v", "1", "-q:v", "2"])
+                .arg(dir.join(&file))
+                .output()
+                .map(|o| o.status.success() && dir.join(&file).exists())
+                .unwrap_or(false)
+        };
+        if run(Path::new(&source)) {
+            return Ok(format!("media/crops/{file}"));
+        }
+        let tmp = std::env::temp_dir().join(format!("pmss-crop-{}.jpg", std::process::id()));
+        let converted = Command::new("sips")
+            .args(["-s", "format", "jpeg", "-s", "formatOptions", "95"])
+            .arg(&source).arg("--out").arg(&tmp)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        let ok = converted && run(&tmp);
+        let _ = fs::remove_file(&tmp);
+        if !ok {
+            let _ = fs::remove_file(dir.join(&file));
+            return Err("Couldn't crop that image".into());
+        }
+        Ok(format!("media/crops/{file}"))
+    })
+    .await
+    .map_err(err("crop image"))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(google::TokenCache::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
-            bundle_create, bundle_open, bundle_save, media_import, side_read, side_write, list_folder, probe_media
+            bundle_create, bundle_open, bundle_save, media_import, side_read, side_write, list_folder, probe_media,
+            ltc_scan, clip_cut, frame_grab, image_crop, media_save,
+            shows::drive_shows_folder, shows::drive_status, shows::drive_open_app, tools::tools_status, tools::tools_install, tools::tools_install_in_terminal, shows::ensure_folder, shows::shows_list, shows::shows_summaries, shows::bundle_move,
+            shows::shows_scan, shows::drive_item_id, shows::presence_beat, shows::presence_leave, shows::bundle_trash, shows::bundle_trash_files, shows::bundle_rename,
+            files::file_states, files::make_online_only, files::make_available, thumbs::thumb_candidates, stream::media_server,
+            google::google_client_configured, google::google_set_client, google::google_sign_in,
+            google::google_current_user, google::google_sign_out, google::google_api, google::google_upload
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -268,6 +593,148 @@ mod tests {
         side_write(b.clone(), "inbox.json".into(), json!({"x": 1})).unwrap();
         assert_eq!(side_read(b.clone(), "inbox.json".into()).unwrap().unwrap()["x"], 1);
         assert!(side_write(b, "project.json".into(), json!({})).is_err());
+    }
+
+    #[test]
+    fn safe_names() {
+        assert_eq!(safe_stem("03 Be Quiet / Drive: Far"), "03 Be Quiet - Drive- Far");
+        assert_eq!(safe_stem("..."), "clip");
+        let dir = temp_dir("names");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("a.mp4"), b"x").unwrap();
+        assert_eq!(unique_name(&dir, "a", "mp4"), "a_2.mp4");
+        assert_eq!(unique_name(&dir, "b", "mp4"), "b.mp4");
+    }
+
+    #[test]
+    fn clips_keep_the_ltc_on_one_side() {
+        assert_eq!(clip_pan(1, 2), ("pan=stereo|c0=c0|c1=c1".to_string(), 'R'));
+        assert_eq!(clip_pan(0, 2), ("pan=stereo|c0=c0|c1=c1".to_string(), 'L'));
+        assert_eq!(clip_pan(2, 3), ("pan=stereo|c0=0.5000*c0+0.5000*c1|c1=c2".to_string(), 'R'));
+        assert_eq!(clip_pan(0, 1), ("pan=stereo|c0=c0|c1=0*c0".to_string(), 'L'));
+    }
+
+    #[test]
+    fn saved_copies_keep_every_channel_but_the_ltc() {
+        assert_eq!(keep_filter(&[0]).as_deref(), Some("pan=mono|c0=c0"));
+        assert_eq!(keep_filter(&[0, 1]).as_deref(), Some("pan=stereo|c0=c0|c1=c1"));
+        assert_eq!(keep_filter(&[0, 1, 3]).as_deref(), Some("pan=3c|c0=c0|c1=c1|c2=c3"));
+        assert_eq!(keep_filter(&[]), None);
+    }
+
+    #[test]
+    fn saves_copies_with_and_without_ltc() {
+        let base = temp_dir("save");
+        fs::create_dir_all(&base).unwrap();
+        let plain = base.join("still.jpg");
+        fs::write(&plain, b"jpeg").unwrap();
+        let copy = base.join("copy.jpg");
+        save_copy(&plain.to_string_lossy(), &copy.to_string_lossy(), SaveOpts::default(), |_| {}).unwrap();
+        assert_eq!(fs::read(&copy).unwrap(), b"jpeg");
+        assert!(save_copy(&plain.to_string_lossy(), &plain.to_string_lossy(), SaveOpts::default(), |_| {}).is_err(), "never onto itself");
+        assert!(save_copy(&base.join("nope.wav").to_string_lossy(), &copy.to_string_lossy(), SaveOpts::default(), |_| {}).is_err());
+
+        let Some(ffmpeg) = tool_path("ffmpeg").filter(|_| ffprobe_path().is_some()) else { return };
+        let (wav, mov) = (base.join("ltc.wav"), base.join("ltc.mov"));
+        let ok = Command::new(&ffmpeg)
+            .args(["-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-f", "lavfi", "-i", "sine=frequency=2000:duration=2"])
+            .args(["-filter_complex", "[0][1]amerge=inputs=2", "-c:a", "pcm_s24le"])
+            .arg(&wav)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        let ok = Command::new(&ffmpeg)
+            .args(["-v", "error", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=25:duration=2", "-i"])
+            .arg(&wav)
+            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "pcm_s24le"])
+            .arg(&mov)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        let channels = |p: &Path| probe_media(p.to_string_lossy().to_string()).unwrap()["audio_channels"].as_u64();
+
+        let no_ltc_audio = SaveOpts { drop: Some(1), audio_only: true };
+        let audio = base.join("audio only.wav");
+        save_copy(&wav.to_string_lossy(), &audio.to_string_lossy(), no_ltc_audio, |_| {}).unwrap();
+        assert_eq!(channels(&audio), Some(1), "the LTC channel is gone");
+
+        let video = base.join("no ltc.mov");
+        save_copy(&mov.to_string_lossy(), &video.to_string_lossy(), SaveOpts { drop: Some(1), ..Default::default() }, |_| {}).unwrap();
+        let info = probe_media(video.to_string_lossy().to_string()).unwrap();
+        assert_eq!((info["audio_channels"].as_u64(), info["width"].as_u64()), (Some(1), Some(320)));
+
+        let from_video = base.join("from video.wav");
+        save_copy(&mov.to_string_lossy(), &from_video.to_string_lossy(), no_ltc_audio, |_| {}).unwrap();
+        assert_eq!(probe_media(from_video.to_string_lossy().to_string()).unwrap()["width"], Value::Null);
+
+        assert!(fs::read_dir(&base).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().ends_with(".part")));
+    }
+
+    /// A clip's LTC goes through AAC, so check it still reads, using the same filter and encoder as clip_cut.
+    #[test]
+    fn clip_ltc_survives_the_encode_if_example_present() {
+        let file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Exmaple Content/AUDIO FILES/LTC + AUDIO - AUTUMN 2026 90' V4.1_48_24.wav");
+        let Some(ffmpeg) = tool_path("ffmpeg").filter(|_| file.exists()) else { return };
+        let out = temp_dir("clip-ltc").with_extension("m4a");
+        let (pan, side) = clip_pan(1, 2);
+        let ok = Command::new(&ffmpeg)
+            .args(["-v", "error", "-y", "-ss", "60", "-i"])
+            .arg(&file)
+            .args(["-t", "20", "-af", &pan, "-c:a", "aac", "-b:a", "256k", "-ac", "2"])
+            .arg(&out)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        let r = ltc::scan_file(&ffmpeg, &out.to_string_lossy(), 2, 20.0, None, |_| true).unwrap();
+        assert_eq!((r.channel, side), (Some(1), 'R'));
+        assert!(!r.blocks.is_empty(), "{r:?}");
+    }
+
+    #[test]
+    fn cuts_a_clip_and_grabs_a_frame() {
+        let Some(ffmpeg) = tool_path("ffmpeg") else { return };
+        let base = temp_dir("clip");
+        let bundle = base.join("S.showsheet");
+        bundle_create(bundle.to_string_lossy().to_string(), json!({})).unwrap();
+        let src = base.join("src.mp4");
+        let ok = Command::new(ffmpeg)
+            .args(["-v", "error", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=25", "-f", "lavfi", "-i", "sine=frequency=440"])
+            .args(["-t", "4", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"])
+            .arg(&src)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        let b = bundle.to_string_lossy().to_string();
+        let s = src.to_string_lossy().to_string();
+        let rel = tauri::async_runtime::block_on(frame_grab(b.clone(), s.clone(), 1.5, "01 Song".into())).unwrap();
+        assert_eq!(rel, "media/grabs/01 Song.jpg");
+        assert!(bundle.join(&rel).metadata().unwrap().len() > 0);
+    }
+
+    #[test]
+    fn crops_a_tiled_heic() {
+        let (Some(ffmpeg), Some(ffprobe)) = (tool_path("ffmpeg"), ffprobe_path()) else { return };
+        let base = temp_dir("crop");
+        let bundle = base.join("S.showsheet");
+        bundle_create(bundle.to_string_lossy().to_string(), json!({})).unwrap();
+        // Big enough that sips writes a tiled HEIC, like an iPhone's, which ffmpeg can't filter directly.
+        let jpg = base.join("photo.jpg");
+        let heic = base.join("photo.heic");
+        assert!(Command::new(ffmpeg).args(["-v", "error", "-f", "lavfi", "-i", "testsrc2=s=4032x3024", "-frames:v", "1"]).arg(&jpg).status().unwrap().success());
+        if !Command::new("sips").args(["-s", "format", "heic"]).arg(&jpg).arg("--out").arg(&heic).output().is_ok_and(|o| o.status.success()) {
+            return; // no HEIC encoder here
+        }
+        let rel = tauri::async_runtime::block_on(image_crop(
+            bundle.to_string_lossy().to_string(), heic.to_string_lossy().to_string(), 0.25, 0.1, 0.5, 0.375, "01 Song".into(),
+        ))
+        .unwrap();
+        assert_eq!(rel, "media/crops/01 Song.jpg");
+        let out = Command::new(ffprobe).args(["-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0"]).arg(bundle.join(&rel)).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "2016,1134");
     }
 
     #[test]
