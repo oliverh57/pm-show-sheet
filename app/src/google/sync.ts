@@ -6,11 +6,11 @@ import { useEffect } from "react";
 import { create } from "zustand";
 import { backend } from "../backend";
 import type { GoogleSync, Show } from "../model/types";
-import { applySheetValue, songImagePaths } from "../model/ops";
+import { applySheetValue, newId, songImagePaths } from "../model/ops";
 import { useStore } from "../store";
 import {
-  columnChangeRequests, contentRequests, diffShowTab, HEADER_ROWS, protectionUpdateRequests, reconcileRequests, reconcileRows, type SheetProtection, showTab, snapshot,
-  structureRequests, ARCHIVE_TAB, SHOW_TAB, type Conflict, type TabGrid,
+  applyReviewEdits, colLetter, REPLY_FROM, sheetAuthor, type SheetRevision, columnChangeRequests, formatRuleRequests, mergeUpdateRequests, type SheetFormatRule, type SheetMerge, contentRequests, diffReviewTab, diffShowTab, HEADER_ROWS, protectionUpdateRequests, reconcileRequests, reconcileRows,
+  reviewTab, type SheetProtection, showTab, snapshot, structureRequests, ARCHIVE_TAB, REVIEW_TAB, SHOW_TAB, type Conflict, type TabGrid,
 } from "./sheet";
 import { deckFingerprint, deckRequests } from "./slides";
 
@@ -22,6 +22,7 @@ const SHEET_MIME = "application/vnd.google-apps.spreadsheet";
 const SLIDES_MIME = "application/vnd.google-apps.presentation";
 const TAB_ID = 1001;
 const ARCHIVE_TAB_ID = 1002;
+const REVIEW_TAB_ID = 1003;
 const PUSH_DELAY_MS = 3000;
 const DECK_DELAY_MS = 15000;
 const POLL_MS = 60000;
@@ -114,12 +115,18 @@ async function ensureFiles(): Promise<void> {
   }
 }
 
-/** Upload any image-column images (renders, tagged stills) not on Drive yet (downsized). Returns image path → image URL. */
-async function ensureImages(songIds: string[]): Promise<Record<string, { url: string; id: string }>> {
+/** The frames of the comments in the REVIEW tab. */
+const reviewStills = (show: Show) => (show.reviews ?? []).flatMap((c) => (c.still ? [c.still] : []));
+
+/**
+ * Upload any image-column images (renders, tagged stills) of these songs, and `extra` images, not on Drive yet
+ * (downsized). Returns image path → image URL.
+ */
+async function ensureImages(songIds: string[], extra: string[] = []): Promise<Record<string, { url: string; id: string }>> {
   const { show, bundle } = useStore.getState();
   if (!show || !bundle) return {};
   const out: Record<string, { url: string; id: string }> = {};
-  const paths = [...new Set(songIds.flatMap((sid) => (show.songs[sid] ? songImagePaths(show.songs[sid]) : [])))];
+  const paths = [...new Set([...songIds.flatMap((sid) => (show.songs[sid] ? songImagePaths(show.songs[sid]) : [])), ...extra])];
   for (const img of paths) {
     let id = g().images?.[img];
     if (!id) {
@@ -140,7 +147,7 @@ async function ensureImages(songIds: string[]): Promise<Record<string, { url: st
 /** Bin the Drive copies of images no song uses any more (removed images, replaced heroes, deleted songs). */
 async function pruneImages(): Promise<void> {
   const show = useStore.getState().show!;
-  const used = new Set(Object.values(show.songs).flatMap(songImagePaths));
+  const used = new Set([...Object.values(show.songs).flatMap(songImagePaths), ...reviewStills(show)]);
   for (const [path, id] of Object.entries(g().images ?? {})) {
     if (used.has(path)) continue;
     try {
@@ -181,11 +188,16 @@ const clipUrls = () => Object.fromEntries(Object.entries(g().clips ?? {}).map(([
 
 // --- the Sheet ------------------------------------------------------------------
 
-interface SheetMeta { sheets: { properties: { sheetId: number; title: string; gridProperties?: { columnCount?: number } }; protectedRanges?: SheetProtection[] }[] }
+interface SheetMeta {
+  sheets: { properties: { sheetId: number; title: string; gridProperties?: { columnCount?: number } }; protectedRanges?: SheetProtection[]; merges?: SheetMerge[]; conditionalFormats?: SheetFormatRule[] }[];
+}
 
-/** Bring collaborator edits from the ✎ columns (of both tabs) into the show. */
+/** Bring collaborator edits from the ✎ columns (of the song tabs and the REVIEW tab) into the show. */
+/** When each Sheet's REVIEW tab was last read (its id → ms): anything new in it since was typed after then. */
+const lastRead = new Map<string, number>();
+
 async function pull(): Promise<void> {
-  const { spreadsheet_id: ssid, tab_id, archive_tab_id, published } = g();
+  const { spreadsheet_id: ssid, tab_id, archive_tab_id, review_tab_id, published } = g();
   if (!ssid || !tab_id || !published) return;
   const tabs = archive_tab_id ? [SHOW_TAB, ARCHIVE_TAB] : [SHOW_TAB];
   const res = await api<{ valueRanges: { values?: unknown[][] }[] }>("GET",
@@ -205,6 +217,58 @@ async function pull(): Promise<void> {
     useStore.getState().toast(`${edits.length} change${edits.length === 1 ? "" : "s"} from the Google Sheet`);
   }
   if (conflicts.length) recordConflicts(conflicts);
+  if (review_tab_id) {
+    // Read on its own: a REVIEW tab someone deleted is made again by the push, so it mustn't stop the pull.
+    const readAt = Date.now();
+    const review = await api<{ values?: unknown[][] }>("GET", `${SHEETS}/${ssid}/values/${enc(a1(REVIEW_TAB))}?valueRenderOption=UNFORMATTED_VALUE`).catch(() => null);
+    if (review) {
+      const since = lastRead.get(ssid) ?? null;
+      lastRead.set(ssid, readAt);
+      await pullReviews(ssid, published, review.values ?? [], since);
+    }
+  }
+}
+
+const READ_MARGIN_MS = 30 * 1000; // the Mac's clock and Google's may differ a little
+const FIRST_READ_MS = 24 * 60 * 60 * 1000; // how far back to look for who typed something the first time the app reads the Sheet
+
+/** Who most likely typed new, unnamed comments in the Sheet since `since`, from its revision history (see sheetAuthor). */
+async function sheetEditor(ssid: string, since: number | null): Promise<ReturnType<typeof sheetAuthor>> {
+  const revisions: SheetRevision[] = [];
+  const fields = enc("nextPageToken,revisions(modifiedTime,lastModifyingUser(displayName,emailAddress,me))");
+  let page: string | undefined;
+  do {
+    const res = await api<{ revisions?: SheetRevision[]; nextPageToken?: string }>("GET",
+      `${DRIVE}/${ssid}/revisions?pageSize=1000&fields=${fields}${page ? `&pageToken=${enc(page)}` : ""}`);
+    revisions.push(...(res.revisions ?? []));
+    page = res.nextPageToken;
+  } while (page);
+  return sheetAuthor(revisions, (since ?? Date.now() - FIRST_READ_MS) - READ_MARGIN_MS, g().app_editors ?? []);
+}
+
+/** Bring in collaborators' comments, replies, ticks and edits from the REVIEW tab. */
+async function pullReviews(ssid: string, published: Record<string, string | boolean>, values: unknown[][], since: number | null): Promise<void> {
+  const edits = diffReviewTab(useStore.getState().show!, published, values);
+  if (!edits.length) return;
+  // A comment or reply that doesn't say who it's from is put down to whoever edited the Sheet since it was last read.
+  const unnamed = edits.some((e) => (e.kind === "new" && !e.from) || (e.kind === "reply" && e.from === REPLY_FROM));
+  const author = unnamed ? await sheetEditor(ssid, since).catch(() => null) : null;
+  // First mark the Sheet: rows typed there get their new comment's id and replies are taken out of REPLY, so a pull that
+  // runs again (the push after this one failing, say) doesn't bring them in twice.
+  const ids = new Map(edits.flatMap((e) => (e.kind === "new" ? [[e.row, newId("rev")] as const] : [])));
+  const replyCol = values[0]?.map(String).indexOf("reply") ?? -1;
+  const rowOf = new Map(values.map((r, i) => [String(r?.[0] ?? ""), i]));
+  const data = [
+    ...[...ids].map(([row, id]) => ({ range: `${a1(REVIEW_TAB)}!A${row + 1}`, values: [[id]] })),
+    ...(replyCol < 0 ? [] : edits.flatMap((e) => {
+      const row = e.kind === "reply" ? rowOf.get(e.id) : undefined;
+      return row === undefined ? [] : [{ range: `${a1(REVIEW_TAB)}!${colLetter(replyCol)}${row + 1}`, values: [[""]] }];
+    })),
+  ];
+  if (data.length) await api("POST", `${SHEETS}/${ssid}/values:batchUpdate`, { valueInputOption: "RAW", data });
+  useStore.getState().update((s) => applyReviewEdits(s, edits, ids, author));
+  meta((x) => { for (const e of edits) if (e.kind === "set") x.published = { ...x.published, [`review|${e.id}|${e.col}`]: e.value }; });
+  useStore.getState().toast(`${edits.length} comment change${edits.length === 1 ? "" : "s"} from the Google Sheet`);
 }
 
 function recordConflicts(conflicts: Conflict[]) {
@@ -222,11 +286,14 @@ async function pushSheet(): Promise<void> {
   const { user } = useStore.getState();
   const ssid = g().spreadsheet_id!;
   const show = useStore.getState().show!;
-  const images = await ensureImages([...show.set_order, ...show.archive]);
+  const images = await ensureImages([...show.set_order, ...show.archive], reviewStills(show));
   const urls = Object.fromEntries(Object.entries(images).map(([k, v]) => [k, v.url]));
   // The running order on SHOW SHEET, archived songs on ARCHIVED SONGS: a song moves between them as it's archived or restored.
   const grids: [TabGrid, number][] = [[showTab(show, urls, clipUrls()), TAB_ID], [showTab(show, urls, clipUrls(), true), ARCHIVE_TAB_ID]];
-  const metaRes = await api<SheetMeta>("GET", `${SHEETS}/${ssid}?fields=${enc("sheets(properties(sheetId,title,gridProperties(columnCount)))")}`);
+  // REVIEW is added once there's a comment to put in it.
+  const reviewing = Boolean(g().review_tab_id || show.reviews?.length);
+  if (reviewing) grids.push([reviewTab(show, urls, clipUrls()), REVIEW_TAB_ID]);
+  const metaRes = await api<SheetMeta>("GET", `${SHEETS}/${ssid}?fields=${enc("sheets(properties(sheetId,title,gridProperties(columnCount)),merges,conditionalFormats(booleanRule(condition(values))))")}`);
   const tabs = new Map(metaRes.sheets.map((s) => [s.properties.sheetId, s]));
   const reqs: object[] = [];
   const columnsChanged = new Set<number>();
@@ -249,16 +316,16 @@ async function pushSheet(): Promise<void> {
     if (headerIds.join("|") !== grid.colIds.join("|")) {
       columnsChanged.add(id);
       reqs.push(...columnChangeRequests(grid, id, tab.properties.gridProperties?.columnCount ?? headerIds.length));
-    }
+    } else reqs.push(...mergeUpdateRequests(grid, id, tab.merges ?? []));
     const rowIds = (read.valueRanges[at + 1]?.values ?? []).map((r) => (r?.[0] === undefined ? "" : String(r[0])));
     reqs.push(...reconcileRequests(reconcileRows(rowIds, grid.rowIds), id));
   }
-  for (const [grid, id] of grids) reqs.push(...contentRequests(grid, id));
+  for (const [grid, id] of grids) reqs.push(...contentRequests(grid, id), ...formatRuleRequests(grid, id, tabs.get(id)?.conditionalFormats ?? []));
   await api("POST", `${SHEETS}/${ssid}:batchUpdate`, { requests: reqs });
   // Snapshot the show that was pushed, not the current one: an edit made while the push was in flight isn't in the
   // Sheet, and recording it as published would make the next pull read the Sheet's old value as a collaborator's edit.
   const pushed = snapshot(show);
-  meta((x) => { x.tab_id = TAB_ID; x.archive_tab_id = ARCHIVE_TAB_ID; x.published = pushed; });
+  meta((x) => { x.tab_id = TAB_ID; x.archive_tab_id = ARCHIVE_TAB_ID; if (reviewing) x.review_tab_id = REVIEW_TAB_ID; x.published = pushed; });
   lastSheet = sheetFingerprint(show);
   await lockTabs(ssid, grids, user?.email ?? "", columnsChanged);
   await pruneImages();
@@ -326,7 +393,7 @@ let generation = 0; // bumps when the open show changes, so stale jobs stop
 
 function sheetFingerprint(show: Show): string {
   return JSON.stringify([show.name, show.columns, show.set_order, show.archive,
-    Object.values(show.songs).map((s) => [s.id, s.fields, s.statuses, s.colours, s.hero, s.images, s.segues_into_next, s.clips]), show.google?.clips]);
+    Object.values(show.songs).map((s) => [s.id, s.fields, s.statuses, s.colours, s.hero, s.images, s.segues_into_next, s.clips]), show.google?.clips, show.reviews]);
 }
 
 function run(job: () => Promise<void>) {

@@ -63,16 +63,17 @@ interface Props {
   channels?: number | null;
   autoPlay?: boolean;
   mediaRef?: React.RefObject<HTMLVideoElement | null>;
+  controls?: boolean; // off when something else is the transport (the comments strip)
 }
 
-export function MediaPlayer({ path, video, ltc: given, channels, autoPlay, mediaRef }: Props) {
+export function MediaPlayer({ path, video, ltc: given, channels, autoPlay, mediaRef, controls = true }: Props) {
   const ltc = given ?? ltcFromName(path);
   const own = useRef<HTMLVideoElement>(null);
   const ref = mediaRef ?? own;
   useDropLtc(ref, ltc, channels, path);
   const { overlay } = useVideoHelpers(ref, path);
   const hasLtc = ltc !== null && ltc !== undefined;
-  const common = { controls: true, autoPlay, preload: "metadata" as const, src: backend.streamUrl(path), crossOrigin: hasLtc ? ("anonymous" as const) : undefined };
+  const common = { controls, autoPlay, preload: "metadata" as const, src: backend.streamUrl(path), crossOrigin: hasLtc ? ("anonymous" as const) : undefined };
   return (
     <div className="player-inline">
       {video ? <div className="video-wrap"><video key={path} ref={ref} {...common} playsInline />{overlay}</div> : <audio key={path} ref={ref as React.RefObject<HTMLAudioElement | null>} {...common} />}

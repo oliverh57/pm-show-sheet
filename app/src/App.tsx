@@ -11,13 +11,14 @@ import { ToolsSetup, useToolsCheck } from "./components/ToolsSetup";
 import { Home } from "./components/Home";
 import { ImportPage } from "./components/ImportPage";
 import { MediaPage } from "./components/MediaPage";
+import { CommentsPage } from "./components/Comments";
 import { SettingsPage, SharePage, SheetPage } from "./components/OtherPages";
 import { ReadOnlyBanner, Sidebar, Toasts } from "./components/Shell";
 import { SignIn } from "./components/SignIn";
 import { SongDrawer } from "./components/SongDrawer";
 import { SongsPage } from "./components/SongsPage";
 import { UpdateBar, WhatsNew } from "./components/UpdateBar";
-import { addImages, deptCategory, ensureCategory, extension } from "./model/ops";
+import { addImages, deptCategory, ensureCategory, extension, keepResolvedDays, resolvedToTidy, tidyResolved } from "./model/ops";
 import { useAdoptWatchFolders } from "./watchFolders";
 import { useStore, type View } from "./store";
 import { useAutoUpdate } from "./updates";
@@ -43,6 +44,7 @@ export default function App() {
   useGoogleSync();
   usePresence();
   useAdoptWatchFolders();
+  useTidyResolved();
 
   if (!authChecked) return null;
   if (!user) return <div className="app"><UpdateBar /><WhatsNew /><SignIn /></div>;
@@ -51,7 +53,7 @@ export default function App() {
   if (!show && !toolsReady) return <div className="app"><UpdateBar /><WhatsNew /><ToolsSetup onDone={skipTools} /></div>;
   if (!show) return <div className="app"><UpdateBar /><WhatsNew />{view === "prefs" ? <HomeSettings /> : <Home />}<Toasts /></div>;
 
-  const page = { songs: <SongsPage />, media: <MediaPage />, import: <ImportPage key={importSeq} />, share: <SharePage />, sheet: <SheetPage />, settings: <SettingsPage />, prefs: <AppSettings /> }[view];
+  const page = { songs: <SongsPage />, media: <MediaPage />, comments: <CommentsPage />, import: <ImportPage key={importSeq} />, share: <SharePage />, sheet: <SheetPage />, settings: <SettingsPage />, prefs: <AppSettings /> }[view];
   return (
     <div className="app">
       <UpdateBar />
@@ -69,6 +71,30 @@ export default function App() {
       <Toasts />
     </div>
   );
+}
+
+const TIDY_EVERY_MS = 60 * 60 * 1000;
+
+/** Delete resolved comments older than the show keeps them: when it opens, when the setting changes, and hourly. */
+function useTidyResolved() {
+  const showId = useStore((s) => s.show?.id);
+  const keep = useStore((s) => (s.show ? keepResolvedDays(s.show) : null));
+  const readOnly = useStore((s) => s.readOnly);
+  useEffect(() => {
+    if (!showId || readOnly) return;
+    const tidy = () => {
+      const { show, updateQuiet, toast } = useStore.getState();
+      if (!show) return;
+      const { expired, unstamped } = resolvedToTidy(show);
+      if (!expired.length && !unstamped) return;
+      updateQuiet((s) => { tidyResolved(s); });
+      const days = keepResolvedDays(show);
+      if (expired.length) toast(`Deleted ${expired.length} comment${expired.length === 1 ? "" : "s"} resolved over ${days} day${days === 1 ? "" : "s"} ago`);
+    };
+    tidy();
+    const t = window.setInterval(tidy, TIDY_EVERY_MS);
+    return () => window.clearInterval(t);
+  }, [showId, keep, readOnly]);
 }
 
 const PRESENCE_EVERY_MS = 30000;

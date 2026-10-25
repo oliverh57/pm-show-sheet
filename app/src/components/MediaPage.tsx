@@ -8,6 +8,7 @@ import { useStore } from "../store";
 import { Icon, type IconName } from "./icons";
 import { infoLine } from "./MediaLists";
 import { MediaPlayer } from "./Player";
+import { MediaViewer } from "./MediaViewer";
 import { formatTime } from "./SongDrawer";
 import { deleteClip, deleteRecordStills, deleteSongImage, removeRecordAndMedia } from "../library";
 import { RenderInbox } from "./RenderInbox";
@@ -112,6 +113,7 @@ function Library() {
   const cutting = jobs.some((j) => j.status === "queued" || j.status === "running");
   const songName = (id?: string | null) => (id ? show.songs[id]?.fields.name : "") || "";
   const [playing, setPlaying] = useState<string | null>(null);
+  const [watching, setWatching] = useState<{ songId: string; path: string } | null>(null); // a song clip in the viewer, with its comments
   const [openClips, setOpenClips] = useState<string | null>(null);
   const [recutId, setRecutId] = useState<string | null>(null);
   const [repicking, setRepicking] = useState<{ id: string; done: number; total: number } | null>(null);
@@ -215,10 +217,9 @@ function Library() {
                         <span className="nm" title={c.path.split("/").pop()}>{clipName(show, c.songId)}<span className="muted small"> · {formatTime(c.out - c.in)}</span></span>
                         <CloudButton compact paths={[`${bundle}/${c.path}`]} states={states} refresh={refreshStates} />
                         <SaveCopy path={`${bundle}/${c.path}`} video compact />
-                        <button className={`icon ${playing === c.path ? "on" : ""}`} title={playing === c.path ? "Hide the player" : "Play"} onClick={() => setPlaying(playing === c.path ? null : c.path)}><Icon name={playing === c.path ? "x" : "play"} size="sm" /></button>
+                        <button className="icon" title="Play full screen, with its comments" onClick={() => setWatching({ songId: c.songId, path: c.path })}><Icon name="play" size="sm" /></button>
                         <button className="icon" title="Delete this clip from the show" onClick={() => deleteClip(c.songId, c.path)}><Icon name="trash" size="sm" /></button>
                       </div>
-                      {playing === c.path && <div className="lib-player"><MediaPlayer path={`${bundle}/${c.path}`} video autoPlay /></div>}
                     </div>
                   ))}
                 </div>
@@ -338,10 +339,9 @@ function Library() {
                       <span className="nm">{songName(c.songId)}<span className="muted small"> · {formatTime(c.in)} – {formatTime(c.out)}</span></span>
                       <CloudButton compact paths={[`${bundle}/${c.path}`]} states={states} refresh={refreshStates} />
                       <SaveCopy path={`${bundle}/${c.path}`} video compact />
-                      <button className={`icon ${playing === c.path ? "on" : ""}`} title={playing === c.path ? "Hide the player" : "Play"} onClick={() => setPlaying(playing === c.path ? null : c.path)}><Icon name={playing === c.path ? "x" : "play"} size="sm" /></button>
+                      <button className="icon" title="Play full screen, with its comments" onClick={() => setWatching({ songId: c.songId, path: c.path })}><Icon name="play" size="sm" /></button>
                       <button className="icon" title="Delete this clip from the show" onClick={() => deleteClip(c.songId, c.path)}><Icon name="trash" size="sm" /></button>
                     </div>
-                    {playing === c.path && <div className="lib-player"><MediaPlayer path={`${bundle}/${c.path}`} video autoPlay /></div>}
                   </div>
                 ))}
               </div>
@@ -381,6 +381,7 @@ function Library() {
           </div>
         ))}
       </div>
+      {watching && show.songs[watching.songId] && <MediaViewer song={show.songs[watching.songId]} start={watching.path} play onClose={() => setWatching(null)} />}
     </div>
   );
 }

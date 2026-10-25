@@ -1,4 +1,4 @@
-// Lists of audio versions and recordings, with in-place players.
+// Lists of audio versions (with in-place players) and recordings.
 import { useState } from "react";
 import { formatDuration } from "../model/ops";
 import type { AudioFile, MediaInfo, SourceRecord } from "../model/types";
@@ -41,8 +41,7 @@ export function AudioList({ files, empty, onRemove }: { files: AudioFile[]; empt
   );
 }
 
-export function RecordList({ records, empty, onRemove }: { records: SourceRecord[]; empty: string; onRemove: (id: string) => void }) {
-  const [open, setOpen] = useState<string | null>(null);
+export function RecordList({ records, empty, onWatch, onRemove }: { records: SourceRecord[]; empty: string; onWatch: (id: string) => void; onRemove: (id: string) => void }) {
   if (records.length === 0) return <p className="muted">{empty}</p>;
   return (
     <div className="media-list">
@@ -51,10 +50,9 @@ export function RecordList({ records, empty, onRemove }: { records: SourceRecord
           <div className="media-main">
             <strong>{r.name}</strong>
             <span className="muted small">{infoLine(r.info) || "details unavailable"}{r.note ? ` · ${r.note}` : ""}</span>
-            {open === r.id && <MediaPlayer path={r.path} video ltc={r.ltc?.channel} channels={r.info?.audio_channels} autoPlay />}
           </div>
           <SaveCopy path={r.path} ltc={r.ltc?.channel} video />
-          <button className="sm" onClick={() => setOpen(open === r.id ? null : r.id)}>{open === r.id ? "Hide" : <><Icon name="play" size="sm" /> Watch</>}</button>
+          <button className="sm" title="Watch it full screen, with its comments beside it" onClick={() => onWatch(r.id)}><Icon name="play" size="sm" /> Watch</button>
           <button className="icon" onClick={() => onRemove(r.id)} title="Remove (the file stays where it is)">×</button>
         </div>
       ))}

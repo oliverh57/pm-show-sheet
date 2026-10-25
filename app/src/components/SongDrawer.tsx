@@ -6,23 +6,24 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { backend } from "../backend";
 import {
   addChoiceOption, archiveSong, deleteSong, deptList, deptName, fieldLabel, isFieldColumn, listOf, moveChoiceOption,
-  removeAudio, removeChoiceOption, removeColumn, renameChoiceOption, renameField, restoreSong, setField, songAudio, songRecords,
+  openReviews, removeAudio, removeChoiceOption, removeColumn, renameChoiceOption, renameField, restoreSong, reviewsOn, setField, songAudio, songRecords,
   syncAudioField, toggleStatus,
 } from "../model/ops";
 import { removeRecordAndMedia } from "../library";
 import { useStore } from "../store";
 import { DraftInput, FieldInput, OptionsEditor } from "./fields";
 import { Icon } from "./icons";
+import { SongComments } from "./Comments";
 import { AudioList, RecordList } from "./MediaLists";
-import { MediaPlayer } from "./Player";
+import { MediaViewer } from "./MediaViewer";
 import { SaveCopy } from "./SaveCopy";
 import { Colours, FieldSwatches, Media } from "./SongSections";
 import { HeroCrop } from "./HeroCrop";
 import { isGrab, thumbSource, ThumbPicker } from "./ThumbPicker";
 import type { ColumnDef } from "../model/types";
 
-type Tab = "overview" | "media";
-const SECTION_TABS: Record<string, Tab> = { media: "media", renders: "media", records: "media", audio: "media" };
+type Tab = "overview" | "media" | "comments";
+const SECTION_TABS: Record<string, Tab> = { media: "media", renders: "media", records: "media", audio: "media", comments: "comments" };
 const CORE_FIELDS = new Set(["num", "name", "tc", "bpm", "audio"]);
 
 export function SongDrawer() {
@@ -34,8 +35,10 @@ export function SongDrawer() {
   const [tab, setTab] = useState<Tab>(focus && SECTION_TABS[focus] ? SECTION_TABS[focus] : "overview");
   const [optionsFor, setOptionsFor] = useState<string | null>(null); // the list field whose options are open
   const [renaming, setRenaming] = useState<string | null>(null);
+  const [watching, setWatching] = useState<string | null>(null); // the clip or record playing in the viewer, with its comments
   const bodyRef = useRef<HTMLDivElement>(null);
   const song = show.songs[songId];
+  const openComments = openReviews(show, songId);
 
   useEffect(() => {
     if (!focus || SECTION_TABS[focus]) return;
@@ -144,8 +147,11 @@ export function SongDrawer() {
           <button className="icon" onClick={closeDrawer} title="Close (Esc)"><Icon name="x" /></button>
         </div>
         <div className="tabs">
-          {(["overview", "media"] as Tab[]).map((t) => (
-            <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>{{ overview: "Overview", media: "Media" }[t]}</button>
+          {(["overview", "media", "comments"] as Tab[]).map((t) => (
+            <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
+              {{ overview: "Overview", media: "Media", comments: "Comments" }[t]}
+              {t === "comments" && openComments > 0 && <span className="tab-count">{openComments}</span>}
+            </button>
           ))}
         </div>
         <div className="content" ref={bodyRef}>
@@ -199,14 +205,16 @@ export function SongDrawer() {
               </div>
             </>
           )}
+          {tab === "comments" && <SongComments song={song} />}
           {tab === "media" && (
             <>
               <div className="panel"><div className="label">Renders &amp; stills</div><Media song={song} /></div>
               <div className="panel">
                 <div className="label">Clips</div>
                 {(song.clips ?? []).length === 0 && songRecords(show, song.id).length === 0 && <p className="muted" style={{ margin: 0 }}>No clips yet. Add a show record on the Media page.</p>}
-                {(song.clips ?? []).map((c) => <ClipRow key={c.path} bundle={bundle} path={c.path} label={`${formatTime(c.in)} – ${formatTime(c.out)} · ${c.source === "auto_tc" ? "from timecode" : "marked by hand"}`} />)}
-                <RecordList records={songRecords(show, song.id)} empty="" onRemove={(id) => removeRecordAndMedia(id)} />
+                {(song.clips ?? []).map((c) => <ClipRow key={c.path} bundle={bundle} path={c.path} label={`${formatTime(c.in)} – ${formatTime(c.out)} · ${c.source === "auto_tc" ? "from timecode" : "marked by hand"}`}
+                                                        open={reviewsOn(show, c.record_id, c.in, c.out).filter((r) => !r.done).length} onPlay={() => setWatching(c.path)} />)}
+                <RecordList records={songRecords(show, song.id)} empty="" onWatch={setWatching} onRemove={(id) => removeRecordAndMedia(id)} />
                 <div style={{ marginTop: 10 }}><button className="sm" onClick={() => addFiles("video")}><Icon name="plus" size="sm" /> Add a song clip</button></div>
               </div>
               <div className="panel">
@@ -228,6 +236,7 @@ export function SongDrawer() {
           <button className="sm primary" onClick={closeDrawer}>Done</button>
         </div>
       </aside>
+      {watching && <MediaViewer song={song} start={watching} play onClose={() => setWatching(null)} />}
       {picking !== null && source && <ThumbPicker song={song} replace={picking || null} onClose={() => setPicking(null)} />}
       {cropping && photo && <HeroCrop song={song} src={photo} onClose={() => setCropping(false)}
                                       onPickFrame={source ? () => { setCropping(false); setPicking(song.hero!); } : undefined} />}
@@ -235,14 +244,12 @@ export function SongDrawer() {
   );
 }
 
-function ClipRow({ bundle, path, label }: { bundle: string; path: string; label: string }) {
-  const [open, setOpen] = useState(false);
+function ClipRow({ bundle, path, label, open: comments, onPlay }: { bundle: string; path: string; label: string; open: number; onPlay: () => void }) {
   return (
     <div className="media-row clip-row" style={{ marginBottom: 6, flexWrap: "wrap" }}>
       <div className="media-main"><strong>{path.split("/").pop()}</strong><span className="muted small">{label}</span></div>
       <SaveCopy path={`${bundle}/${path}`} video />
-      <button className="sm" onClick={() => setOpen(!open)}>{open ? "Hide" : <><Icon name="play" size="sm" /> Play</>}</button>
-      {open && <div style={{ flexBasis: "100%" }}><MediaPlayer path={`${bundle}/${path}`} video autoPlay /></div>}
+      <button className="sm" title="Play it full screen, with its comments beside it" onClick={onPlay}><Icon name="play" size="sm" /> Play{comments ? <span className="muted"> · {comments} open</span> : null}</button>
     </div>
   );
 }

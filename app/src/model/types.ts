@@ -88,6 +88,40 @@ export interface Note {
   source?: "app" | "sheet";
 }
 
+/**
+ * A comment on a song's video or image (Frame.io style); on a video it's timecoded. It's placed in a show record, not a clip file: a clip is a window
+ * on its record, so the comment shows on the clip and on the whole record, and outlives re-cutting the clip.
+ */
+export interface ReviewComment {
+  id: string;
+  song_id: string | null;
+  record_id?: string; // missing for a comment on an image, or typed in the Sheet with a TC that isn't in any record
+  image?: string; // a comment on an image (bundle-relative, as in the song's gallery): it has no time
+  t: number; // seconds into the record (0 on an image)
+  t_out?: number; // the end of a range comment
+  tc?: string; // show TC at t (from the record's LTC), as typed in the Sheet if it has no record
+  tc_out?: string;
+  text: string;
+  dept?: Dept;
+  from: string;
+  email?: string;
+  at: string; // ISO time it was written
+  draw?: string; // SVG path drawn on the frame, in a 0–1000 square stretched over the picture
+  still?: string; // the frame at t (bundle-relative, media/grabs/), shown in the Sheet
+  done: boolean;
+  resolved_at?: string; // ISO time it was resolved: resolved comments are deleted once older than Show.keep_resolved_days
+  replies: ReviewReply[];
+  source: "app" | "sheet";
+}
+
+export interface ReviewReply {
+  id: string;
+  from: string;
+  email?: string;
+  at: string;
+  text: string;
+}
+
 export interface Session {
   id: string;
   label: string;
@@ -188,6 +222,8 @@ export interface Show {
   date?: string;
   cover?: string; // the show's main image (bundle-relative, one of its songs' images), picked in Show settings; else the first song's hero
   comments?: unknown[];
+  reviews?: ReviewComment[]; // comments on videos and images, in the order written
+  keep_resolved_days?: number | null; // how long resolved comments are kept before they're deleted (KEEP_RESOLVED_DAYS when unset); null keeps them
 }
 
 export type ListName = "set_order" | "archive";
@@ -200,6 +236,7 @@ export interface GoogleSync {
   sheet_url?: string;
   tab_id?: number;
   archive_tab_id?: number; // the ARCHIVED SONGS tab, once made
+  review_tab_id?: number; // the REVIEW tab (video comments), once made
   presentation_id?: string;
   slides_url?: string;
   slides_rev?: number;

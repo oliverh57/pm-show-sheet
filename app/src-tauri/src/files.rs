@@ -80,6 +80,23 @@ pub async fn make_online_only(paths: Vec<String>) -> Result<Vec<String>, String>
     .map_err(|e| e.to_string())
 }
 
+/// Make files online only if they haven't been opened or changed on this Mac for `days` days. Files that
+/// can't be (still uploading, not in the cloud, already online only) are skipped quietly. Returns how many it did.
+#[tauri::command]
+pub async fn make_unused_online_only(paths: Vec<String>, days: u64) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 24 * 60 * 60);
+        let unused = |p: &str| {
+            let Ok(meta) = std::fs::metadata(p) else { return false };
+            let last = [meta.accessed(), meta.modified()].into_iter().flatten().max();
+            last.is_some_and(|t| t < cutoff)
+        };
+        paths.iter().filter(|p| state_of(p) == "local" && unused(p) && evict(p).is_ok()).count()
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// Download online-only files again by reading them through.
 #[tauri::command]
 pub async fn make_available(paths: Vec<String>) -> Result<(), String> {

@@ -7,12 +7,13 @@ import { backend } from "../backend";
 import {
   addCustomField, addSongWith, archiveSong, DEFAULT_SET_LIST_FORMAT, deleteSong, fieldLabel, moveSong, noteFields, parseSetList,
   SET_LIST_FIELDS, type FieldKind, type SetListField,
-  parseTc, restoreSong, songAudio, songRecords,
+  openReviews, parseTc, restoreSong, songAudio, songRecords,
 } from "../model/ops";
 import { swatchFill } from "../model/gels";
 import type { Show, Song } from "../model/types";
 import { useStore } from "../store";
 import { PresentPage } from "./PresentPage";
+import { CommentBadge } from "./Review";
 import { SongSaveMenu } from "./SaveCopy";
 import { Icon } from "./icons";
 import { FIELD_KINDS, localOptions, OptionsEditor } from "./fields";
@@ -343,6 +344,7 @@ function SongCard({ show, song, position, last, selected, placeholder, dropClass
          data-card-id={song.id} data-drag-id={song.id} data-song-id={song.id}
          onPointerDown={onPointerDown} onClick={() => onOpen()}>
       <div className="media">{song.hero ? <img src={backend.mediaUrl(bundle, song.hero)} alt="" draggable={false} /> : <div className="ph"><Icon name="music" /></div>}</div>
+      <CommentBadge count={openReviews(show, song.id)} onClick={() => useStore.getState().focusSong(song.id, "comments")} />
       <SongSaveMenu show={show} bundle={bundle} song={song} />
       <button className="grip" title={position === null ? "Drag into the set" : "Drag to reorder"} tabIndex={-1}><Icon name="grip" size="sm" /></button>
       <div className="body">
@@ -388,7 +390,7 @@ function SongRow({ show, song, position, selected, placeholder, dropClass, onPoi
          data-card-id={song.id} data-drag-id={song.id} data-song-id={song.id} onPointerDown={onPointerDown} onClick={onOpen}>
       <button className="grip ghost" tabIndex={-1}><Icon name="grip" /></button>
       <span className="n">{position !== null && String(position).padStart(2, "0")}</span>
-      <span className="th">{song.hero ? <img src={backend.mediaUrl(bundle, song.hero)} alt="" draggable={false} /> : <span className="ph"><Icon name="music" /></span>}</span>
+      <span className="th">{song.hero ? <img src={backend.mediaUrl(bundle, song.hero)} alt="" draggable={false} /> : <span className="ph"><Icon name="music" /></span>}<CommentBadge count={openReviews(show, song.id)} /></span>
       <span className="nm">{song.fields.name || "Untitled"}{song.segues_into_next && <span className="pill">SEGUE</span>}</span>
       {song.fields.tc ? <span className="chip tc">{song.fields.tc}</span> : <span className="chip missing">No TC</span>}
       <span className="muted small">{audio || "—"}</span>

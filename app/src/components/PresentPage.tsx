@@ -1,19 +1,24 @@
 // Present: the running order one song at a time. The song's images, clips and records in a big viewer, its audio
 // playable, and every field laid out by category and editable in place. The songs run along the bottom; ← → move.
+// The media and audio on screen can be saved (downloaded), as from the media viewer. The side panel's Comments tab
+// has the comments on the image or clip on screen (as in the media viewer); the thumbnails show which have open ones.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { backend } from "../backend";
-import { deptColour, deptList, deptName, fieldLabel, fieldSwatches, isFieldColumn, setField, songAudio, toggleStatus } from "../model/ops";
+import { deptColour, deptList, deptName, fieldLabel, fieldSwatches, isFieldColumn, openReviews, setField, songAudio, toggleStatus } from "../model/ops";
 import { swatchFill } from "../model/gels";
 import type { ColourSwatch, ColumnDef, Show, Song } from "../model/types";
 import { useStore } from "../store";
 import { DraftInput, FieldInput } from "./fields";
 import { Icon } from "./icons";
 import { infoLine } from "./MediaLists";
-import { mediaOf } from "./MediaViewer";
+import { itemComments, mediaOf, reviewTarget } from "./MediaViewer";
 import { MediaPlayer } from "./Player";
+import { CommentBadge, Review } from "./Review";
+import { SaveCopy, SongSaveMenu } from "./SaveCopy";
 import { Colours, FieldSwatches } from "./SongSections";
 
 const CORE_FIELDS = new Set(["num", "name", "tc", "bpm", "audio"]);
+type InfoTab = "info" | "comments";
 
 export function PresentPage({ toggle }: { toggle: ReactNode }) {
   const show = useStore((s) => s.show)!;
@@ -23,6 +28,7 @@ export function PresentPage({ toggle }: { toggle: ReactNode }) {
   const index = Math.max(0, selected ? order.indexOf(selected) : 0);
   const song = show.songs[order[index]];
   const go = (i: number) => order.length && select(order[Math.min(order.length - 1, Math.max(0, i))]);
+  const [tab, setTab] = useState<InfoTab>("info"); // kept from song to song
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -53,7 +59,7 @@ export function PresentPage({ toggle }: { toggle: ReactNode }) {
       </div>
       {song ? (
         <>
-          <SongSlide key={song.id} show={show} song={song} position={index + 1} />
+          <SongSlide key={song.id} show={show} song={song} position={index + 1} tab={tab} onTab={setTab} />
           <SongStrip show={show} current={song.id} onPick={(id) => select(id)} onStep={(d) => go(index + d)} />
         </>
       ) : (
@@ -63,13 +69,20 @@ export function PresentPage({ toggle }: { toggle: ReactNode }) {
   );
 }
 
-function SongSlide({ show, song, position }: { show: Show; song: Song; position: number }) {
+function SongSlide({ show, song, position, tab, onTab }: { show: Show; song: Song; position: number; tab: InfoTab; onTab: (t: InfoTab) => void }) {
   const bundle = useStore((s) => s.bundle)!;
   const update = useStore((s) => s.update);
   const focusSong = useStore((s) => s.focusSong);
   const items = mediaOf(show, bundle, song);
   const [pick, setPick] = useState(items[0]?.key ?? null);
   const item = items.find((x) => x.key === pick) ?? items[0];
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const imageRef = useRef<HTMLImageElement>(null);
+  const [view, setView] = useState<HTMLDivElement | null>(null);
+  const [trackHost, setTrackHost] = useState<HTMLDivElement | null>(null);
+  const target = tab === "comments" && item ? reviewTarget(item, videoRef, imageRef) : undefined;
+  const review = target?.kind === "video"; // the strip under the picture is the player
+  const open = openReviews(show, song.id);
   const set = (colId: string, v: string) => update((s) => setField(s, song.id, colId, v));
   const infoRef = useRef<HTMLDivElement>(null);
 
@@ -88,7 +101,7 @@ function SongSlide({ show, song, position }: { show: Show; song: Song; position:
   return (
     <div className="pv-body">
       <div className="pv-stage" data-song-id={song.id}>
-        <div className="pv-view">
+        <div className="pv-view" ref={setView}>
           {!item && (
             <div className="pv-none">
               <Icon name="image" size="xl" />
@@ -96,10 +109,17 @@ function SongSlide({ show, song, position }: { show: Show; song: Song; position:
               <button className="sm" onClick={() => focusSong(song.id, "media")}>Open media</button>
             </div>
           )}
-          {item?.kind === "image" && <img key={item.key} src={backend.mediaUrl(bundle, item.src)} alt="" draggable={false} />}
-          {item?.kind === "video" && <MediaPlayer key={item.key} path={item.path} video ltc={item.ltc} channels={item.channels} />}
+          {item?.kind === "image" && <img key={item.key} ref={imageRef} src={backend.mediaUrl(bundle, item.src)} alt="" draggable={false} />}
+          {item?.kind === "video" && <MediaPlayer key={item.key} path={item.path} video controls={!review} ltc={item.ltc} channels={item.channels} mediaRef={videoRef} />}
           {item && <span className="pv-caption">{item.label}</span>}
+          {item && (
+            <div className="pv-save">
+              <SaveCopy key={item.key} path={item.kind === "image" ? `${bundle}/${item.src}` : item.path} ltc={item.kind === "video" ? item.ltc : null} video={item.kind === "video"} />
+              <SongSaveMenu show={show} bundle={bundle} song={song} />
+            </div>
+          )}
         </div>
+        {review && <div className="pv-track" ref={setTrackHost} />}
         {items.length > 1 && (
           <div className="pv-thumbs">
             {items.map((x) => (
@@ -107,13 +127,22 @@ function SongSlide({ show, song, position }: { show: Show; song: Song; position:
                 {x.kind === "image" ? <img src={backend.mediaUrl(bundle, x.src)} alt="" draggable={false} />
                   : x.thumb ? <img src={backend.mediaUrl(bundle, x.thumb)} alt="" draggable={false} /> : <span className="ph"><Icon name="film" /></span>}
                 {x.kind === "video" && <span className="play"><Icon name="play" size="sm" /></span>}
+                <CommentBadge count={itemComments(show, x).filter((c) => !c.done).length} />
               </button>
             ))}
           </div>
         )}
       </div>
 
-      <div className="pv-info" ref={infoRef} onInput={(e) => e.target instanceof HTMLTextAreaElement && fit(e.target)}>
+      <div className={`pv-info ${tab === "comments" ? "commenting" : ""}`} ref={infoRef} onInput={(e) => e.target instanceof HTMLTextAreaElement && fit(e.target)}>
+        <div className="seg pv-tabs">
+          <button className={tab === "info" ? "on" : ""} onClick={() => onTab("info")}>Song info</button>
+          <button className={tab === "comments" ? "on" : ""} onClick={() => onTab("comments")}>Comments{open ? ` · ${open}` : ""}</button>
+        </div>
+        {tab === "comments" && (target && item
+          ? <Review key={item.key} show={show} songId={song.id} target={target} stage={view} itemKey={item.key} trackHost={trackHost} light />
+          : <div className="pv-comments"><div className="none">No images or clips to comment on yet.</div></div>)}
+        {tab === "info" && <>
         <div className="pv-num">Song {String(position).padStart(2, "0")}{song.segues_into_next && <span className="pill">SEGUE</span>}</div>
         <DraftInput className="pv-name" value={song.fields.name ?? ""} placeholder="Song name" onCommit={(v) => set("name", v)} />
 
@@ -162,6 +191,7 @@ function SongSlide({ show, song, position }: { show: Show; song: Song; position:
         )}
 
         <button className="ghost sm pv-more" onClick={() => focusSong(song.id)}><Icon name="settings" size="sm" /> Song details</button>
+        </>}
       </div>
     </div>
   );
@@ -209,6 +239,7 @@ function SongAudio({ show, song }: { show: Show; song: Song }) {
               {versions.map((x, i) => <option key={x.id} value={x.id}>{x.version || x.name}{i === 0 ? " (current)" : ""}</option>)}
             </select>
           : <span className="chip">{a.version || a.name}</span>}
+        <SaveCopy key={a.id} path={a.path} ltc={a.ltc?.channel} compact />
       </h3>
       <MediaPlayer key={a.id} path={a.path} video={false} ltc={a.ltc?.channel} channels={a.info?.audio_channels} />
       <div className="muted small">{a.name}{infoLine(a.info) && ` · ${infoLine(a.info)}`}</div>
@@ -231,7 +262,7 @@ function SongStrip({ show, current, onPick, onStep }: { show: Show; current: str
           const s = show.songs[id];
           return (
             <button key={id} className={`item ${id === current ? "on" : ""}`} data-song-id={id} onClick={() => onPick(id)}>
-              <span className="th">{s.hero ? <img src={backend.mediaUrl(bundle, s.hero)} alt="" draggable={false} /> : <Icon name="music" size="sm" />}</span>
+              <span className="th">{s.hero ? <img src={backend.mediaUrl(bundle, s.hero)} alt="" draggable={false} /> : <Icon name="music" size="sm" />}<CommentBadge count={openReviews(show, id)} /></span>
               <span className="nm"><b>{String(n + 1).padStart(2, "0")}</b>{s.fields.name || "Untitled"}</span>
               {s.segues_into_next && n < show.set_order.length - 1 && <span className="seg-arrow" title="Segues into the next song"><Icon name="arrowR" size="sm" /></span>}
             </button>

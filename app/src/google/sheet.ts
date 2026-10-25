@@ -1,11 +1,15 @@
 // The SHOW SHEET tab (the running order) and the ARCHIVED SONGS tab: show → cells → Sheets API requests, and
-// reading collaborator edits back. Both tabs have the same columns.
+// reading collaborator edits back. Both tabs have the same columns. The REVIEW tab lists the comments on videos.
 // Ported from prototypes/google-sheets (layout.py, sync_logic.py, model.py). Pure: no network here.
-import { cellValue, clipLabel, deptColour, deptLabel, sheetEditable, songImage } from "../model/ops";
-import type { ColumnDef, Show, Song } from "../model/types";
+import {
+  addReview, cellValue, clipLabel, deptColour, deptLabel, deptList, deptName, findReview, parseTc, placeTc, recordTc, replyToReview, setReviewDone, sheetEditable,
+  songByLabel, songImage, songNumber,
+} from "../model/ops";
+import type { ColumnDef, ReviewComment, Show, Song } from "../model/types";
 
 export const SHOW_TAB = "SHOW SHEET";
 export const ARCHIVE_TAB = "ARCHIVED SONGS";
+export const REVIEW_TAB = "REVIEW";
 export const HEADER_ROWS = 4; // 0: column ids (hidden) · 1: banner · 2: department band · 3: labels
 const SPARE_ROWS = 100;
 
@@ -41,6 +45,7 @@ export interface Cell {
   size?: number;
   font?: string;
   wrap?: boolean;
+  overflow?: boolean; // runs on into the empty cells to its right
   halign?: "LEFT" | "CENTER" | "RIGHT";
   links?: { text: string; url?: string }[]; // one line each; a line with a url is a link
 }
@@ -63,7 +68,7 @@ function cellApi(c: Cell) {
   if (c.fg) tf.foregroundColor = rgb(c.fg);
   if (c.bold) tf.bold = true;
   if (c.size) tf.fontSize = c.size;
-  const fmt: Record<string, unknown> = { verticalAlignment: "MIDDLE", textFormat: tf, wrapStrategy: c.wrap ? "WRAP" : "CLIP" };
+  const fmt: Record<string, unknown> = { verticalAlignment: "MIDDLE", textFormat: tf, wrapStrategy: c.wrap ? "WRAP" : c.overflow ? "OVERFLOW_CELL" : "CLIP" };
   if (c.bg) fmt.backgroundColor = rgb(c.bg);
   if (c.halign) fmt.horizontalAlignment = c.halign;
   d.userEnteredFormat = fmt;
@@ -84,6 +89,11 @@ export interface TabGrid {
   choiceCols: [number, string[]][]; // column, its options (a dropdown in the Sheet)
   editableCols: number[];
   dataRowHeight: number;
+  rowHeights?: number[]; // per data row, when they differ (the REVIEW tab's song headings are short)
+  plainRows?: number[]; // data rows with no tick boxes or dropdowns (the REVIEW tab's song headings)
+  noChoiceRows?: number[]; // data rows with tick boxes but no dropdowns (the REVIEW tab's replies: their song and department are their comment's)
+  choicesBelow?: boolean; // the dropdowns go on down the empty rows below the data too, for rows typed there (REVIEW's new comments)
+  greyWhenTicked?: number; // a tick column: a ticked row turns grey and struck through, straight away in the Sheet (REVIEW's RESOLVED)
 }
 
 /** Runs of equal keys as [start, end, key], never crossing `splitAt`. */
@@ -287,6 +297,44 @@ export function protectionUpdateRequests(g: TabGrid, sheetId: number, ranges: Sh
   return [...ranges.map((p) => ({ deleteProtectedRange: { protectedRangeId: p.protectedRangeId } })), ...protectionRequests(g, sheetId, editors)];
 }
 
+/** A merge as the Sheets API lists it. */
+export interface SheetMerge { startRowIndex?: number; endRowIndex?: number; startColumnIndex?: number; endColumnIndex?: number }
+
+/** Merge the header again when its merges aren't the grid's (the layout changed: REVIEW's counter took a banner cell, say). */
+export function mergeUpdateRequests(g: TabGrid, sheetId: number, current: SheetMerge[]): object[] {
+  const key = (m: [number, number, number, number]) => m.join(",");
+  const have = current.filter((m) => (m.startRowIndex ?? 0) < HEADER_ROWS)
+    .map((m) => key([m.startRowIndex ?? 0, m.endRowIndex ?? 0, m.startColumnIndex ?? 0, m.endColumnIndex ?? 0])).sort().join("|");
+  const want = g.merges.filter(([r0, r1, c0, c1]) => (r1 - r0) * (c1 - c0) > 1); // Sheets doesn't list a one-cell merge
+  if (have === want.map(key).sort().join("|")) return [];
+  return [{ unmergeCells: { range: range(sheetId, 0, HEADER_ROWS) } }, ...g.merges.map(([r0, r1, c0, c1]) => ({ mergeCells: { range: range(sheetId, r0, r1, c0, c1), mergeType: "MERGE_ALL" } }))];
+}
+
+/** A conditional format as the Sheets API lists it. */
+export interface SheetFormatRule { booleanRule?: { condition?: { values?: { userEnteredValue?: string }[] } } }
+
+const TICKED_RULE = "PMSS"; // in the rule's formula, so it's told apart from rules people added themselves
+
+/**
+ * The grey-when-ticked rule, set afresh on every push (it covers the rows there are now). Only the app's own rule is
+ * taken out: conditional formats people added stay.
+ */
+export function formatRuleRequests(g: TabGrid, sheetId: number, current: SheetFormatRule[]): object[] {
+  const reqs: object[] = current.flatMap((r, i) => (r.booleanRule?.condition?.values?.[0]?.userEnteredValue?.includes(TICKED_RULE) ? [i] : []))
+    .reverse().map((index) => ({ deleteConditionalFormatRule: { sheetId, index } }));
+  if (g.greyWhenTicked === undefined) return reqs;
+  const cell = `$${colLetter(g.greyWhenTicked)}${HEADER_ROWS + 1}`;
+  reqs.push({ addConditionalFormatRule: { index: 0, rule: {
+    ranges: [range(sheetId, HEADER_ROWS, undefined, 1, g.colIds.length)], // to the bottom of the tab, however many rows it has
+    booleanRule: { condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: `=AND(${cell}=TRUE,N("${TICKED_RULE}")=0)` }] },
+                   format: { textFormat: { foregroundColor: rgb(GREY), strikethrough: true } } },
+  } } });
+  return reqs;
+}
+
+/** "A", "B" … "AA": a column's letter. */
+export const colLetter = (i: number): string => (i >= 26 ? colLetter(Math.floor(i / 26) - 1) : "") + String.fromCharCode(65 + (i % 26));
+
 /** Merges, widths and hidden id row/column. Sent for a new tab and again when the columns change. */
 function layoutRequests(g: TabGrid, sheetId: number): object[] {
   const reqs: object[] = g.merges.map(([r0, r1, c0, c1]) => ({ mergeCells: { range: range(sheetId, r0, r1, c0, c1), mergeType: "MERGE_ALL" } }));
@@ -320,12 +368,32 @@ export function contentRequests(g: TabGrid, sheetId: number): object[] {
   // Rules stay on the cells they were set on, so after a column is added, removed or moved an old tick or
   // dropdown rule sits on whatever column took its place: clear them all, then set the current ones.
   reqs.push({ setDataValidation: { range: range(sheetId, HEADER_ROWS) } });
-  for (const ci of g.tickCols) reqs.push({ setDataValidation: { range: range(sheetId, HEADER_ROWS, end, ci, ci + 1), rule: { condition: { type: "BOOLEAN" } } } });
-  for (const [ci, options] of g.choiceCols) {
-    const rule = options.length ? { condition: { type: "ONE_OF_LIST", values: options.map((o) => ({ userEnteredValue: o })) }, strict: true, showCustomUi: true } : undefined;
-    reqs.push({ setDataValidation: { range: range(sheetId, HEADER_ROWS, end, ci, ci + 1), ...(rule && { rule }) } });
+  // Rules go on the runs of data rows between the rows that skip them. A run that's open-ended goes to the bottom of the tab
+  // (however many rows it has: a range past the last row would fail the whole push).
+  const spans = (skip: Set<number>, below: boolean) => {
+    const out: [number, number | undefined][] = [];
+    for (let i = 0, start = 0; i <= g.dataRows.length; i++) {
+      if (i < g.dataRows.length && !skip.has(i)) continue;
+      if (i === g.dataRows.length && below) out.push([HEADER_ROWS + start, undefined]);
+      else if (i > start) out.push([HEADER_ROWS + start, HEADER_ROWS + i]);
+      start = i + 1;
+    }
+    return out;
+  };
+  const plain = new Set(g.plainRows ?? []);
+  for (const [r0, r1] of spans(plain, false)) {
+    for (const ci of g.tickCols) reqs.push({ setDataValidation: { range: range(sheetId, r0, r1, ci, ci + 1), rule: { condition: { type: "BOOLEAN" } } } });
   }
-  if (g.dataRows.length) reqs.push(dim(sheetId, "ROWS", HEADER_ROWS, end, { pixelSize: g.dataRowHeight }, "pixelSize"));
+  for (const [r0, r1] of spans(new Set([...plain, ...(g.noChoiceRows ?? [])]), Boolean(g.choicesBelow))) {
+    for (const [ci, options] of g.choiceCols) {
+      if (!options.length) continue;
+      const rule = { condition: { type: "ONE_OF_LIST", values: options.map((o) => ({ userEnteredValue: o })) }, strict: true, showCustomUi: true };
+      reqs.push({ setDataValidation: { range: range(sheetId, r0, r1, ci, ci + 1), rule } });
+    }
+  }
+  if (g.rowHeights) {
+    runs(g.rowHeights, HEADER_ROWS).forEach(([r0, r1, px]) => reqs.push(dim(sheetId, "ROWS", r0, r1, { pixelSize: px }, "pixelSize")));
+  } else if (g.dataRows.length) reqs.push(dim(sheetId, "ROWS", HEADER_ROWS, end, { pixelSize: g.dataRowHeight }, "pixelSize"));
   return reqs;
 }
 
@@ -376,6 +444,9 @@ export function snapshot(show: Show): Record<string, string | boolean> {
   for (const rid of [...show.set_order, ...show.archive]) {
     for (const col of show.columns) out[`show|${rid}|${col.id}`] = sheetValue(show, col, show.songs[rid]);
   }
+  for (const row of reviewRows(show)) {
+    for (const col of REVIEW_EDITABLE) out[`review|${row.id}|${col}`] = row.values[col];
+  }
   return out;
 }
 
@@ -411,4 +482,296 @@ export function diffShowTab(show: Show, published: Record<string, string | boole
     }
   }
   return { edits, conflicts };
+}
+
+// --- the REVIEW tab ---------------------------------------------------------------------
+// One row per comment, each followed by its replies: open comments under a heading row per song, in running order then
+// timecode, and resolved ones under RESOLVED at the bottom (a comment resolved in the Sheet greys out at once and moves
+// down on the next sync). The banner counts the open comments live. Collaborators can edit the ✎ cells: a comment's song, TC, department, text or author; tick RESOLVED (on
+// any row of the thread); type in REPLY to reply (the app moves it onto its own row); or add a row of their own
+// (song, TC, comment) for a new comment, which the app gives an id.
+
+type ReviewCol = "frame" | "song" | "tc" | "dept" | "comment" | "from" | "at" | "reply" | "done" | "clip";
+const REVIEW_COLS: { id: ReviewCol; label: string; width: number; editable?: boolean }[] = [
+  { id: "frame", label: "FRAME", width: 150 },
+  { id: "song", label: "SONG", width: 160, editable: true },
+  { id: "tc", label: "TC", width: 120, editable: true },
+  { id: "dept", label: "DEPT", width: 100, editable: true },
+  { id: "comment", label: "COMMENT", width: 340, editable: true },
+  { id: "from", label: "FROM", width: 120, editable: true },
+  { id: "at", label: "WRITTEN", width: 110 },
+  { id: "reply", label: "REPLY", width: 220, editable: true },
+  { id: "done", label: "RESOLVED", width: 84, editable: true },
+  { id: "clip", label: "CLIP", width: 160 },
+];
+/** The ✎ cells that are compared with what was pushed (REPLY is always pushed empty, so anything in it is new). */
+const REVIEW_EDITABLE = ["song", "tc", "dept", "comment", "from", "done"] as const;
+type ReviewValue = (typeof REVIEW_EDITABLE)[number];
+const REPLY_MARK = "↳ reply";
+export const REPLY_FROM = "Google Sheet"; // who a Sheet comment or reply is from when no one can be named
+
+interface ReviewRow {
+  id: string; // the comment's id, or "<comment id>/<reply id>"
+  comment: ReviewComment;
+  reply?: ReviewComment["replies"][number];
+  values: Record<ReviewValue, string | boolean>;
+}
+
+const songLabel = (show: Show, songId: string | null) => {
+  const song = songId ? show.songs[songId] : undefined;
+  return song ? `${songNumber(show, song.id)} ${song.fields.name ?? ""}`.trim() : "";
+};
+const reviewTc = (c: ReviewComment) => (c.tc ? (c.tc_out ? `${c.tc} → ${c.tc_out}` : c.tc) : "");
+const mmss = (s: number) => `${Math.floor(Math.max(0, s) / 60)}:${String(Math.floor(Math.max(0, s) % 60)).padStart(2, "0")}`;
+const written = (iso: string) => new Date(iso).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+
+/** The REVIEW tab's rows in order, with the ✎ values each shows. */
+export function reviewRows(show: Show): ReviewRow[] {
+  const order = new Map([...show.set_order, ...show.archive].map((id, i) => [id, i]));
+  const place = (c: ReviewComment) => order.get(c.song_id ?? "") ?? Infinity;
+  const comments = [...(show.reviews ?? [])]
+    .sort((a, b) => Number(a.done) - Number(b.done) || place(a) - place(b) || Number(!a.record_id) - Number(!b.record_id) || a.t - b.t || a.at.localeCompare(b.at));
+  return comments.flatMap((c) => {
+    const values = { song: songLabel(show, c.song_id), tc: reviewTc(c), dept: c.dept ? deptName(c.dept, show) : "", comment: c.text, from: c.from, done: c.done };
+    return [
+      { id: c.id, comment: c, values },
+      ...c.replies.map((r) => ({ id: `${c.id}/${r.id}`, comment: c, reply: r, values: { song: REPLY_MARK, tc: "", dept: "", comment: r.text, from: r.from, done: c.done } })),
+    ];
+  });
+}
+
+/** The REVIEW tab. `imageUrls` maps stills (bundle-relative) to =IMAGE() URLs; `clipUrls` clip paths to where they play. */
+export function reviewTab(show: Show, imageUrls: Record<string, string>, clipUrls: Record<string, string> = {}): TabGrid {
+  const colIds = ["__id", ...REVIEW_COLS.map((c) => c.id)];
+  const n = colIds.length;
+  const frozen = colIds.indexOf("song") + 1;
+  const banner: Cell[] = Array.from({ length: n }, () => ({ bg: BLACK }));
+  banner[1] = { value: "PIXELMAPPERS", bg: BLACK, fg: WHITE, bold: true, font: FONT_HEAD, size: 16 };
+  banner[frozen] = { value: `${show.name}  |  ${REVIEW_TAB}`, bg: BLACK, fg: WHITE, bold: true, font: FONT_HEAD, size: 18 };
+  const band = DEPT_COLOURS.VIDEO;
+  // The open-comment count, worked out by the Sheet so ticking RESOLVED there changes it at once: rows with a comment
+  // that aren't ticked or replies (heading rows have no comment).
+  const counterAt = n - 2;
+  const col = (id: ReviewCol) => colLetter(colIds.indexOf(id));
+  const rowsFrom = (id: ReviewCol) => `${col(id)}${HEADER_ROWS + 1}:${col(id)}`;
+  banner[counterAt] = {
+    formula: `=SUMPRODUCT((LEN(${rowsFrom("comment")})>0)*(${rowsFrom("done")}<>TRUE)*(${rowsFrom("song")}<>"${REPLY_MARK}"))&" OPEN COMMENTS"`,
+    bg: band, fg: WHITE, bold: true, font: FONT_HEAD, size: 14, halign: "CENTER",
+  };
+  const deptRow: Cell[] = [{ bg: BLACK }, ...REVIEW_COLS.map(() => ({ bg: band }))];
+  deptRow[1] = { value: "COMMENTS ON VIDEOS", bg: band, fg: WHITE, bold: true, font: FONT_HEAD, size: 10, halign: "CENTER" };
+  deptRow[frozen] = { value: "", bg: band };
+  const labelRow: Cell[] = [{ bg: LABEL_BG }, ...REVIEW_COLS.map((c): Cell => c.editable
+    ? { value: `✎ ${c.label}`, bg: EDITABLE_LABEL_BG, fg: BLACK, bold: true, font: FONT_HEAD, size: 9, wrap: true, halign: "CENTER" }
+    : { value: c.label, bg: LABEL_BG, fg: WHITE, bold: true, font: FONT_HEAD, size: 9, wrap: true, halign: "CENTER" })];
+
+  const rows = reviewRows(show);
+  const hasStill = (row: ReviewRow) => Boolean(!row.reply && row.comment.still && imageUrls[row.comment.still]);
+  const rowIds: string[] = [];
+  const dataRows: Cell[][] = [];
+  const rowHeights: number[] = [];
+  const plainRows: number[] = [];
+  const replyRows: number[] = [];
+  const heading = (id: string, title: string, note: string, bg: string) => {
+    const cells: Cell[] = colIds.map(() => ({ bg }));
+    cells[0] = { ...idCell(id), bg };
+    cells[1] = { value: title, bg, fg: WHITE, bold: true, font: FONT_HEAD, size: 11, overflow: true };
+    cells[colIds.indexOf("tc")] = { value: note, bg, fg: WHITE, font: FONT_HEAD, size: 9, overflow: true };
+    plainRows.push(dataRows.length);
+    rowIds.push(id); dataRows.push(cells); rowHeights.push(30);
+  };
+  let group: string | undefined;
+  rows.forEach((row) => {
+    const c = row.comment;
+    const g = c.done ? "resolved" : `song|${c.song_id ?? ""}`;
+    if (!row.reply && g !== group) {
+      group = g;
+      const inGroup = rows.filter((r) => !r.reply && (c.done ? r.comment.done : !r.comment.done && r.comment.song_id === c.song_id)).length;
+      const count = `${inGroup} ${c.done ? "resolved" : "open"}`;
+      if (c.done) heading(g, "RESOLVED", count, GREY);
+      else heading(g, songLabel(show, c.song_id).toUpperCase() || "NO SONG", count, LABEL_BG);
+    }
+    if (row.reply) replyRows.push(dataRows.length);
+    rowIds.push(row.id);
+    dataRows.push(reviewCells(row));
+    rowHeights.push(hasStill(row) ? 90 : row.reply ? 36 : 48);
+  });
+  function reviewCells(row: ReviewRow): Cell[] {
+    const c = row.comment;
+    const fg = c.done ? GREY : undefined;
+    const ed = (cell: Cell): Cell => ({ bg: EDITABLE_CELL_BG, fg, ...cell });
+    const clip = !row.reply && c.record_id ? (show.songs[c.song_id ?? ""]?.clips ?? []).find((cl) => cl.record_id === c.record_id && c.t >= cl.in && c.t <= cl.out) : undefined;
+    const still = !row.reply && c.still ? imageUrls[c.still] : undefined;
+    const cells: Record<ReviewCol, Cell> = {
+      frame: still ? { formula: `=IMAGE("${still}")` } : { value: "" },
+      song: row.reply ? ed({ value: REPLY_MARK, fg: GREY, size: 9 }) : ed({ value: row.values.song, bold: true, wrap: true }),
+      tc: ed({ value: row.values.tc, font: FONT_MONO, size: 9, halign: "CENTER", wrap: true }),
+      dept: ed({ value: row.values.dept, halign: "CENTER" }),
+      comment: ed({ value: row.values.comment, wrap: true, size: row.reply ? 9 : undefined }),
+      from: ed({ value: row.values.from, size: 9 }),
+      at: { value: written((row.reply ?? c).at), fg: GREY, size: 9 },
+      reply: ed({ value: "" }),
+      done: ed({ value: c.done, halign: "CENTER" }),
+      clip: clip ? { links: [{ text: `▶ ${clipLabel(show, clip)} @ ${mmss(c.t - clip.in)}`, url: clipUrls[clip.path] }], size: 9, wrap: true } : { value: "" },
+    };
+    return [idCell(row.id), ...REVIEW_COLS.map((col) => cells[col.id])];
+  }
+  const depts = deptList(show).filter((d) => !["CORE", "STATUS", "COLOUR"].includes(d)).map((d) => deptName(d, show));
+  return {
+    title: REVIEW_TAB,
+    tabColour: band,
+    colIds,
+    headerRows: [colIds.map(idCell), banner, deptRow, labelRow],
+    rowIds,
+    dataRows,
+    colWidths: [60, ...REVIEW_COLS.map((c) => c.width)],
+    frozenCols: frozen,
+    // Sheets won't merge across the frozen columns' edge
+    merges: [[1, 2, 1, frozen], [1, 2, frozen, counterAt], [1, 2, counterAt, n], [2, 3, 1, frozen], [2, 3, frozen, n]],
+    tickCols: [colIds.indexOf("done")],
+    // SONG picks from the songs, as "07 Name" (archived ones by name), as songByLabel reads them back
+    choiceCols: [[colIds.indexOf("song"), [...show.set_order, ...show.archive].map((id) => songLabel(show, id)).filter(Boolean)], [colIds.indexOf("dept"), depts]],
+    editableCols: REVIEW_COLS.flatMap((c, i) => (c.editable ? [i + 1] : [])),
+    dataRowHeight: 48,
+    rowHeights,
+    plainRows,
+    noChoiceRows: replyRows,
+    choicesBelow: true,
+    greyWhenTicked: colIds.indexOf("done"),
+  };
+}
+
+export type ReviewEdit =
+  | { kind: "set"; id: string; col: ReviewValue; value: string | boolean } // id: a comment's, or "<comment>/<reply>"
+  | { kind: "reply"; id: string; text: string; from: string }
+  | { kind: "new"; row: number; song: string; tc: string; dept: string; comment: string; from: string }; // row: index in the values read
+
+/**
+ * What collaborators changed on the REVIEW tab, compared three ways like the show tab: a ✎ cell the Sheet changed
+ * and the app didn't is taken; both changed, the app wins. Text in REPLY is a new reply; a row with no id and a comment
+ * is a new comment (for the song whose heading it's under, if its SONG is left blank).
+ */
+export function diffReviewTab(show: Show, published: Record<string, string | boolean>, values: unknown[][]): ReviewEdit[] {
+  const edits: ReviewEdit[] = [];
+  if (!values.length) return edits;
+  const colPos = new Map(values[0].map((cid, i) => [String(cid), i]));
+  const cell = (row: unknown[], col: string) => { const p = colPos.get(col); return p === undefined ? "" : row[p] ?? ""; };
+  const app = new Map(reviewRows(show).map((r) => [r.id, r]));
+  let under = ""; // the song heading the rows are under
+  values.forEach((row, i) => {
+    if (i < HEADER_ROWS) return;
+    const id = String(normalize(row[0]));
+    if (id === "resolved" || id.startsWith("song|")) { under = id.startsWith("song|") ? songLabel(show, id.slice(5) || null) : ""; return; }
+    if (!id) {
+      const comment = String(normalize(cell(row, "comment")));
+      if (comment) edits.push({ kind: "new", row: i, comment, song: String(normalize(cell(row, "song"))) || under, tc: String(normalize(cell(row, "tc"))),
+                                dept: String(normalize(cell(row, "dept"))), from: String(normalize(cell(row, "from"))) });
+      return;
+    }
+    const mine = app.get(id);
+    if (!mine) return; // deleted in the app: the next push takes the row out
+    for (const col of REVIEW_EDITABLE) {
+      if (!colPos.has(col)) continue;
+      const sheet = col === "done" ? asBool(cell(row, col)) : normalize(cell(row, col));
+      const pushed = published[`review|${id}|${col}`];
+      if (pushed === undefined || sheet === pushed) continue;
+      if (mine.values[col] === pushed) edits.push({ kind: "set", id, col, value: sheet });
+    }
+    const reply = String(normalize(cell(row, "reply")));
+    if (reply) {
+      const named = reply.match(/^([^:\n]{1,40}):\s+([\s\S]+)$/); // "Sam: sounds good"
+      edits.push({ kind: "reply", id: mine.comment.id, text: named ? named[2] : reply, from: named ? named[1].trim() : REPLY_FROM });
+    }
+  });
+  return edits;
+}
+
+/** Re-place a comment at a TC typed in the Sheet ("04:31:23:10", or "A → B" for a range). */
+function retime(show: Show, c: ReviewComment, text: string) {
+  const [a, b] = text.split(/→|->/).map((x) => parseTc(x.trim()));
+  if (!a) return;
+  const at = placeTc(show, c.song_id, a);
+  const record = (show.records ?? []).find((r) => r.id === at?.record_id);
+  delete c.t_out; delete c.tc_out;
+  if (at) {
+    Object.assign(c, { record_id: at.record_id, t: at.t, tc: recordTc(record, at.t) ?? a });
+    const end = b ? placeTc(show, c.song_id, b) : null;
+    if (end && end.record_id === at.record_id && end.t > at.t) Object.assign(c, { t_out: end.t, tc_out: recordTc(record, end.t) ?? b });
+  } else {
+    delete c.record_id;
+    Object.assign(c, { t: 0, tc: a });
+  }
+}
+
+const deptFrom = (show: Show, name: string) => deptList(show).find((d) => deptName(d, show).toLowerCase() === name.toLowerCase() || d === name.toUpperCase());
+
+/** A version of the Sheet in its Drive revision history: when, and who made it. */
+export interface SheetRevision {
+  modifiedTime: string;
+  lastModifyingUser?: { displayName?: string; emailAddress?: string; me?: boolean };
+}
+
+export interface SheetAuthor { name: string; email?: string }
+
+/**
+ * Who typed what a pull found new in the Sheet (a comment or reply with no name), from who edited the Sheet since the
+ * pull before it: Google doesn't say who edited a cell. The one person besides you; else you, when you're the only one
+ * (rows the app hasn't seen yet are never its own); with several, the one who doesn't use the app (whose only way to
+ * edit is the Sheet). Null when it can't tell.
+ */
+export function sheetAuthor(revisions: SheetRevision[], since: number, appEditors: string[]): SheetAuthor | null {
+  const people = new Map<string, SheetAuthor & { me: boolean }>();
+  for (const r of revisions) {
+    const u = r.lastModifyingUser;
+    const key = (u?.emailAddress ?? u?.displayName ?? "").toLowerCase();
+    if (!u || !key || !(Date.parse(r.modifiedTime) > since)) continue;
+    people.set(key, { name: u.displayName || u.emailAddress!, ...(u.emailAddress && { email: u.emailAddress }), me: Boolean(u.me) });
+  }
+  const named = ({ name, email }: SheetAuthor) => ({ name, ...(email && { email }) });
+  const all = [...people.values()];
+  const others = all.filter((p) => !p.me);
+  if (others.length === 1) return named(others[0]);
+  if (!others.length) return all.length ? named(all[0]) : null;
+  const app = new Set(appEditors.map((e) => e.toLowerCase()));
+  const outside = others.filter((p) => !p.email || !app.has(p.email.toLowerCase()));
+  return outside.length === 1 ? named(outside[0]) : null;
+}
+
+/**
+ * Apply what diffReviewTab found. `ids` gives each new comment its id, by the row it was typed on (already written back).
+ * `author` (from sheetAuthor) is who a new comment or reply is from when it doesn't say.
+ */
+export function applyReviewEdits(show: Show, edits: ReviewEdit[], ids: Map<number, string>, author: SheetAuthor | null = null) {
+  const unnamed = author ? { from: author.name, ...(author.email && { email: author.email }) } : { from: REPLY_FROM };
+  for (const e of edits) {
+    if (e.kind === "new") {
+      const songId = songByLabel(show, e.song);
+      const tc = parseTc(e.tc);
+      const at = tc ? placeTc(show, songId, tc) : null;
+      const dept = deptFrom(show, e.dept);
+      addReview(show, {
+        id: ids.get(e.row), song_id: songId, t: at?.t ?? 0, text: e.comment, ...(e.from ? { from: e.from } : unnamed), source: "sheet",
+        ...(at && { record_id: at.record_id }), ...(tc && { tc }), ...(dept && { dept }),
+      });
+      continue;
+    }
+    const [cid, rid] = e.id.split("/");
+    const c = findReview(show, cid);
+    if (!c) continue;
+    if (e.kind === "reply") { replyToReview(show, c.id, e.from === REPLY_FROM ? { ...unnamed, text: e.text } : { from: e.from, text: e.text }); continue; }
+    if (e.col === "done") { setReviewDone(show, c.id, e.value === true); continue; }
+    const value = String(e.value);
+    const reply = rid ? c.replies.find((r) => r.id === rid) : undefined;
+    if (rid) {
+      if (!reply) continue;
+      if (e.col === "comment" && value) reply.text = value;
+      else if (e.col === "from") reply.from = value || REPLY_FROM;
+      continue; // a reply row's song, TC and department are its comment's
+    }
+    if (e.col === "comment" && value) c.text = value;
+    else if (e.col === "from") c.from = value || REPLY_FROM;
+    else if (e.col === "dept") { const d = deptFrom(show, value); if (d) c.dept = d; else if (!value) delete c.dept; }
+    else if (e.col === "song") { const sid = songByLabel(show, value); if (sid) c.song_id = sid; }
+    else if (e.col === "tc" && !c.image) retime(show, c, value); // an image comment has no time
+  }
 }

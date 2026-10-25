@@ -143,6 +143,8 @@ export interface Backend {
   fileStates(paths: string[]): Promise<Record<string, FileState>>;
   /** Make files online only; returns a note for each one that couldn't be. */
   makeOnlineOnly(paths: string[]): Promise<string[]>;
+  /** Make files online only that haven't been opened or changed on this Mac for `days` days; returns how many. */
+  makeUnusedOnlineOnly(paths: string[], days: number): Promise<number>;
   makeAvailable(paths: string[]): Promise<void>;
 
   // Google APIs as the signed-in user (see google.rs). Desktop only.
@@ -371,6 +373,9 @@ const desktop: Backend = {
   async makeOnlineOnly(paths) {
     return (await invoke("make_online_only", { paths })) as string[];
   },
+  async makeUnusedOnlineOnly(paths, days) {
+    return (await invoke("make_unused_online_only", { paths, days })) as number;
+  },
   async makeAvailable(paths) {
     await invoke("make_available", { paths });
   },
@@ -580,6 +585,9 @@ const browser: Backend = {
   async makeOnlineOnly(paths) {
     paths.forEach((p) => previewOnline.add(p));
     return [];
+  },
+  async makeUnusedOnlineOnly() {
+    return 0; // the preview doesn't know when files were last opened
   },
   async makeAvailable(paths) {
     paths.forEach((p) => previewOnline.delete(p));

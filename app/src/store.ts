@@ -4,7 +4,7 @@ import { create } from "zustand";
 import type { GoogleUser, ThumbCandidate } from "./backend";
 import type { Show } from "./model/types";
 
-export type View = "songs" | "media" | "share" | "sheet" | "import" | "settings" | "prefs"; // settings = this show; prefs = the app
+export type View = "songs" | "media" | "comments" | "share" | "sheet" | "import" | "settings" | "prefs"; // settings = this show; prefs = the app
 export type SaveState = "saved" | "saving" | "unsaved" | "error";
 export type MediaTab = "add" | "inbox";
 export type SongsLayout = "grid" | "list" | "present"; // present: one song at a time, full size

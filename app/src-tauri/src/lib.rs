@@ -524,7 +524,7 @@ pub fn run() {
             ltc_scan, clip_cut, frame_grab, image_crop, media_save,
             shows::drive_shows_folder, shows::drive_status, shows::drive_open_app, tools::tools_status, tools::tools_install, tools::tools_install_in_terminal, shows::ensure_folder, shows::shows_list, shows::shows_summaries, shows::bundle_move,
             shows::shows_scan, shows::drive_item_id, shows::presence_beat, shows::presence_leave, shows::bundle_trash, shows::bundle_trash_files, shows::bundle_rename,
-            files::file_states, files::make_online_only, files::make_available, thumbs::thumb_candidates, stream::media_server,
+            files::file_states, files::make_online_only, files::make_unused_online_only, files::make_available, thumbs::thumb_candidates, stream::media_server,
             google::google_client_configured, google::google_set_client, google::google_sign_in,
             google::google_current_user, google::google_sign_out, google::google_api, google::google_upload
         ])

@@ -4,6 +4,7 @@
 import { backend, type ShowSummary } from "./backend";
 import { bundleName, clipName, fileName, migrate, newShow, orphanRecordIds, recordMedia, removeImage, removeRecord, removeRecordStills } from "./model/ops";
 import type { Show } from "./model/types";
+import { sweepShow, sweepShowsDaily } from "./storage";
 import { useStore } from "./store";
 
 const CACHE_KEY = "pm.showsCache";
@@ -71,6 +72,7 @@ export async function scanShows(email: string | null, onFound: (s: ShowSummary) 
   const hints = [...new Set(cachedShows().map((s) => s.path.split("/").slice(0, -1).join("/")))];
   const shows = await backend.scanShows(email, hints, onFound);
   write(CACHE_KEY, shows);
+  sweepShowsDaily(shows.map((s) => s.path)).catch(() => {});
   return shows;
 }
 
@@ -106,6 +108,7 @@ export async function openShow(path: string) {
   load(show, path, readOnly);
   if (leftovers.length) backend.trashFiles(path, leftovers).catch(() => {});
   if (!readOnly) binUnusedMedia(path, show).catch(() => {});
+  sweepShow(path, show).catch(() => {});
 }
 
 const UNUSED_AFTER_MS = 60 * 60 * 1000; // another Mac's new clip may not be in the show file here yet

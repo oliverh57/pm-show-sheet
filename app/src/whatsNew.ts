@@ -7,6 +7,19 @@ export interface ReleaseNotes {
 }
 
 export const WHATS_NEW: Record<string, ReleaseNotes> = {
+  "0.3.0": {
+    summary: "Comments on videos and images, synced with a REVIEW tab in the Google Sheet, and a way to free up space on this Mac.",
+    items: [
+      "Comment on clips, records and images, Frame.io style: timecoded markers under the video, ranges (I then O), drawings on the frame, replies and resolve. Press C to write one.",
+      "Clips and records play full screen in a viewer, with their comments beside it.",
+      "A Comments page lists every comment by song, each song has a Comments tab, and song cards show how many are open.",
+      "The Google Sheet has a REVIEW tab: collaborators can reply, resolve, edit or add comments there, and they come back into the app.",
+      "Resolved comments are deleted after 3 days; change that, or keep them, in Show settings.",
+      "Present has a Comments tab for the image or clip on screen.",
+      "Storage in App settings: make records, audio and clips you haven't opened for a while online only, or every show's files at once.",
+      "Tidier Show and App settings, with a Check for updates button.",
+    ],
+  },
   "0.2.0": {
     summary: "A redesigned app, with shows kept in Google Drive and synced to a live Google Sheet and Slides deck.",
     items: [

@@ -51,6 +51,10 @@ const PATHS: Record<string, string> = {
   sun: "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41",
   moon: "M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z",
   monitor: "M4 3h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM8 21h8M12 17v4",
+  comment: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2zM8 9h8M8 13h5",
+  range: "M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4",
+  volume: "M11 5 6 9H2v6h4l5 4zM15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14",
+  mute: "M11 5 6 9H2v6h4l5 4zM22 9l-6 6M16 9l6 6",
 };
 
 export type IconName = keyof typeof PATHS;

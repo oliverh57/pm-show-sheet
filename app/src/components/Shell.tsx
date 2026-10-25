@@ -10,6 +10,7 @@ import { Avatar, GoogleDriveMark, Icon, type IconName } from "./icons";
 const NAV: { view: View; label: string; icon: IconName }[] = [
   { view: "songs", label: "Songs", icon: "music" },
   { view: "media", label: "Media", icon: "film" },
+  { view: "comments", label: "Comments", icon: "comment" },
 ];
 const COLLAB_NAV: { view: View; label: string; icon: IconName }[] = [
   { view: "share", label: "Share & publish", icon: "share" },
@@ -44,11 +45,13 @@ export function Sidebar({ onClose }: { onClose: () => void }) {
   const canRedo = useStore((s) => s.future.length > 0);
   const { setView, undo, redo } = useStore.getState();
   const cover = showCover(show);
+  const openComments = (show.reviews ?? []).filter((c) => !c.done).length;
 
   const item = ({ view: v, label, icon }: (typeof NAV)[number]) => (
     <button key={v} className={view === v || (v === "media" && view === "import") ? "on" : ""} onClick={() => setView(v)}>
       <Icon name={icon} /> {label}
       {v === "songs" && <span className="count">{show.set_order.length}</span>}
+      {v === "comments" && openComments > 0 && <span className="count open" title={`${openComments} open`}>{openComments}</span>}
     </button>
   );
 

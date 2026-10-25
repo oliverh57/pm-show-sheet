@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { backend } from "../backend";
 import { syncNow, useSyncStatus } from "../google/sync";
 import { deleteOpenShow, describeLocation, openInDrive, renameOpenShow, timeAgo } from "../library";
-import { applySheetValue, clipName, showCover, showImages } from "../model/ops";
+import { applySheetValue, clipName, keepResolvedDays, showCover, showImages } from "../model/ops";
 import { DraftInput } from "./fields";
 import { useStore } from "../store";
 import { chooseAndMove } from "./Shell";
@@ -115,45 +115,81 @@ export function SettingsPage() {
   const gs = show.google ?? {};
   const set = (fn: (s: typeof show) => void) => update(fn);
   return (
-    <div className="page">
+    <div className="page narrow">
       <div className="page-head"><div><h1>Show settings</h1><div className="sub">{show.name}</div></div></div>
-      <div className="panel">
+      <section className="sgroup">
         <div className="label">Show</div>
-        <div className="frow"><span>Name</span><DraftInput value={show.name} onCommit={(v) => { renameOpenShow(v); }} /></div>
-        <div className="frow"><span>Venue or tour</span><DraftInput value={show.venue ?? ""} onCommit={(v) => set((s) => { s.venue = v.trim() || undefined; })} /></div>
-        <div className="frow"><span>Date</span><DraftInput value={show.date ?? ""} onCommit={(v) => set((s) => { s.date = v.trim() || undefined; })} /></div>
-        <div className="frow" style={{ marginBottom: 0 }}><span>Main image</span><CoverRow onChoose={() => setPickingCover(true)} /></div>
-      </div>
-      <div className="panel">
-        <div className="label">Saved in Google Drive</div>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 500 }}>{describeLocation(bundle)}</div><div className="muted small" style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{bundle.split("/").pop()}</div></div>
-          <button onClick={() => openInDrive(bundle)}><GoogleDriveMark className="ico sm" /> Open in Drive</button>
-          <button onClick={() => chooseAndMove()}><Icon name="folder" size="sm" /> Move…</button>
+        <div className="panel slist">
+          <SRow title="Name"><DraftInput value={show.name} onCommit={(v) => { renameOpenShow(v); }} /></SRow>
+          <SRow title="Venue or tour"><DraftInput value={show.venue ?? ""} placeholder="e.g. Alexandra Palace" onCommit={(v) => set((s) => { s.venue = v.trim() || undefined; })} /></SRow>
+          <SRow title="Date"><DraftInput value={show.date ?? ""} placeholder="e.g. 14 March 2026" onCommit={(v) => set((s) => { s.date = v.trim() || undefined; })} /></SRow>
+          <CoverRow onChoose={() => setPickingCover(true)} />
         </div>
-        {readOnly && <p className="error" style={{ marginBottom: 0 }}>{readOnly}</p>}
-      </div>
-      <div className="panel">
-        <div className="label">Google Sheet and deck</div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button disabled={!gs.sheet_url} onClick={() => gs.sheet_url && backend.openWeb(gs.sheet_url)}><Icon name="sheet" size="sm" /> Open Sheet</button>
-          <button disabled={!gs.slides_url} onClick={() => gs.slides_url && backend.openWeb(gs.slides_url)}><Icon name="slides" size="sm" /> Open deck</button>
+      </section>
+      <section className="sgroup">
+        <div className="label">Google Drive</div>
+        <div className="panel slist">
+          <SRow title={describeLocation(bundle)} hint={bundle.split("/").pop()} wrapTitle>
+            <button onClick={() => openInDrive(bundle)}><GoogleDriveMark className="ico sm" /> Open</button>
+            <button onClick={() => chooseAndMove()}><Icon name="folder" size="sm" /> Move…</button>
+          </SRow>
+          <SRow title="Google Sheet and deck" hint="They live in the show's folder and update by themselves">
+            <button disabled={!gs.sheet_url} onClick={() => gs.sheet_url && backend.openWeb(gs.sheet_url)}><Icon name="sheet" size="sm" /> Sheet</button>
+            <button disabled={!gs.slides_url} onClick={() => gs.slides_url && backend.openWeb(gs.slides_url)}><Icon name="slides" size="sm" /> Deck</button>
+          </SRow>
         </div>
-        <p className="muted small" style={{ marginBottom: 0 }}>They live in the show's folder and update by themselves.</p>
-      </div>
-      <div className="panel">
-        <div className="label">Fields</div>
-        <div className="setting-row"><span className="muted">The fields every song has, and their columns in the Sheet</span><button onClick={() => setColumnsOpen(true)}>Edit fields…</button></div>
-      </div>
-      <div className="panel danger-zone">
-        <div className="label">Delete</div>
-        <div className="setting-row">
-          <span className="muted">Delete this show and everything saved in it</span>
-          <button className="danger" disabled={Boolean(readOnly)} onClick={() => setDeleting(true)}><Icon name="trash" size="sm" /> Delete show…</button>
+        {readOnly && <p className="error sgroup-note">{readOnly}</p>}
+      </section>
+      <section className="sgroup">
+        <div className="label">Songs and comments</div>
+        <div className="panel slist">
+          <SRow title="Fields" hint="The fields every song has, and their columns in the Sheet">
+            <button onClick={() => setColumnsOpen(true)}>Edit fields…</button>
+          </SRow>
+          <SRow title="Keep resolved comments for" hint="Then they're deleted from the show and the Sheet's REVIEW tab. Open comments are never deleted.">
+            <KeepResolved />
+          </SRow>
         </div>
-      </div>
+      </section>
+      <section className="sgroup">
+        <div className="panel slist danger-zone">
+          <SRow title="Delete show" hint="Deletes this show and everything saved in it">
+            <button className="danger" disabled={Boolean(readOnly)} onClick={() => setDeleting(true)}><Icon name="trash" size="sm" /> Delete show…</button>
+          </SRow>
+        </div>
+      </section>
       {deleting && <DeleteShowDialog onClose={() => setDeleting(false)} />}
       {pickingCover && <CoverPicker onClose={() => setPickingCover(false)} />}
+    </div>
+  );
+}
+
+const KEEP_OPTIONS: [number | null, string][] = [[1, "1 day"], [3, "3 days"], [7, "1 week"], [14, "2 weeks"], [30, "30 days"], [null, "Forever"]];
+
+/** How long resolved comments are kept before they're deleted. */
+export function KeepResolved() {
+  const show = useStore((s) => s.show)!;
+  const readOnly = useStore((s) => s.readOnly);
+  const update = useStore((s) => s.update);
+  const days = keepResolvedDays(show);
+  const options = KEEP_OPTIONS.some(([d]) => d === days) ? KEEP_OPTIONS : [...KEEP_OPTIONS, [days, `${days} days`] as [number | null, string]];
+  return (
+    <select value={String(days)} disabled={Boolean(readOnly)} aria-label="Keep resolved comments for"
+            onChange={(e) => { const v = e.target.value === "null" ? null : Number(e.target.value); update((s) => { s.keep_resolved_days = v; }); }}>
+      {options.map(([d, label]) => <option key={String(d)} value={String(d)}>{label}</option>)}
+    </select>
+  );
+}
+
+/** One settings row: a title (and hint under it) on the left, its control on the right. */
+export function SRow({ title, hint, wrapTitle, children }: { title: string; hint?: string; wrapTitle?: boolean; children: React.ReactNode }) {
+  return (
+    <div className="srow">
+      <div className={`srow-text ${wrapTitle ? "wrap" : ""}`}>
+        <div className="t">{title}</div>
+        {hint && <div className="h">{hint}</div>}
+      </div>
+      <div className="srow-ctl">{children}</div>
     </div>
   );
 }
@@ -167,11 +203,10 @@ function CoverRow({ onChoose }: { onChoose: () => void }) {
   const picked = cover !== undefined && cover === show.cover;
   const count = showImages(show).length;
   return (
-    <div className="cover-row">
+    <SRow title="Main image" hint={!cover ? "None yet: add images to a song" : picked ? "Chosen from the show's media" : "The first song's image"}>
       <div className="cover-thumb">{cover ? <img src={backend.mediaUrl(bundle, cover)} alt="" /> : <Icon name="image" />}</div>
-      <span className="muted small">{!cover ? "None yet: add images to a song" : picked ? "Chosen from the show's media" : "The first song's image"}</span>
       <button disabled={Boolean(readOnly) || count === 0} onClick={onChoose}>Choose…</button>
-    </div>
+    </SRow>
   );
 }
 

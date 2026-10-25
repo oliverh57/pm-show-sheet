@@ -1,6 +1,6 @@
 // Pure operations on a show. Each mutates the show it's given; the store clones first.
 import { GELS, gelLabelFor } from "./gels";
-import type { AudioFile, Clip, ColourSwatch, ColumnDef, CropRect, Dept, ListName, Note, Show, Song, SongMark, SourceRecord, TcBlock } from "./types";
+import type { AudioFile, Clip, ColourSwatch, ColumnDef, CropRect, Dept, ListName, Note, ReviewComment, ReviewReply, Show, Song, SongMark, SourceRecord, TcBlock } from "./types";
 
 export const DEPTS = ["CORE", "STATUS", "COLOUR", "CONTENT", "CHOREO", "LX", "VIDEO", "CAMERAS", "STAGING", "SFX", "MD"] as const;
 export const MAX_SWATCHES = 4;
@@ -1283,4 +1283,141 @@ export function clipName(show: Show, songId: string): string {
 /** A folder-safe bundle name from a show name: "DEFTONES | SNW 2026" → "DEFTONES - SNW 2026". */
 export function bundleName(showName: string): string {
   return showName.replace(/\s*[|/\\:]+\s*/g, " - ").replace(/[*?"<>]+/g, "").replace(/\s{2,}/g, " ").trim() || "Untitled show";
+}
+
+// --- video review comments -------------------------------------------------------
+
+/** The show TC `t` seconds into a record, from its LTC; null where it has none. */
+export function recordTc(record: SourceRecord | undefined, t: number): string | null {
+  const ltc = record?.ltc;
+  const block = ltc?.blocks.find((b) => t >= b.file_start && t <= b.file_end);
+  return block ? tcAt(block, t, ltc!.fps ?? 25) : null;
+}
+
+/** The song a record shows at `t`: from its marks, else the song it's a record of. */
+export function songAtRecordTime(record: SourceRecord, t: number): string | null {
+  const mark = record.song_marks?.find((m) => t >= m.in && t < m.out);
+  return mark?.song_id ?? (record.scope === "song" ? record.song_id ?? null : null);
+}
+
+export type NewReview = Pick<ReviewComment, "song_id" | "t" | "text" | "from"> &
+  Partial<Pick<ReviewComment, "id" | "record_id" | "image" | "still" | "t_out" | "tc" | "dept" | "email" | "draw" | "source">>;
+
+/** Add a comment on a video. Its TC comes from the record's LTC (else any `tc` given is kept). Returns its id. */
+export function addReview(show: Show, c: NewReview): string {
+  const record = (show.records ?? []).find((r) => r.id === c.record_id);
+  const tc = recordTc(record, c.t) ?? c.tc;
+  const tcOut = c.t_out !== undefined ? recordTc(record, c.t_out) : null;
+  const review: ReviewComment = { ...c, id: c.id ?? newId("rev"), at: new Date().toISOString(), done: false, replies: [], source: c.source ?? "app" };
+  if (tc) review.tc = tc;
+  if (tcOut) review.tc_out = tcOut;
+  (show.reviews ??= []).push(review);
+  return review.id;
+}
+
+export function findReview(show: Show, id: string): ReviewComment | undefined {
+  return show.reviews?.find((c) => c.id === id);
+}
+
+export function replyToReview(show: Show, id: string, reply: Omit<ReviewReply, "id" | "at">): string {
+  const c = findReview(show, id);
+  if (!c) throw new Error(`no comment ${id}`);
+  const r: ReviewReply = { ...reply, id: newId("re"), at: new Date().toISOString() };
+  c.replies.push(r);
+  return r.id;
+}
+
+export function setReviewDone(show: Show, id: string, done: boolean) {
+  const c = findReview(show, id);
+  if (!c || c.done === done) return;
+  c.done = done;
+  if (done) c.resolved_at = new Date().toISOString();
+  else delete c.resolved_at;
+}
+
+/** How many days resolved comments are kept when the show hasn't said. */
+export const KEEP_RESOLVED_DAYS = 3;
+
+/** How long the show keeps resolved comments, in days; null when it keeps them. */
+export function keepResolvedDays(show: Show): number | null {
+  return show.keep_resolved_days === undefined ? KEEP_RESOLVED_DAYS : show.keep_resolved_days;
+}
+
+/**
+ * What tidyResolved would do now: the resolved comments past the show's keep time, and whether any resolved comment
+ * has no resolved time yet (resolved before they were stamped, or in an older app), which it stamps now.
+ */
+export function resolvedToTidy(show: Show, now = Date.now()): { expired: string[]; unstamped: boolean } {
+  const days = keepResolvedDays(show);
+  const done = (show.reviews ?? []).filter((c) => c.done);
+  const expired = days === null ? [] : done.filter((c) => c.resolved_at && now - Date.parse(c.resolved_at) > days * 86400000).map((c) => c.id);
+  return { expired, unstamped: done.some((c) => !c.resolved_at) };
+}
+
+/** Delete resolved comments past the show's keep time, and stamp any resolved comment with no time (so it's kept the full time from now). */
+export function tidyResolved(show: Show, now = Date.now()): number {
+  const { expired } = resolvedToTidy(show, now);
+  const gone = new Set(expired);
+  show.reviews = (show.reviews ?? []).filter((c) => !gone.has(c.id));
+  for (const c of show.reviews) if (c.done && !c.resolved_at) c.resolved_at = new Date(now).toISOString();
+  return gone.size;
+}
+
+export function editReview(show: Show, id: string, text: string) {
+  const c = findReview(show, id);
+  if (c) c.text = text;
+}
+
+/** Delete a comment. Its still stays in media/grabs/, so undoing the delete brings it back whole. */
+export function deleteReview(show: Show, id: string) {
+  show.reviews = (show.reviews ?? []).filter((x) => x.id !== id);
+}
+
+export function deleteReply(show: Show, id: string, replyId: string) {
+  const c = findReview(show, id);
+  if (c) c.replies = c.replies.filter((r) => r.id !== replyId);
+}
+
+/** The comments placed in a record between `from` and `to` seconds (a clip's window), in time order. */
+export function reviewsOn(show: Show, recordId: string, from = 0, to = Infinity): ReviewComment[] {
+  return (show.reviews ?? []).filter((c) => c.record_id === recordId && c.t >= from && c.t <= to).sort((a, b) => a.t - b.t);
+}
+
+/** The comments on an image, in the order written. */
+export function imageReviews(show: Show, image: string): ReviewComment[] {
+  return (show.reviews ?? []).filter((c) => c.image === image).sort((a, b) => a.at.localeCompare(b.at));
+}
+
+/** A song's comments with no place in a video or image: on the song itself, or typed in the Sheet with a TC that isn't in any record. */
+export function unplacedReviews(show: Show, songId: string): ReviewComment[] {
+  return (show.reviews ?? []).filter((c) => c.song_id === songId && !c.record_id && !c.image);
+}
+
+/** How many of a song's comments are still open. */
+export function openReviews(show: Show, songId: string): number {
+  return (show.reviews ?? []).filter((c) => c.song_id === songId && !c.done).length;
+}
+
+/** The song a Sheet cell names: "Midnight City", "07 Midnight City", or its number "07". */
+export function songByLabel(show: Show, label: string): string | null {
+  const ids = [...show.set_order, ...show.archive];
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const text = norm(label);
+  if (!text) return null;
+  const byName = (t: string) => ids.find((id) => norm(show.songs[id]?.fields.name ?? "") === t);
+  const num = label.trim().match(/^(\d{1,3})\b\s*(.*)$/);
+  return byName(text) ?? (num?.[2] ? byName(norm(num[2])) : undefined) ?? (num ? show.set_order[Number(num[1]) - 1] ?? null : null);
+}
+
+/** Where TC `tc` falls in a record that has it in its LTC: the song's own records first. */
+export function placeTc(show: Show, songId: string | null, tc: string): { record_id: string; t: number } | null {
+  const records = (show.records ?? []).filter((r) => r.ltc?.blocks.length);
+  const mine = (r: SourceRecord) => r.song_id === songId || Boolean(r.song_marks?.some((m) => m.song_id === songId));
+  for (const r of [...records.filter(mine), ...records.filter((r) => !mine(r))]) {
+    for (const b of r.ltc!.blocks) {
+      const t = timeAtTc(b, tc, r.ltc!.fps ?? 25);
+      if (t !== null && (!songId || songAtRecordTime(r, t) === songId)) return { record_id: r.id, t };
+    }
+  }
+  return null;
 }
