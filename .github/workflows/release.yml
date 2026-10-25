@@ -65,6 +65,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
+          # checkout leaves a lightweight tag (so %(contents) would be the commit message); fetch the annotated one with the notes.
+          git fetch --force --no-tags origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
           NOTES="$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")"
           scripts/package-release.sh "$VERSION" "$NOTES"
           printf '%s' "$NOTES" > dist/release/notes.md
