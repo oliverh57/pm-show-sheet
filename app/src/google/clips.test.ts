@@ -24,8 +24,8 @@ beforeEach(() => {
   // a.mp4 was stored with the id of the file it was copied from; d.mp4 is no song's any more.
   show.google = { clips: { "media/clips/a.mp4": "STALE", "media/clips/d.mp4": "D" } };
   useStore.setState({ show, bundle: "/b/Show.showsheet" });
-  // Drive for desktop's ids: copied files keep the original's.
-  backend.driveItemId = async (path: string) => (path.endsWith("media/clips") ? "CLIPS" : "STALE");
+  // The show's manifest on this Mac (src/drive/show.ts): where its clips folder is.
+  backend.readJson = (async () => ({ folderId: "FOLDER", files: {}, folders: { "media/clips": "CLIPS" } })) as typeof backend.readJson;
   backend.googleApi = (async (_method: string, url: string) =>
     (url.includes(encodeURIComponent("'CLIPS' in parents")) ? { files: ON_DRIVE } : {})) as typeof backend.googleApi;
 });

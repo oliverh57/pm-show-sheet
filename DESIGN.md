@@ -39,8 +39,8 @@ Today this lives in hand-built Google Sheets (three past shows were reviewed for
 |---|---|
 | App type | Desktop app on macOS only (Tauri recommended, see §10) |
 | Project storage | Hybrid bundle: project data, generated clips, approved renders and stills are copied in; large source records are only linked, with relink tools |
-| Where shows live | In a "Pixelmappers Show Sheets" folder in the user's Google Drive, synced by Google Drive for desktop; the app lists that folder as "All shows". A folder can be chosen instead if Drive isn't installed (2026-10-22) |
-| Team sync | Live multi-user editing through **Firestore** (managed, no server to run), with offline cache |
+| Where shows live | In Google Drive, reached through the **Drive API** (Google Drive for desktop isn't needed). "All shows" lists every `.showsheet` folder the user can reach: My Drive, shared drives and Shared with me. Each open show is worked on in a copy on the Mac (2026-10-26; before that, synced by Google Drive for desktop from 2026-10-22) |
+| Team sync | Through Drive: each save uploads `project.json`, merged **field by field** with anyone else's save in between (three-way, against the last version agreed with Drive; yours wins on the same field). Other people's edits are pulled every 10 s. No Firestore (2026-10-26) |
 | Google sync | Runs inside whichever app is open; one machine at a time holds a sync lock. When no app is open, nothing syncs |
 | Sign-in | Google Workspace, restricted to the Pixelmappers domain |
 | Shared output | **Both** a Google Sheet (working grid) and Google Slides (one slide per song) |
@@ -70,6 +70,8 @@ Today this lives in hand-built Google Sheets (three past shows were reviewed for
 | History | Not needed beyond undo |
 
 ## 4. Architecture
+
+> **As built (2026-10-26):** there's no Firestore. Google Drive is the source of truth: the app reads and writes each show's `.showsheet` folder through the Drive API (`app/src/drive/`), works on a copy in `~/Library/Application Support/com.pixelmappers.showsheet/shows/<folder id>/`, and merges concurrent saves field by field (`merge.ts`). Presence is a per-person key in the show folder's Drive `properties`. Media the app makes uploads after each save; files from other Macs download when first shown. Records and audio stay linked on each Mac's disks, with **Locate…** when one isn't found. The diagram below is the original plan.
 
 ```
 ┌──────────────────────── Mac (each team member) ────────────────────────┐
@@ -401,7 +403,7 @@ Pixelmappers Show Sheets/<Show name>/
 
 ### 8.8 Auth and scopes
 - Google sign-in with OAuth (PKCE with a loopback redirect), restricted to the Workspace domain. The OAuth app is "Internal", so Google verification isn't needed.
-- Scopes: `drive` (full Drive, so the Sheet and deck can be created inside each show's `.showsheet` folder, which Drive for desktop made), plus `openid email profile`. `drive.file` was used first but only reaches files the app created, which kept the Sheet and deck in a separate folder. The Firebase Auth Google provider uses the same account.
+- Scopes: `drive` (full Drive, so the app can read and write shows other people made and put the Sheet and deck inside each show's `.showsheet` folder), plus `openid email profile`. `drive.file` was used first but only reaches files the app created, which kept the Sheet and deck in a separate folder. The Firebase Auth Google provider uses the same account.
 - Firestore security rules: only domain users can access, and per-show membership is optional later.
 
 ### 8.9 Quotas

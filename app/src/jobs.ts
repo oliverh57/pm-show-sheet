@@ -3,6 +3,7 @@
 // import flow's last step). One song at a time. Progress shows on the import page and keeps going if the user moves on.
 // Results are added to the show only if it's still the open one.
 import { backend } from "./backend";
+import { trashMedia } from "./drive/media";
 import { addClip, addImages, addRecordStill, burnsTc, categoryFree, clipName, GENERAL, newId, recordClipName, recordStillOf, setHero, setSongImage } from "./model/ops";
 import type { Show, SongMark, SourceRecord } from "./model/types";
 import { type StillPick, useStore } from "./store";
@@ -42,7 +43,7 @@ export async function runClipJobs(bundle: string, record: SourceRecord, marks: S
         clip = path;
         // A clip cut before under another name (before clips kept their LTC) goes to the Trash.
         const replaced = (useStore.getState().show?.songs[mark.song_id]?.clips ?? []).filter((c) => c.record_id === record.id && c.in === mark.in && c.path !== path);
-        await backend.trashFiles(bundle, replaced.map((c) => c.path)).catch(() => {});
+        await trashMedia(bundle, replaced.map((c) => c.path)).catch(() => {});
         useStore.getState().update((s) => {
           const kept = replaced.find((c) => c.still)?.still ?? had;
           addClip(s, mark.song_id, { path, record_id: record.id, in: mark.in, out: mark.out, source: mark.source, ...(kept ? { still: kept } : {}), ...(burn ? { burn_tc: true } : {}) });

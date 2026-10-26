@@ -54,6 +54,12 @@ fn mime(path: &PathBuf) -> &'static str {
         Some("mp3") => "audio/mpeg",
         Some("m4a") | Some("aac") => "audio/mp4",
         Some("aif") | Some("aiff") => "audio/aiff",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("png") => "image/png",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        Some("heic") => "image/heic",
+        Some("tif") | Some("tiff") => "image/tiff",
         _ => "video/mp4",
     }
 }
@@ -116,6 +122,10 @@ fn serve(stream: TcpStream, prefix: &str) -> std::io::Result<()> {
     let path = PathBuf::from(decode(rest.split('?').next().unwrap_or("")));
     if !allowed(&path) {
         return respond(&mut out, "403 Forbidden");
+    }
+    // A show's media that isn't on this Mac yet is downloaded from Google Drive first.
+    if !crate::drive::fetch_blocking(&path) {
+        return respond(&mut out, "404 Not Found");
     }
     let Ok(mut file) = File::open(&path) else { return respond(&mut out, "404 Not Found") };
     let len = file.metadata()?.len();

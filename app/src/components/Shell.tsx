@@ -1,9 +1,11 @@
 // The window around a show: sidebar, the read-only banner, and toasts.
+import { create } from "zustand";
 import logo from "../assets/logo.png";
 import { backend } from "../backend";
-import { describeLocation, driveRoot, moveOpenShow, openInDrive } from "../library";
+import { moveOpenShow, openInDrive } from "../library";
 import { showCover } from "../model/ops";
 import { useStore, type View } from "../store";
+import { DriveFolderPicker } from "./DriveFolderPicker";
 import { SyncBadge } from "./OtherPages";
 import { Avatar, GoogleDriveMark, Icon, type IconName } from "./icons";
 
@@ -17,19 +19,29 @@ const COLLAB_NAV: { view: View; label: string; icon: IconName }[] = [
   { view: "sheet", label: "Sheet view", icon: "sheet" },
 ];
 
-/** Ask for a folder in Google Drive (starting at the top, so shared drives are there) and move the open show into it. */
-export async function chooseAndMove() {
-  const { bundle, user, toast } = useStore.getState();
-  if (!bundle) return;
-  const start = driveRoot(bundle) ?? driveRoot((await backend.showsFolder(user?.email ?? null)) ?? "") ?? undefined;
-  const folder = await backend.chooseFolder("Move this show to a folder in Google Drive…", start);
-  if (!folder) return;
-  try {
-    const moved = await moveOpenShow(folder);
-    toast(`Moved to ${describeLocation(moved)}`);
-  } catch (e) {
-    toast(String(e).replace(/^Error: /, ""));
-  }
+const useMoving = create<{ open: boolean }>(() => ({ open: false }));
+
+/** Ask for a folder in Google Drive and move the open show into it. */
+export function chooseAndMove() {
+  useMoving.setState({ open: true });
+}
+
+function MoveDialog() {
+  const open = useMoving((s) => s.open);
+  if (!open) return null;
+  const close = () => useMoving.setState({ open: false });
+  return (
+    <DriveFolderPicker title="Move this show to…" action="Move here" onClose={close} onPick={async (folder) => {
+      close();
+      const { toast } = useStore.getState();
+      try {
+        await moveOpenShow(folder);
+        toast(`Moved to ${folder.label}`);
+      } catch (e) {
+        toast(String(e).replace(/^Error: /, ""));
+      }
+    }} />
+  );
 }
 
 export function Sidebar({ onClose }: { onClose: () => void }) {
@@ -41,6 +53,7 @@ export function Sidebar({ onClose }: { onClose: () => void }) {
   const readOnly = useStore((s) => s.readOnly);
   const saveState = useStore((s) => s.saveState);
   const saveError = useStore((s) => s.saveError);
+  const location = useStore((s) => s.location);
   const canUndo = useStore((s) => s.past.length > 0);
   const canRedo = useStore((s) => s.future.length > 0);
   const { setView, undo, redo } = useStore.getState();
@@ -79,14 +92,15 @@ export function Sidebar({ onClose }: { onClose: () => void }) {
           </div>
         )}
         <JobsProgress />
-        <div className={`sync ${saveState === "saving" ? "saving" : saveState === "error" ? "error" : ""}`} title={saveError ?? bundle}>
-          {readOnly ? <b>Read only</b> : <>
+        <div className={`sync ${saveState === "saving" ? "saving" : saveState === "error" || saveState === "offline" ? "error" : ""}`} title={saveError ?? undefined}>
+          {readOnly ? <b>View only</b> : <>
             {saveState === "saving" && "Saving…"}
             {saveState === "unsaved" && "Unsaved changes"}
+            {saveState === "offline" && "Saved on this Mac: offline"}
             {saveState === "error" && "Couldn't save"}
             {saveState === "saved" && <>Saved to <b>Google Drive</b></>}
           </>}
-          <div className="loc" title={bundle}>{describeLocation(bundle)}</div>
+          <div className="loc">{location ?? "Google Drive"}</div>
         </div>
         {!readOnly && <button className="sync-line" onClick={() => setView("share")}><SyncBadge /></button>}
         <div className="row">
@@ -101,19 +115,19 @@ export function Sidebar({ onClose }: { onClose: () => void }) {
           </div>
         )}
       </div>
+      <MoveDialog />
     </aside>
   );
 }
 
-/** Across the top of a read-only show: why, and the way out. */
+/** Across the top of a read-only show: why. */
 export function ReadOnlyBanner() {
   const readOnly = useStore((s) => s.readOnly);
   if (!readOnly) return null;
   return (
     <div className="readonly-banner">
       <Icon name="alert" size="sm" />
-      <span>{readOnly} Move it into the Pixelmappers Google Drive to edit it.</span>
-      <button className="sm" onClick={() => chooseAndMove()}><GoogleDriveMark className="ico sm" /> Move to Google Drive…</button>
+      <span>You can look at this show, but {readOnly}</span>
     </div>
   );
 }

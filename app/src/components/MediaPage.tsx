@@ -18,6 +18,30 @@ import { repickStill, repickStills, runClipJobs } from "../jobs";
 import { linkWatchFolder, unlinkWatchFolder, useWatchFolders } from "../watchFolders";
 
 /** The category a record's thumbnails are filed under; changing it moves them. "Edit categories…" opens the editor. */
+/**
+ * A record or audio file that isn't on this Mac (it was added on another Mac, or its disk isn't plugged in): find it
+ * here. Each Mac keeps its own path, so the last one set is what the show has; the other Mac locates it again.
+ */
+function Locate({ kind, id, path, onFound }: { kind: "record" | "audio"; id: string; path: string; onFound: () => void }) {
+  const update = useStore((s) => s.update);
+  async function locate() {
+    const [picked] = await backend.chooseFiles(kind === "record" ? "video" : "audio", false);
+    if (!picked) return;
+    const was = fileName(path), now = fileName(picked);
+    if (was !== now && !(await backend.confirm(`That file is called ${now}, not ${was}. Use it anyway?`))) return;
+    update((s) => {
+      const item = kind === "record" ? s.records?.find((r) => r.id === id) : s.audio?.find((a) => a.id === id);
+      if (item) item.path = picked;
+    });
+    onFound();
+  }
+  return (
+    <button className="sm" title={`Not found on this Mac: ${path}`} onClick={locate}>
+      <Icon name="alert" size="sm" /> Locate…
+    </button>
+  );
+}
+
 function RecordTag({ recordId, value }: { recordId: string; value: string }) {
   const show = useStore((s) => s.show)!;
   const update = useStore((s) => s.update);
@@ -186,6 +210,7 @@ function Library() {
                   {label ? `${label} · ` : ""}Show record<div className="muted small" style={{ fontWeight: 400 }}>{headline}</div>
                 </GroupHead>
                 <span className="acts">
+                  {!here && <Locate kind="record" id={r.id} path={r.path} onFound={refreshStates} />}
                   {(clips.length > 0 || stills.length > 0) && <RecordTag recordId={r.id} value={r.image_col ?? ""} />}
                   {here && clips.length > 0 && !cutting && (
                     <button className="sm" disabled={Boolean(repicking)} title="Choose each song's still again: the brightest, sharpest, most colourful frame"
@@ -316,7 +341,7 @@ function Library() {
                     <Icon name="film" size="sm" /> Make {missing.length} missing clip{missing.length === 1 ? "" : "s"}
                   </button>
                 )}
-                <CloudButton paths={[r.path]} states={states} refresh={refreshStates} />
+                {states[r.path] === "missing" && <Locate kind="record" id={r.id} path={r.path} onFound={refreshStates} />}
                 {states[r.path] !== "missing" && <SaveCopy path={r.path} ltc={r.ltc?.channel} video />}
                 {clips.length > 0 && (
                   <button className="sm" onClick={() => setOpenClips(openClips === r.id ? null : r.id)}>
@@ -356,7 +381,7 @@ function Library() {
             <span className="nm" title={a.path}>{a.name}<div className="muted small">{infoLine(a.info)}</div></span>
             <span className="muted small">{a.scope === "song" ? `${a.version} · ${songName(a.song_id)}` : `Show audio ${a.version}`}</span>
             <span className="acts">
-              <CloudButton paths={[a.path]} states={states} refresh={refreshStates} />
+              {states[a.path] === "missing" && <Locate kind="audio" id={a.id} path={a.path} onFound={refreshStates} />}
               {states[a.path] !== "missing" && <SaveCopy path={a.path} ltc={a.ltc?.channel} />}
               {playButton(a.id)}
               {a.scope === "show" && <button className="sm" onClick={() => startImport([], { kind: "audio", id: a.id })}><Icon name="radio" size="sm" /> Match to songs</button>}

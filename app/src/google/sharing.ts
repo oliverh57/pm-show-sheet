@@ -5,12 +5,12 @@
 //   who use the show in the app (google.app_editors), so their sync can write the Sheet's locked columns.
 // Nothing else is stored: who has what is read back from Drive.
 import { backend } from "../backend";
+import { driveIdOf } from "../drive/media";
+import { readManifest } from "../drive/show";
 import { useStore } from "../store";
 
 const DRIVE = "https://www.googleapis.com/drive/v3/files";
 const ALL = "supportsAllDrives=true";
-const SHORTCUT = "application/vnd.google-apps.shortcut";
-const FOLDER = "application/vnd.google-apps.folder";
 const api = <T,>(method: string, url: string, body?: unknown) => backend.googleApi<T>(method, url, body);
 
 export type Access = "edit" | "comment" | "view" | "app";
@@ -59,9 +59,9 @@ export interface Person {
 async function showFiles() {
   const { show, bundle } = useStore.getState();
   const gs = show?.google ?? {};
-  const folder = gs.folder_id ?? (bundle ? await backend.driveItemId(bundle) : null);
-  if (!folder) throw new Error("Waiting for Google Drive to upload the show");
-  const clips = bundle ? await backend.driveItemId(`${bundle}/media/clips`).catch(() => null) : null;
+  const folder = gs.folder_id ?? (bundle ? (await readManifest(bundle)).folderId : null);
+  if (!folder) throw new Error("No show is open");
+  const clips = bundle ? await driveIdOf(`${bundle}/media/clips`, bundle).catch(() => null) : null;
   return { folder, sheet: gs.spreadsheet_id, deck: gs.presentation_id, media: [gs.media_folder_id, clips].filter((x): x is string => Boolean(x)) };
 }
 
@@ -183,30 +183,4 @@ function setAppEditor(email: string, on: boolean) {
     const rest = list.filter((e) => e.toLowerCase() !== lower);
     s.google.app_editors = on ? [...rest, email] : rest;
   });
-}
-
-// --- shows shared with you -------------------------------------------------------------
-
-export interface SharedShow { id: string; name: string; by?: string; modified?: string }
-
-/**
- * Shows someone shared with you that aren't in your Drive yet: Google Drive for desktop only brings My Drive and
- * shared drives to this Mac, so a show shared straight with you needs a shortcut in My Drive to open in the app.
- */
-export async function sharedWithMe(): Promise<SharedShow[]> {
-  const q = (s: string) => encodeURIComponent(s);
-  const shared = await api<{ files?: { id: string; name: string; modifiedTime?: string; sharingUser?: { displayName?: string; emailAddress?: string } }[] }>("GET",
-    `${DRIVE}?q=${q(`sharedWithMe and mimeType = '${FOLDER}' and trashed = false`)}&fields=${q("files(id,name,modifiedTime,sharingUser(displayName,emailAddress))")}&pageSize=200&${ALL}&includeItemsFromAllDrives=true`);
-  const shows = (shared.files ?? []).filter((f) => f.name.endsWith(".showsheet"));
-  if (!shows.length) return [];
-  const mine = await api<{ files?: { shortcutDetails?: { targetId?: string } }[] }>("GET",
-    `${DRIVE}?q=${q(`mimeType = '${SHORTCUT}' and trashed = false and 'me' in owners`)}&fields=${q("files(shortcutDetails(targetId))")}&pageSize=1000`);
-  const added = new Set((mine.files ?? []).map((f) => f.shortcutDetails?.targetId));
-  return shows.filter((f) => !added.has(f.id))
-    .map((f) => ({ id: f.id, name: f.name.replace(/\.showsheet$/, ""), by: f.sharingUser?.displayName || f.sharingUser?.emailAddress, modified: f.modifiedTime }));
-}
-
-/** Put a shortcut to a shared show in My Drive, so Google Drive for desktop brings it to this Mac. */
-export async function addToMyDrive(show: SharedShow) {
-  await api("POST", `${DRIVE}?${ALL}`, { name: `${show.name}.showsheet`, mimeType: SHORTCUT, shortcutDetails: { targetId: show.id }, parents: ["root"] });
 }

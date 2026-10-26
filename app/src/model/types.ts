@@ -246,7 +246,7 @@ export interface GoogleSync {
   deck_hash?: string; // what the deck showed when last drawn
   published?: Record<string, string | boolean>; // "show|<song>|<column>" → value as pushed
   images?: Record<string, string>; // bundle-relative image path → Drive file id
-  clips?: Record<string, string>; // bundle-relative clip path → Drive file id (Drive for desktop uploads them with the show)
+  clips?: Record<string, string>; // bundle-relative clip path → Drive file id (the app uploads them with the show: src/drive/media.ts)
   named?: string; // the show name the Sheet and deck were last titled with
   app_editors?: string[]; // everyone who uses the show in the app: they can edit the Sheet's locked columns (their sync writes them)
 }

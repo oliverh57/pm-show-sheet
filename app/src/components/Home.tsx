@@ -1,32 +1,26 @@
-// All shows: every show in your Google Drive (My Drive and shared drives), newest first, plus New show.
+// All shows: every show you can open in Google Drive (My Drive, shared drives and Shared with me), newest first, plus New show.
 import { useEffect, useState } from "react";
 import logo from "../assets/logo.png";
 import { backend, type ShowSummary } from "../backend";
-import {
-  cachedShows, createShow, describeLocation, driveRoot, newShowFolder, openShow, readOnlyReason, rememberNewShowFolder, scanShows, timeAgo,
-} from "../library";
+import { cachedShows, createShow, type DriveFolder, newShowFolder, openShow, rememberNewShowFolder, scanShows, timeAgo } from "../library";
 import { bundleName } from "../model/ops";
 import { useStore } from "../store";
+import { DriveFolderPicker } from "./DriveFolderPicker";
 import { Avatar, GoogleDriveMark, Icon } from "./icons";
-import { SharedWithYou } from "./People";
 import { VersionLine } from "./UpdateBar";
 
-const DRIVE_DOWNLOAD = "https://www.google.com/drive/download/";
-
 export function Home() {
-  const user = useStore((s) => s.user)!;
   const [shows, setShows] = useState<ShowSummary[]>(cachedShows);
   const [scanning, setScanning] = useState(true);
-  const [driveFound, setDriveFound] = useState<boolean | null>(null);
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false);
+  const [opening, setOpening] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [warning, setWarning] = useState<{ path: string; reason: string } | null>(null);
 
   async function refresh() {
     setScanning(true);
-    setDriveFound(Boolean(await backend.showsFolder(user.email)));
-    const found = await scanShows(user.email, (s) => {
+    setError(null);
+    const found = await scanShows((s) => {
       setShows((cur) => [s, ...cur.filter((x) => x.path !== s.path)].sort((a, b) => b.modified_ms - a.modified_ms));
     });
     setShows(found);
@@ -38,24 +32,17 @@ export function Home() {
 
   async function open(path: string) {
     setError(null);
+    setOpening(path);
     try {
       await openShow(path);
     } catch (e) {
-      setError(`Couldn't open that show: ${e}`);
+      setError(`Couldn't open that show: ${String(e).replace(/^Error: /, "")}`);
     }
-  }
-
-  /** Shows can only be edited in your Google Drive: anywhere else, warn and open read only. */
-  async function openOther() {
-    const path = await backend.chooseBundle();
-    if (!path) return;
-    const reason = readOnlyReason(path, user.email);
-    if (reason) setWarning({ path, reason });
-    else open(path);
+    setOpening(null);
   }
 
   const q = query.trim().toLowerCase();
-  const list = shows.filter((s) => !q || `${s.name} ${s.venue ?? ""} ${s.date ?? ""} ${s.path}`.toLowerCase().includes(q));
+  const list = shows.filter((s) => !q || `${s.name} ${s.venue ?? ""} ${s.date ?? ""} ${s.where ?? ""}`.toLowerCase().includes(q));
 
   return (
     <div className="home">
@@ -71,50 +58,36 @@ export function Home() {
         <div className="home-hero">
           <div>
             <h1>All shows</h1>
-            <p className="scan-line">{scanning ? <><span className="spinner" style={{ width: 12, height: 12, borderWidth: 1.5 }} />Looking in your Google Drive and shared drives…</> : `${shows.length} show${shows.length === 1 ? "" : "s"} in Google Drive`}</p>
+            <p className="scan-line">{scanning ? <><span className="spinner" style={{ width: 12, height: 12, borderWidth: 1.5 }} />Looking in Google Drive…</> : `${shows.length} show${shows.length === 1 ? "" : "s"} in Google Drive`}</p>
           </div>
         </div>
-        {driveFound === false && (
-          <div className="banner">
-            <GoogleDriveMark />
-            <div><strong>Google Drive isn't on this Mac.</strong> Shows are kept in Google Drive: install Google Drive for desktop and sign in with {user.email}.</div>
-            <button className="sm" onClick={() => backend.openWeb(DRIVE_DOWNLOAD)}>Get Google Drive</button>
-          </div>
-        )}
         {error && <p className="error">{error}</p>}
-        <SharedWithYou onAdded={() => refresh()} />
         <div className="projects">
-          {driveFound !== false && <button className="pcard new-card" onClick={() => setCreating(true)}><div><Icon name="plus" size="lg" />New show</div></button>}
+          <button className="pcard new-card" onClick={() => setCreating(true)}><div><Icon name="plus" size="lg" />New show</div></button>
           {list.map((s, i) => (
-            <button key={s.path} className="pcard" style={{ animationDelay: `${Math.min(i, 12) * 0.03}s` }} onClick={() => open(s.path)} title={s.path}>
+            <button key={s.path} className="pcard" style={{ animationDelay: `${Math.min(i, 12) * 0.03}s` }} onClick={() => open(s.path)} disabled={opening !== null}>
               <div className="cover">{s.cover ? <img src={backend.fileUrl(s.cover)} alt="" /> : <div className="ph"><Icon name="music" /></div>}</div>
               <div className="body">
                 <div className="name">{s.name}</div>
                 <div className="meta">{[s.venue, s.date].filter(Boolean).join(" · ") || "No venue or date yet"}</div>
-                <div className="where" title={s.path}><GoogleDriveMark /> {describeLocation(s.path)}</div>
-                <div className="foot"><span className="chip">{s.songs} song{s.songs === 1 ? "" : "s"}</span><span>Edited {timeAgo(s.modified_ms)}</span></div>
+                <div className="where"><GoogleDriveMark /> {s.where ?? "Google Drive"}</div>
+                <div className="foot">
+                  <span className="chip">{s.songs} song{s.songs === 1 ? "" : "s"}</span>
+                  {s.canEdit === false && <span className="chip">View only</span>}
+                  <span>{opening === s.path ? "Opening…" : `Edited ${timeAgo(s.modified_ms)}`}</span>
+                </div>
               </div>
             </button>
           ))}
         </div>
         {!scanning && q && list.length === 0 && <p className="muted">No shows match “{query}”.</p>}
-        {!scanning && !q && shows.length === 0 && driveFound && <p className="muted">No shows in your Google Drive yet.</p>}
+        {!scanning && !q && shows.length === 0 && <p className="muted">No shows in Google Drive yet, and none shared with you.</p>}
         <div className="home-foot">
-          <span><button className="link" onClick={() => refresh()} disabled={scanning}>Look again</button></span>
-          <span><button className="link" onClick={openOther}>Open a show from somewhere else…</button></span>
+          <span><button className="link" onClick={() => refresh().catch((e) => { setError(String(e)); setScanning(false); })} disabled={scanning}>Look again</button></span>
         </div>
         <div className="home-foot"><VersionLine /></div>
       </div>
-      {creating && <NewShowDialog shows={shows} onClose={() => setCreating(false)} />}
-      {warning && (
-        <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && setWarning(null)}>
-          <div className="modal narrow" role="alertdialog">
-            <div className="modal-head"><div><h3>Open read only?</h3><p>{warning.reason}</p></div></div>
-            <div className="modal-body"><p className="muted small" style={{ margin: 0 }}>Shows are kept in the Pixelmappers Google Drive. You can look at this one, then move it into Drive to edit it.</p></div>
-            <div className="modal-foot"><button onClick={() => setWarning(null)}>Cancel</button><button className="primary" onClick={() => { const p = warning.path; setWarning(null); open(p); }}>Open read only</button></div>
-          </div>
-        </div>
-      )}
+      {creating && <NewShowDialog onClose={() => setCreating(false)} />}
     </div>
   );
 }
@@ -143,38 +116,31 @@ function UserMenu() {
   );
 }
 
-function NewShowDialog({ shows, onClose }: { shows: ShowSummary[]; onClose: () => void }) {
-  const user = useStore((s) => s.user)!;
+function NewShowDialog({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState("");
   const [venue, setVenue] = useState("");
   const [date, setDate] = useState("");
-  const [folder, setFolder] = useState<string | null>(null);
+  const [folder, setFolder] = useState<DriveFolder>(newShowFolder);
+  const [choosing, setChoosing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    newShowFolder(user.email, shows).then(setFolder);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  async function chooseFolder() {
-    const path = await backend.chooseFolder("Save the new show in…", driveRoot(folder ?? "") ?? undefined);
-    if (!path) return;
-    if (readOnlyReason(`${path}/x`, user.email)) return setError("Choose a folder in your Google Drive (My Drive or a shared drive).");
-    setError(null);
-    setFolder(path);
-  }
-
   async function create() {
-    if (!name.trim() || !folder) return;
+    if (!name.trim() || busy) return;
     setBusy(true);
     setError(null);
     try {
       rememberNewShowFolder(folder);
       await createShow(folder, { name: name.trim(), venue: venue.trim(), date: date.trim() });
     } catch (e) {
-      setError(String(e));
+      setError(String(e).replace(/^Error: /, ""));
       setBusy(false);
     }
+  }
+
+  if (choosing) {
+    return <DriveFolderPicker title="Save the new show in…" action="Save here" onClose={() => setChoosing(false)}
+                              onPick={(f) => { setFolder(f); setChoosing(false); }} />;
   }
 
   return (
@@ -191,12 +157,12 @@ function NewShowDialog({ shows, onClose }: { shows: ShowSummary[]; onClose: () =
           <span className="field-label" style={{ marginBottom: 6 }}>Saved to</span>
           <div className="save-loc">
             <GoogleDriveMark />
-            <span style={{ flex: 1 }}>{folder ? <>{describeLocation(`${folder}/x`)} › <b>{bundleName(name.toUpperCase() || "Untitled show")}</b></> : "Finding your Google Drive…"}</span>
-            <button className="sm ghost" onClick={chooseFolder}>Change…</button>
+            <span style={{ flex: 1 }}>{folder.label} › <b>{bundleName(name.toUpperCase() || "Untitled show")}</b></span>
+            <button className="sm ghost" onClick={() => setChoosing(true)} disabled={!backend.isDesktop}>Change…</button>
           </div>
           {error && <p className="error">{error}</p>}
         </div>
-        <div className="modal-foot"><button onClick={onClose}>Cancel</button><button className="primary" onClick={create} disabled={!name.trim() || !folder || busy}>{busy ? "Creating…" : "Create show"} <Icon name="arrowR" /></button></div>
+        <div className="modal-foot"><button onClick={onClose}>Cancel</button><button className="primary" onClick={create} disabled={!name.trim() || busy}>{busy ? "Creating…" : "Create show"} <Icon name="arrowR" /></button></div>
       </div>
     </div>
   );

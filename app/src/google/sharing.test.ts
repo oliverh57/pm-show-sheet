@@ -29,7 +29,7 @@ beforeEach(() => {
   const show = structuredClone(sample) as Show;
   show.google = { folder_id: "FOLDER", spreadsheet_id: "SHEET", presentation_id: "DECK", media_folder_id: "IMAGES" };
   useStore.setState({ show, bundle: "/b/Show.showsheet", user: { name: "Me", email: "me@pm.com", picture: null } });
-  backend.driveItemId = async (path: string) => (path.endsWith("media/clips") ? "CLIPS" : "FOLDER");
+  backend.readJson = (async () => ({ folderId: "FOLDER", files: {}, folders: { "media/clips": "CLIPS" } })) as typeof backend.readJson;
   backend.googleApi = (async (method: string, url: string, body?: unknown) => {
     calls.push([method, url, body]);
     const file = url.match(/files\/([A-Z]+)\/permissions/)?.[1];

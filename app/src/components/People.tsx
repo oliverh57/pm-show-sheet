@@ -1,8 +1,8 @@
 // Share & publish → People: who can open the show, the Sheet and the deck, and sharing them from here
-// (see google/sharing.ts). Also the shows shared with you, on All shows, to add to your Drive.
+// (see google/sharing.ts).
 import { useEffect, useState } from "react";
 import { backend } from "../backend";
-import { ACCESS, type Access, addToMyDrive, isOutside, LINK, listPeople, type Person, share, shareLink, type SharedShow, sharedWithMe, unshare, validEmail } from "../google/sharing";
+import { ACCESS, type Access, isOutside, LINK, listPeople, type Person, share, shareLink, unshare, validEmail } from "../google/sharing";
 import { syncNow } from "../google/sync";
 import { useStore } from "../store";
 import { Avatar, Icon } from "./icons";
@@ -52,7 +52,7 @@ export function PeoplePanel() {
   const outside = validEmail(to) && isOutside(to);
   const hint = ACCESS.find((a) => a.id === access)!.hint;
   const add = () => change("add", async () => { await share(to, access, notify, message, existing); setEmail(""); setMessage(""); },
-    `Shared with ${to}${access === "app" ? ": they'll find it under Shared with you in the app" : ""}`);
+    `Shared with ${to}${access === "app" ? ": it shows up in their All shows in the app" : ""}`);
 
   const linkPerson = people?.find((p) => p.email === LINK && p.access !== null);
   const makeLink = (a: "view" | "edit") => change(`link-${a}`, async () => {
@@ -165,42 +165,6 @@ export function PeoplePanel() {
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-/** On All shows: shows shared straight with you, which need adding to your Drive before they're on this Mac. */
-export function SharedWithYou({ onAdded }: { onAdded: () => void }) {
-  const [shows, setShows] = useState<SharedShow[]>([]);
-  const [adding, setAdding] = useState<string | null>(null);
-  const toast = useStore((s) => s.toast);
-  useEffect(() => { if (backend.isDesktop) sharedWithMe().then(setShows).catch(() => {}); }, []);
-  if (!shows.length) return null;
-
-  async function add(s: SharedShow) {
-    setAdding(s.id);
-    try {
-      await addToMyDrive(s);
-      setShows((cur) => cur.filter((x) => x.id !== s.id));
-      toast(`Added “${s.name}” to your Drive. It shows here once Google Drive has brought it to this Mac.`);
-      window.setTimeout(onAdded, 8000);
-    } catch (e) {
-      toast(err(e));
-    }
-    setAdding(null);
-  }
-
-  return (
-    <div className="shared-with-you">
-      <div className="label">Shared with you</div>
-      {shows.map((s) => (
-        <div key={s.id} className="shared-row">
-          <Icon name="users" size="sm" />
-          <div className="who"><div className="nm">{s.name}</div>{s.by && <div className="muted small">Shared by {s.by}</div>}</div>
-          <button className="sm" disabled={adding !== null} onClick={() => add(s)}>{adding === s.id ? "Adding…" : "Add to my Drive"}</button>
-        </div>
-      ))}
-      <p className="muted small">Shows shared straight with you open here once they're in your Drive.</p>
     </div>
   );
 }

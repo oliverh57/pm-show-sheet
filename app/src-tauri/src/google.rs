@@ -24,8 +24,8 @@ const KEYCHAIN_SERVICE: &str = "com.pixelmappers.showsheet";
 const KEYCHAIN_ACCOUNT: &str = "google-refresh-token";
 const CLIENT_FILE: &str = "google_client.json";
 const USER_FILE: &str = "google_user.json";
-/// Full Drive access: the Sheet and deck are made inside each show's .showsheet folder, which Drive for desktop
-/// created, not this app (drive.file would only reach files the app made itself).
+/// Full Drive access: the app reads and writes shows other people (and older versions) made, and puts the Sheet and
+/// deck in their folders (drive.file would only reach files this app made itself).
 const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive";
 const SCOPES: &str = "openid email profile https://www.googleapis.com/auth/drive";
 pub const SIGN_IN_AGAIN: &str = "Sign in to Google again to let the app put the Sheet and deck in the show's folder";
@@ -329,7 +329,7 @@ fn has_drive_scope(scope: &str) -> bool {
     scope.split_whitespace().any(|s| s == DRIVE_SCOPE)
 }
 
-async fn access_token(app: &AppHandle) -> Result<String, String> {
+pub(crate) async fn access_token(app: &AppHandle) -> Result<String, String> {
     let cache = app.state::<TokenCache>();
     if let Some((token, until)) = cache.0.lock().unwrap().clone() {
         if until > Instant::now() + Duration::from_secs(60) {
@@ -356,7 +356,7 @@ async fn access_token(app: &AppHandle) -> Result<String, String> {
     Ok(res.access_token)
 }
 
-fn forget_token(app: &AppHandle) {
+pub(crate) fn forget_token(app: &AppHandle) {
     *app.state::<TokenCache>().0.lock().unwrap() = None;
 }
 
@@ -366,7 +366,7 @@ pub fn allowed_api_url(url: &str) -> bool {
 }
 
 /// Turn a Google error response into one readable line.
-fn api_error(status: reqwest::StatusCode, body: &str) -> String {
+pub(crate) fn api_error(status: reqwest::StatusCode, body: &str) -> String {
     let msg = serde_json::from_str::<serde_json::Value>(body)
         .ok()
         .and_then(|v| v["error"]["message"].as_str().map(String::from))
@@ -402,12 +402,15 @@ pub async fn google_api(app: AppHandle, method: String, url: String, body: Optio
     unreachable!()
 }
 
-fn mime_for(path: &Path) -> &'static str {
+pub(crate) fn mime_for(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).as_deref() {
         Some("jpg" | "jpeg") => "image/jpeg",
         Some("png") => "image/png",
         Some("mp4") => "video/mp4",
         Some("mov") => "video/quicktime",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        Some("json") => "application/json",
         _ => "application/octet-stream",
     }
 }

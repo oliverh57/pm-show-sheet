@@ -25,13 +25,13 @@
     <li><strong>Basic profile (openid, email, profile):</strong> your name, email address and profile picture, used only to show which account is signed in.</li>
     <li><strong>Google Drive (<code>https://www.googleapis.com/auth/drive</code>):</strong> used to open, create and save show files, renders, audio and other media in the Drive folders you choose, and to create and update the Google Sheet and Google Slides files the app publishes for a show.</li>
   </ul>
-  <p>The app only works with files and folders that are part of the shows you open or create. It does not read, scan or index the rest of your Drive.</p>
+  <p>The app only works with files and folders that are part of the shows you open or create. To list your shows, it asks Google Drive to search for show folders (folders named <code>.showsheet</code> and the <code>project.json</code> file inside them); it does not read or index the rest of your Drive.</p>
 
   <h2>How information is stored</h2>
   <ul>
     <li>Your Google sign-in token is stored in the macOS Keychain on your computer.</li>
     <li>Your name, email address and profile picture address are cached in the app's settings folder on your computer so the app can open offline.</li>
-    <li>Show data and media are stored in your Google Drive and, where you choose, in local folders on your computer.</li>
+    <li>Show data and media are stored in your Google Drive. The app keeps a copy of each show you open in its settings folder on your computer, so it can open offline, and links to records and audio where you keep them on your computer.</li>
   </ul>
   <p>None of this is sent to Pixelmappers or any third party. Data passes only between your computer and Google's APIs, over encrypted connections.</p>
 

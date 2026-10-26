@@ -339,6 +339,13 @@ input[type="checkbox"] { width: 16px; height: 16px; padding: 0; accent-color: va
 .save-loc { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--line); font-size: 13px; color: var(--muted); flex-wrap: wrap; }
 .save-loc .gd { width: 16px; height: 16px; }
 .save-loc b { color: var(--text); font-weight: 500; }
+.drive-picker .crumbs .link:disabled { color: var(--text); opacity: 1; cursor: default; }
+.folder-list { display: flex; flex-direction: column; max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; padding: 4px; min-height: 120px; }
+.folder-row { display: flex; align-items: center; gap: 10px; width: 100%; justify-content: flex-start; height: 34px; padding: 0 10px; border: 0; border-radius: 7px; background: transparent; box-shadow: none; font-size: 13.5px; text-align: left; }
+.folder-row span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-row .gd { width: 16px; height: 16px; }
+.folder-row:hover { background: var(--surface-2); }
+.folder-list > .muted { padding: 10px; }
 .format-row { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; }
 .format-row select { width: 110px; }
 .paste-preview { display: grid; gap: 4px; max-height: 210px; overflow: auto; margin-top: 12px; }
@@ -1336,8 +1343,8 @@ textarea.cell-input { height: 120px; resize: none; }
 .people .person { display: flex; align-items: center; gap: 12px; padding: 6px 0; }
 .people .person + .person { border-top: 1px solid var(--line); }
 .people .person.faint { opacity: .75; }
-.people .who, .shared-row .who { flex: 1; min-width: 0; }
-.people .who .nm, .shared-row .who .nm { font-weight: 500; display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.people .who { flex: 1; min-width: 0; }
+.people .who .nm { font-weight: 500; display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .people .who .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .people .person select { max-width: 290px; }
 .people .team-toggle { display: inline-flex; align-items: center; gap: 4px; margin: 6px 0 2px; }
@@ -1350,10 +1357,6 @@ textarea.cell-input { height: 120px; resize: none; }
 .share-form .check { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .outside-note { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: 8px; background: var(--warn-bg); color: var(--warn); font-size: 12.5px; }
 .outside-note .ico, .outside-note svg { flex: none; margin-top: 1px; }
-.shared-with-you { margin: 0 0 18px; padding: 14px 16px; border-radius: var(--r); background: var(--surface); border: 1px solid var(--line); }
-.shared-with-you p { margin: 8px 0 0; }
-.shared-row { display: flex; align-items: center; gap: 12px; padding: 6px 0; }
-.shared-row + .shared-row { border-top: 1px solid var(--line); }
 
 /* --- open comments on a song: a badge on its card, list row and Present thumbnail -------------- */
 .cbadge { position: absolute; z-index: 3; display: inline-flex; align-items: center; gap: 3px; height: 20px; min-width: 20px; padding: 0 6px; border: 2px solid var(--surface);

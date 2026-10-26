@@ -4,10 +4,18 @@
 import { useEffect, useState } from "react";
 import logo from "../assets/logo.png";
 import { backend, type ToolsStatus } from "../backend";
-import { Step } from "./DriveSetup";
 import { Icon } from "./icons";
 
 const CHECK_EVERY_MS = 3000;
+
+function Step({ n, done, title, children }: { n: number; done: boolean; title: string; children: React.ReactNode }) {
+  return (
+    <li className={done ? "done" : ""}>
+      <span className="step-n">{done ? <Icon name="check" /> : n}</span>
+      <div><strong>{title}</strong>{!done && children}</div>
+    </li>
+  );
+}
 
 function toolsReady(s: ToolsStatus): boolean {
   return s.ffmpeg && s.ffprobe;

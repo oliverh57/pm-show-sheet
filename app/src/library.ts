@@ -1,14 +1,20 @@
-// Finding, opening and creating shows. Shows live in Google Drive (synced by Google Drive for desktop):
-// All shows lists every .showsheet in the signed-in account's My Drive and shared drives (see
-// src-tauri/src/shows.rs). A show outside that account's Drive opens read-only.
-import { backend, type ShowSummary } from "./backend";
+// Finding, opening and creating shows. Shows live in Google Drive and the app reaches them through the Drive API
+// (src/drive/): All shows lists every show you can open there (My Drive, shared drives and Shared with me), and each
+// open show is worked on in a copy on this Mac that's kept in step with Drive.
+import { backend, previewShows, type ShowSummary } from "./backend";
+import { createFolder, FOLDER, getFile, patchFile, search, trashFile } from "./drive/api";
+import { findShows, SHOW_EXT, summaryProps } from "./drive/list";
+import { openFromDrive } from "./drive/live";
+import { refreshManifest, trashMedia } from "./drive/media";
+import { readManifest, showDir, syncShow, updateManifest } from "./drive/show";
 import { bundleName, clipName, fileName, migrate, newShow, orphanRecordIds, recordMedia, removeImage, removeRecord, removeRecordStills } from "./model/ops";
 import type { Show } from "./model/types";
-import { sweepShow, sweepShowsDaily } from "./storage";
+import { sweepShowsDaily } from "./storage";
 import { useStore } from "./store";
 
 const CACHE_KEY = "pm.showsCache";
-const NEW_FOLDER_KEY = "pm.newShowFolder";
+const NEW_FOLDER_KEY = "pm.newShowFolder2"; // a Drive folder { id, label } (pm.newShowFolder was a path in Drive for desktop)
+export const SHOWS_FOLDER = "Pixelmappers Show Sheets";
 
 function read<T>(key: string, fallback: T): T {
   try {
@@ -21,84 +27,62 @@ function read<T>(key: string, fallback: T): T {
 function write(key: string, value: unknown) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage unavailable */ }
 }
+const message = (e: unknown) => String(e).replace(/^Error: /, "");
 
-// --- where a path is ---------------------------------------------------------------
-
-const DRIVE_MOUNT = /\/Library\/CloudStorage\/GoogleDrive-([^/]+)\//;
-
-/** The Google account whose Drive a path is in ("" for the old /Volumes/GoogleDrive), or null if it isn't in Drive. */
-export function driveAccount(path: string): string | null {
-  const m = path.match(DRIVE_MOUNT);
-  if (m) return m[1];
-  return path.startsWith("/Volumes/GoogleDrive/") ? "" : null;
-}
-
-/** Why a show at `path` can't be edited by `email`, or null if it can. */
-export function readOnlyReason(path: string, email: string | null): string | null {
-  const account = driveAccount(path);
-  if (account === null) return "This show isn't in Google Drive, so it's read only.";
-  if (email && account && account.toLowerCase() !== email.toLowerCase()) return `This show is in another account's Google Drive (${account}), so it's read only.`;
-  return null;
-}
-
-/** "My Drive / Pixelmappers Show Sheets" or "Shared drives / PM - CLIENT FOLDER / 2026" for a show's folder. */
-export function describeLocation(bundlePath: string): string {
-  const folder = bundlePath.split("/").slice(0, -1).join("/");
-  const m = folder.match(/\/Library\/CloudStorage\/GoogleDrive-[^/]+\/(.+)$/) ?? folder.match(/^\/Volumes\/GoogleDrive\/(.+)$/);
-  if (m) return m[1].split("/").join(" / ");
-  return folder.replace(/^\/Users\/[^/]+/, "~");
-}
-
-/** The top of the Google Drive mount a path is in (shows My Drive and Shared drives), if any. */
-export function driveRoot(path: string): string | undefined {
-  return path.match(/^(.*\/Library\/CloudStorage\/GoogleDrive-[^/]+)/)?.[1] ?? (path.startsWith("/Volumes/GoogleDrive/") ? "/Volumes/GoogleDrive" : undefined);
-}
-
-/** Open a show's folder on drive.google.com (or Drive itself if the id isn't known yet). */
-export async function openInDrive(path: string) {
-  const id = await backend.driveItemId(path);
-  await backend.openWeb(id ? `https://drive.google.com/drive/folders/${id}` : "https://drive.google.com/drive/");
+/** Open a show's folder on drive.google.com. */
+export async function openInDrive(bundle: string) {
+  const m = await readManifest(bundle).catch(() => null);
+  await backend.openWeb(m?.folderId ? `https://drive.google.com/drive/folders/${m.folderId}` : "https://drive.google.com/drive/");
 }
 
 // --- the list of shows ---------------------------------------------------------------
 
-/** Shows found by the last scan, so All shows can draw straight away. */
+/** Shows found last time, so All shows can draw straight away. */
 export function cachedShows(): ShowSummary[] {
   return read<ShowSummary[]>(CACHE_KEY, []);
 }
 
-/** Look through Google Drive for shows; `onFound` gets each as it's found. Folders that held shows last time go first. */
-export async function scanShows(email: string | null, onFound: (s: ShowSummary) => void): Promise<ShowSummary[]> {
-  const hints = [...new Set(cachedShows().map((s) => s.path.split("/").slice(0, -1).join("/")))];
-  const shows = await backend.scanShows(email, hints, onFound);
+/** Look through Google Drive for shows; `onFound` gets each as it's found. */
+export async function scanShows(onFound: (s: ShowSummary) => void): Promise<ShowSummary[]> {
+  if (!backend.isDesktop) {
+    const shows = await previewShows();
+    shows.forEach(onFound);
+    return shows;
+  }
+  const shows = await findShows(onFound);
   write(CACHE_KEY, shows);
   sweepShowsDaily(shows.map((s) => s.path)).catch(() => {});
   return shows;
 }
 
-/** Where New show saves: the last folder used, else where most shows are, else My Drive/Pixelmappers Show Sheets. */
-export async function newShowFolder(email: string | null, shows: ShowSummary[]): Promise<string | null> {
-  const remembered = read<string | null>(NEW_FOLDER_KEY, null);
-  if (remembered && !readOnlyReason(`${remembered}/x`, email)) return remembered;
-  const counts = new Map<string, number>();
-  for (const s of shows) {
-    const dir = s.path.split("/").slice(0, -1).join("/");
-    if (!readOnlyReason(s.path, email)) counts.set(dir, (counts.get(dir) ?? 0) + 1);
-  }
-  const best = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
-  return best ?? (await backend.showsFolder(email));
+// --- where new shows go --------------------------------------------------------------------
+
+/** A folder in Google Drive to make a show in. `id` null: My Drive › Pixelmappers Show Sheets, made when it's first used. */
+export interface DriveFolder { id: string | null; label: string }
+export const DEFAULT_FOLDER: DriveFolder = { id: null, label: `My Drive › ${SHOWS_FOLDER}` };
+
+/** Where New show saves: the last folder used, else My Drive › Pixelmappers Show Sheets. */
+export function newShowFolder(): DriveFolder {
+  return read<DriveFolder>(NEW_FOLDER_KEY, DEFAULT_FOLDER);
 }
 
-export function rememberNewShowFolder(folder: string) {
+export function rememberNewShowFolder(folder: DriveFolder) {
   write(NEW_FOLDER_KEY, folder);
+}
+
+/** The id of My Drive › Pixelmappers Show Sheets, made if it isn't there. */
+async function defaultFolderId(): Promise<string> {
+  const found = (await search(`'root' in parents and name = '${SHOWS_FOLDER}' and mimeType = '${FOLDER}' and trashed = false`, "id"))[0];
+  return found?.id ?? (await createFolder(SHOWS_FOLDER, "root")).id;
 }
 
 // --- opening, creating, moving -----------------------------------------------------------
 
 export async function openShow(path: string) {
-  const show = migrate(await backend.open(path));
-  const { user, load } = useStore.getState();
-  const readOnly = readOnlyReason(path, user?.email ?? null);
+  const opened = backend.isDesktop ? await openFromDrive(path) : { show: await backend.open(path), readOnly: null, offline: false };
+  const show = migrate(opened.show);
+  const { load, toast } = useStore.getState();
+  const readOnly = opened.readOnly;
   // Clips and stills left behind by a record that was removed before removing took them with it.
   const leftovers = readOnly ? [] : orphanRecordIds(show).flatMap((id) => {
     const { clips, stills } = recordMedia(show, id);
@@ -106,25 +90,32 @@ export async function openShow(path: string) {
     return [...clips, ...stills];
   });
   load(show, path, readOnly);
-  if (leftovers.length) backend.trashFiles(path, leftovers).catch(() => {});
-  if (!readOnly) binUnusedMedia(path, show).catch(() => {});
-  sweepShow(path, show).catch(() => {});
+  if (opened.offline) toast("Google Drive can't be reached, so this is the copy on this Mac. Your changes upload when it's back.");
+  if (!backend.isDesktop) return;
+  (async () => {
+    await refreshManifest(path);
+    if (leftovers.length) await trashMedia(path, leftovers);
+    if (!readOnly) await binUnusedMedia(path, show);
+  })().catch(() => {});
 }
 
-const UNUSED_AFTER_MS = 60 * 60 * 1000; // another Mac's new clip may not be in the show file here yet
+const UNUSED_AFTER_MS = 60 * 60 * 1000; // a clip run on another Mac may not be in the show here yet
 
 /** Clips, stills and crops the app made that no song uses any more (from clip runs stopped part way, or re-cropped heroes). */
 async function binUnusedMedia(bundle: string, show: Show) {
-  const used = new Set(Object.values(show.songs).flatMap((s) => [...(s.clips ?? []).flatMap((c) => [c.path, c.still ?? ""]), ...(s.gallery ?? []), s.hero ?? ""]));
-  const unused: string[] = [];
+  const used = usedPaths(show);
+  const m = await readManifest(bundle);
+  const unused = new Set<string>();
   for (const [dir, exts] of [["clips", ["mp4"]], ["grabs", ["jpg"]], ["crops", ["jpg"]]] as const) {
-    const files = await backend.listFolder(`${bundle}/media/${dir}`, [...exts]).catch(() => []);
-    for (const f of files) {
+    const old = (rel: string, modified: number) => rel.startsWith(`media/${dir}/`) && exts.some((x) => rel.toLowerCase().endsWith(`.${x}`))
+      && !used.has(rel) && Date.now() - modified > UNUSED_AFTER_MS;
+    for (const f of await backend.listFolder(`${bundle}/media/${dir}`, [...exts]).catch(() => [])) {
       const rel = `media/${dir}/${f.path.split("/").pop()}`;
-      if (!used.has(rel) && Date.now() - f.modified_ms > UNUSED_AFTER_MS) unused.push(rel);
+      if (old(rel, f.modified_ms) && !m.files[rel]) unused.add(rel); // made here, never uploaded
     }
+    for (const [rel, f] of Object.entries(m.files)) if (old(rel, f.modified ?? 0) && f.modified) unused.add(rel);
   }
-  await backend.trashFiles(bundle, unused);
+  await trashMedia(bundle, [...unused]);
 }
 
 /** Remove a record from the open show, binning the clips and stills made from it (after asking). */
@@ -137,13 +128,13 @@ export async function removeRecordAndMedia(id: string): Promise<void> {
   if (made && !(await backend.confirm(`Remove ${record.name}? Its ${made} will be deleted from the show too. The record itself stays where it is.`))) return;
   update((s) => removeRecord(s, id));
   try {
-    await backend.trashFiles(bundle, [...clips, ...stills]);
+    await trashMedia(bundle, [...clips, ...stills]);
   } catch (e) {
-    toast(String(e).replace(/^Error: /, ""));
+    toast(message(e));
   }
 }
 
-/** Delete the stills made from a record (after asking): off every song, and to the Trash. Its clips stay. */
+/** Delete the stills made from a record (after asking): off every song, and to the bin. Its clips stay. */
 export async function deleteRecordStills(id: string): Promise<void> {
   const { show, bundle, update, toast } = useStore.getState();
   const record = show?.records?.find((r) => r.id === id);
@@ -152,9 +143,9 @@ export async function deleteRecordStills(id: string): Promise<void> {
   if (!stills.length || !(await backend.confirm(`Delete the ${stills.length} still${stills.length === 1 ? "" : "s"} made from ${record.label || record.name}? Its clips stay.`))) return;
   update((s) => { removeRecordStills(s, id); });
   try {
-    await backend.trashFiles(bundle, stills);
+    await trashMedia(bundle, stills);
   } catch (e) {
-    toast(String(e).replace(/^Error: /, ""));
+    toast(message(e));
   }
 }
 
@@ -163,7 +154,7 @@ function usedPaths(show: Show): Set<string> {
   return new Set(Object.values(show.songs).flatMap((s) => [...(s.clips ?? []).flatMap((c) => [c.path, c.still ?? ""]), ...(s.gallery ?? []), s.hero ?? ""]));
 }
 
-/** Delete things from the open show after asking, moving the show's own files that nothing uses any more to the Trash. */
+/** Delete things from the open show after asking, binning the show's own files that nothing uses any more. */
 async function deleteFromShow(question: string, change: (s: Show) => void) {
   const { show, bundle, update, toast } = useStore.getState();
   if (!show || !bundle || !(await backend.confirm(question))) return;
@@ -172,9 +163,9 @@ async function deleteFromShow(question: string, change: (s: Show) => void) {
   const after = usedPaths(useStore.getState().show!);
   const gone = [...before].filter((p) => p.startsWith("media/") && !after.has(p));
   try {
-    await backend.trashFiles(bundle, gone);
+    await trashMedia(bundle, gone);
   } catch (e) {
-    toast(String(e).replace(/^Error: /, ""));
+    toast(message(e));
   }
 }
 
@@ -185,99 +176,129 @@ export function deleteSongImage(songId: string, path: string) {
   const song = show.songs[songId];
   const others = (song.gallery ?? []).filter((p) => p !== path).length;
   const hero = (song.hero_crop?.src ?? song.hero) !== path ? "" : others ? " It's the song's hero, so the next image takes its place." : " It's the song's only image, so the song will have none.";
-  return deleteFromShow(`Delete “${fileName(path)}” from ${clipName(show, songId)}? The file moves to the Trash.${hero}`, (s) => removeImage(s, songId, path));
+  return deleteFromShow(`Delete “${fileName(path)}” from ${clipName(show, songId)}? The file moves to the bin.${hero}`, (s) => removeImage(s, songId, path));
 }
 
 /** Delete one clip from a song. Its still stays in the song's images, and the record isn't touched. */
 export function deleteClip(songId: string, path: string) {
   const show = useStore.getState().show;
   if (!show?.songs[songId]) return;
-  return deleteFromShow(`Delete the clip “${fileName(path)}” from ${clipName(show, songId)}? The file moves to the Trash. The show record isn't touched.`,
+  return deleteFromShow(`Delete the clip “${fileName(path)}” from ${clipName(show, songId)}? The file moves to the bin. The show record isn't touched.`,
     (s) => { s.songs[songId].clips = (s.songs[songId].clips ?? []).filter((c) => c.path !== path); });
 }
 
-/** Create a show bundle in `folder` named after the show, adding " 2", " 3"… if the name is taken. */
-export async function createShow(folder: string, fields: Pick<Show, "name" | "venue" | "date">): Promise<void> {
-  const reason = readOnlyReason(`${folder}/x`, useStore.getState().user?.email ?? null);
-  if (reason) throw new Error("Shows have to be saved in your Google Drive. Choose a folder in Google Drive.");
+/** A name for a show's folder that isn't taken in `parent`: "NAME.showsheet", else "NAME 2.showsheet"… */
+async function freeName(parent: string, stem: string, except?: string): Promise<string> {
+  const taken = new Set((await search(`'${parent}' in parents and trashed = false`, "id,name")).filter((f) => f.id !== except).map((f) => f.name));
+  let name = `${stem}${SHOW_EXT}`;
+  for (let n = 2; taken.has(name); n++) name = `${stem} ${n}${SHOW_EXT}`;
+  return name;
+}
+
+/** Create a show in a Drive folder, named after the show. */
+export async function createShow(folder: DriveFolder, fields: Pick<Show, "name" | "venue" | "date">): Promise<void> {
   const show = { ...newShow(fields.name), venue: fields.venue || undefined, date: fields.date || undefined };
-  await backend.ensureFolder(folder);
-  const existing = new Set((await backend.listShows(folder)).map((s) => s.path));
-  const base = `${folder}/${bundleName(show.name)}`;
-  let path = `${base}.showsheet`;
-  for (let n = 2; existing.has(path); n++) path = `${base} ${n}.showsheet`;
-  await backend.create(path, show);
-  useStore.getState().load(show, path, null);
+  if (!backend.isDesktop) {
+    const path = `/preview/shows/${bundleName(show.name)}`;
+    await backend.create(path, show);
+    return useStore.getState().load(show, path, null);
+  }
+  const parent = folder.id ?? (await defaultFolderId());
+  const props = summaryProps(show);
+  const made = await createFolder(await freeName(parent, bundleName(show.name)), parent, props);
+  const dir = await showDir(made.id);
+  await backend.create(dir, show);
+  const up = await backend.driveUpload(`${dir}/project.json`, { parent: made.id, name: "project.json" });
+  await backend.writeJson(dir, "base.json", show);
+  await updateManifest(dir, (m) => { m.folderId = made.id; m.projectId = up.id; m.rev = up.headRevisionId; m.canEdit = true; m.summary = props; m.openedAt = Date.now(); });
+  useStore.getState().load(show, dir, null);
 }
 
-/** Move the open show into another folder in Google Drive (e.g. a shared drive). A read-only show becomes editable. */
-export async function moveOpenShow(folder: string): Promise<string> {
-  const { bundle, show, jobs, setBundle, user } = useStore.getState();
-  if (!bundle || !show) throw new Error("No show is open");
-  if (readOnlyReason(`${folder}/x`, user?.email ?? null)) throw new Error("Choose a folder in your Google Drive");
-  if (jobs.some((j) => j.status === "queued" || j.status === "running")) throw new Error("Wait for the clips to finish first");
-  if (!useStore.getState().readOnly) await backend.save(bundle, show);
-  const moved = await backend.moveBundle(bundle, folder);
-  setBundle(moved);
-  useStore.getState().setSaveState("saved");
-  return moved;
-}
-
-/** Resolves once no clips are being cut (a clip run writes into the show's folder, so it can't be renamed mid-run). */
-function clipsIdle(): Promise<void> {
-  const busy = () => useStore.getState().jobs.some((j) => j.status === "queued" || j.status === "running");
-  if (!busy()) return Promise.resolve();
-  return new Promise((resolve) => {
-    const stop = useStore.subscribe(() => { if (!busy()) { stop(); resolve(); } });
-  });
+/** Wait for the open show's changes to be saved and uploaded. */
+async function settled(): Promise<void> {
+  const { bundle, show } = useStore.getState();
+  if (bundle && show && !useStore.getState().readOnly) await syncShow(bundle, show);
 }
 
 /**
- * Rename the open show, and its .showsheet folder to match (Drive for desktop renames it in Drive, and the
- * Sheet and deck are retitled on the next sync). If clips are being cut, the folder is renamed when they're done.
+ * Move the open show into another Drive folder (another shared drive, say). Drive moves the whole folder, keeping every
+ * file's id, so links to the Sheet, deck and clips keep working. A shared drive that won't take a folder gets a new one
+ * with the files moved into it.
  */
+export async function moveOpenShow(target: DriveFolder & { id: string }): Promise<void> {
+  const { bundle, show, jobs } = useStore.getState();
+  if (!bundle || !show) throw new Error("No show is open");
+  if (jobs.some((j) => j.status === "queued" || j.status === "running")) throw new Error("Wait for the clips to finish first");
+  await settled();
+  const m = await readManifest(bundle);
+  const folder = await getFile(m.folderId, "id,name,parents,properties");
+  if (folder.parents?.includes(target.id)) return;
+  try {
+    await patchFile(m.folderId, {}, `addParents=${target.id}&removeParents=${(folder.parents ?? []).join(",")}`);
+  } catch {
+    const moved = await moveContents(m.folderId, target.id, folder.name ?? `${bundleName(show.name)}${SHOW_EXT}`, folder.properties ?? {});
+    // The show has a new folder, so a new copy on this Mac: open it there.
+    await backend.driveForget(bundle).catch(() => {});
+    write(CACHE_KEY, cachedShows().filter((s) => s.path !== bundle));
+    const dir = await showDir(moved);
+    await updateManifest(dir, (x) => { x.folderId = moved; });
+    await openShow(dir);
+    return;
+  }
+  useStore.getState().setLocation(target.label);
+}
+
+/** Make `name` in `target` and move everything in `from` into it, folder by folder; then bin `from`. */
+async function moveContents(from: string, target: string, name: string, properties: Record<string, string>): Promise<string> {
+  const made = await createFolder(name, target, properties);
+  for (const f of await search(`'${from}' in parents and trashed = false`, "id,name,mimeType")) {
+    if (f.mimeType === FOLDER) await moveContents(f.id, made.id, f.name ?? "folder", {});
+    else await patchFile(f.id, {}, `addParents=${made.id}&removeParents=${from}`);
+  }
+  await trashFile(from);
+  return made.id;
+}
+
+/** Rename the open show, and its folder in Drive to match (the Sheet and deck are retitled on the next sync). */
 export async function renameOpenShow(name: string): Promise<void> {
   const clean = name.trim().toUpperCase();
-  const { show, update, toast } = useStore.getState();
+  const { show, bundle, update, toast } = useStore.getState();
   if (!clean || !show || show.name === clean) return;
   update((s) => { s.name = clean; });
-  if (useStore.getState().readOnly) return;
-  await clipsIdle();
-  const { bundle, show: now, setBundle, setSaveState } = useStore.getState();
-  if (!bundle || now?.id !== show.id || now.name !== clean) return; // closed, or renamed again since
+  if (useStore.getState().readOnly || !bundle || !backend.isDesktop) return;
   try {
-    await backend.save(bundle, now);
-    const to = await backend.renameBundle(bundle, bundleName(clean));
-    if (to === bundle) return;
-    setBundle(to);
-    setSaveState("saved");
-    write(CACHE_KEY, cachedShows().map((s) => (s.path === bundle ? { ...s, path: to, name: clean } : s)));
+    const m = await readManifest(bundle);
+    const folder = await getFile(m.folderId, "parents");
+    const parent = folder.parents?.[0];
+    await patchFile(m.folderId, { name: parent ? await freeName(parent, bundleName(clean), m.folderId) : `${bundleName(clean)}${SHOW_EXT}` });
+    write(CACHE_KEY, cachedShows().map((s) => (s.path === bundle ? { ...s, name: clean } : s)));
   } catch (e) {
-    toast(String(e).replace(/^Error: /, ""));
+    toast(message(e));
   }
 }
 
 /**
- * Delete the open show: its folder (project, renders, clips, stills, and the Google Sheet and deck inside it) goes
- * to the Trash, and so to Google Drive's bin. Linked source files (show records, audio) stay where they are.
- * Shows from before the Sheet and deck moved into the show's folder have them binned separately.
- * Returns a note if the Google files couldn't be removed.
+ * Delete the open show: its folder in Drive (project, renders, clips, stills, and the Sheet and deck inside it) goes to
+ * Drive's bin, where it can be restored for 30 days, and its copy on this Mac is removed. Linked source files (show
+ * records, audio) stay where they are. Shows from before the Sheet and deck moved into the show's folder have them
+ * binned separately. Returns a note if the Google files couldn't be removed.
  */
 export async function deleteOpenShow(): Promise<string | null> {
-  const { bundle, show, user, readOnly, close } = useStore.getState();
+  const { bundle, show, readOnly, close } = useStore.getState();
   if (!bundle || !show) throw new Error("No show is open");
   if (readOnly) throw new Error("This show is read only");
   let note: string | null = null;
-  const folderId = show.google?.folder_id;
-  if (folderId && folderId !== (await backend.driveItemId(bundle))) {
+  const m = await readManifest(bundle);
+  const old = show.google?.folder_id;
+  if (old && old !== m.folderId) {
     try {
-      await backend.googleApi("PATCH", `https://www.googleapis.com/drive/v3/files/${folderId}?supportsAllDrives=true`, { trashed: true });
+      await trashFile(old);
     } catch (e) {
-      note = `The show is deleted, but its Google Sheet and deck couldn't be: ${String(e).replace(/^Error: /, "")}`;
+      note = `The show is deleted, but its Google Sheet and deck couldn't be: ${message(e)}`;
     }
   }
-  if (user) await backend.presenceLeave(bundle, user.email).catch(() => {});
-  await backend.trashBundle(bundle);
+  await trashFile(m.folderId);
+  await backend.driveForget(bundle).catch(() => {});
   write(CACHE_KEY, cachedShows().filter((s) => s.path !== bundle));
   close();
   return note;

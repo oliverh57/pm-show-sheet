@@ -1,17 +1,26 @@
-// Space on this Mac: show media in Google Drive can be made online only (see src-tauri/src/files.rs).
-// "Make unused files online only" is per Mac (localStorage, like the theme). It looks at a show's records,
-// audio and clips when the show opens, and at every show's once a day after All shows looks for shows.
-// Images stay: they're small, and the songs page shows them as soon as a show opens.
+// Space on this Mac: a show's clips and images are copies of what's in Google Drive (src/drive/), so they can be
+// removed from this Mac and download again the next time they're shown. "Remove downloads of unused shows" is per
+// Mac (localStorage, like the theme): once a day after All shows looks for shows, the clips of shows not opened on
+// this Mac for that long are removed. Images stay: they're small, and the songs page shows them as soon as a show opens.
+// Records and audio are on this Mac's disks (or an external one), not in Drive, so they're never removed.
 import { create } from "zustand";
 import { backend } from "./backend";
+import { readManifest } from "./drive/show";
 import { songImagePaths } from "./model/ops";
 import type { Show } from "./model/types";
+import { useStore } from "./store";
 
-const KEY = "pm.onlineOnlyAfterDays";
-const LAST_SWEEP_KEY = "pm.onlineOnlySweptAt";
+const KEY = "pm.removeDownloadsAfterDays";
+const LAST_SWEEP_KEY = "pm.downloadsSweptAt";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Days unopened before a file is made online only; 0 for never. */
+/**
+ * Where a file is. A show's media: "local" (on this Mac and in Drive), "online" (only in Drive), "uploading" (only
+ * on this Mac so far), "missing" (nowhere). A record or audio file: "na" when it's on this Mac, else "missing".
+ */
+export type FileState = "local" | "online" | "uploading" | "missing" | "na";
+
+/** Days a show goes unopened before its downloads are removed; 0 for never. */
 export const UNUSED_OPTIONS: { days: number; label: string }[] = [
   { days: 0, label: "Never" },
   { days: 7, label: "After a week" },
@@ -48,41 +57,53 @@ export function showMediaPaths(bundle: string, show: Show, images: boolean): str
   ])];
 }
 
-/** Make this show's unused records, audio and clips online only, if the setting is on. */
-export async function sweepShow(bundle: string, show: Show): Promise<number> {
-  const days = useStorage.getState().unusedDays;
-  return days ? backend.makeUnusedOnlineOnly(showMediaPaths(bundle, show, false), days) : 0;
+/** Where each file is (see FileState), for the open show at `bundle`. */
+export async function fileStates(bundle: string, paths: string[]): Promise<Record<string, FileState>> {
+  const m = await readManifest(bundle).catch(() => null);
+  const here = await backend.pathsExist(paths);
+  return Object.fromEntries(paths.map((p, i) => {
+    if (!p.startsWith(`${bundle}/`)) return [p, here[i] ? "na" : "missing"];
+    const uploaded = Boolean(m?.files[p.slice(bundle.length + 1)]);
+    return [p, here[i] ? (uploaded ? "local" : "uploading") : (uploaded ? "online" : "missing")];
+  }));
 }
 
-/** The same for every show, at most once a day. */
+/** Remove a show's media from this Mac, the files that are in Drive (it downloads again when it's shown). How many went. */
+export async function removeDownloads(bundle: string, paths: string[]): Promise<number> {
+  const m = await readManifest(bundle);
+  const rel = paths.map((p) => (p.startsWith(`${bundle}/`) ? p.slice(bundle.length + 1) : p)).filter((r) => m.files[r]);
+  return rel.length ? backend.driveEvict(bundle, rel) : 0;
+}
+
+/** Download a show's media from Drive to this Mac. */
+export async function download(bundle: string, paths: string[]) {
+  const notes = await backend.driveFetch(bundle, paths.map((p) => (p.startsWith(`${bundle}/`) ? p.slice(bundle.length + 1) : p)));
+  if (notes.length) throw new Error(notes.slice(0, 3).join(" · "));
+}
+
+/** Remove the clips of shows not opened on this Mac for the setting's days, at most once a day. */
 export async function sweepShowsDaily(bundles: string[]) {
-  if (!useStorage.getState().unusedDays || !backend.isDesktop) return;
+  const days = useStorage.getState().unusedDays;
+  if (!days || !backend.isDesktop) return;
   try {
     if (Date.now() - Number(localStorage.getItem(LAST_SWEEP_KEY) ?? 0) < DAY_MS) return;
     localStorage.setItem(LAST_SWEEP_KEY, String(Date.now()));
   } catch { /* storage unavailable: sweep anyway */ }
   for (const bundle of bundles) {
-    const show = await backend.open(bundle).catch(() => null);
-    if (show) await sweepShow(bundle, show).catch(() => {});
+    if (bundle === useStore.getState().bundle) continue;
+    const m = await readManifest(bundle).catch(() => null);
+    if (!m?.openedAt || Date.now() - m.openedAt < days * DAY_MS) continue;
+    await removeDownloads(bundle, Object.keys(m.files).filter((r) => r.startsWith("media/clips/"))).catch(() => 0);
   }
 }
 
-/**
- * Make every file of every show (images too) online only, where it can be. `onProgress` gets the shows done so far.
- * Returns how many files it made online only, and how many have to stay until they've uploaded.
- */
-export async function makeAllOnlineOnly(bundles: string[], onProgress?: (done: number, total: number) => void): Promise<{ done: number; uploading: number; notes: string[] }> {
-  const result = { done: 0, uploading: 0, notes: [] as string[] };
+/** Remove every show's downloaded media from this Mac, images too. `onProgress` gets the shows done so far. */
+export async function removeAllDownloads(bundles: string[], onProgress?: (done: number, total: number) => void): Promise<number> {
+  let done = 0;
   for (const [i, bundle] of bundles.entries()) {
     onProgress?.(i, bundles.length);
-    const show = await backend.open(bundle).catch(() => null);
-    if (!show) continue;
-    const states = await backend.fileStates(showMediaPaths(bundle, show, true));
-    const local = Object.keys(states).filter((p) => states[p] === "local");
-    result.uploading += Object.values(states).filter((s) => s === "uploading").length;
-    const notes = local.length ? await backend.makeOnlineOnly(local) : [];
-    result.done += local.length - notes.length;
-    result.notes.push(...notes);
+    const m = await readManifest(bundle).catch(() => null);
+    if (m) done += await removeDownloads(bundle, Object.keys(m.files).filter((r) => r.startsWith("media/"))).catch(() => 0);
   }
-  return result;
+  return done;
 }

@@ -4,7 +4,7 @@ import { useState } from "react";
 import logo from "../assets/logo.png";
 import { backend } from "../backend";
 import { cachedShows } from "../library";
-import { makeAllOnlineOnly, setUnusedDays, UNUSED_OPTIONS, useStorage } from "../storage";
+import { removeAllDownloads, setUnusedDays, UNUSED_OPTIONS, useStorage } from "../storage";
 import { useStore } from "../store";
 import { setThemePref, useTheme, type ThemePref } from "../theme";
 import { checkForUpdates, useUpdates } from "../updates";
@@ -66,25 +66,21 @@ export function AppSettings({ onBack }: { onBack?: () => void }) {
   );
 }
 
-/** Online only: removing show media from this Mac while it stays in Google Drive. */
+/** Downloads: removing show media from this Mac while it stays in Google Drive. */
 function StorageGroup() {
   const days = useStorage((s) => s.unusedDays);
   const openBundle = useStore((s) => s.bundle);
   const toast = useStore((s) => s.toast);
   const [progress, setProgress] = useState<string | null>(null);
 
-  async function makeAll() {
+  async function removeAll() {
     const bundles = [...new Set([...(openBundle ? [openBundle] : []), ...cachedShows().map((s) => s.path)])];
     if (!bundles.length) return toast("No shows found yet. Open All shows to look for them.");
-    if (!(await backend.confirm(`Make every file in ${bundles.length === 1 ? "your show" : `your ${bundles.length} shows`} online only? They stay in Google Drive and download again when they're opened.`))) return;
+    if (!(await backend.confirm(`Remove the downloaded clips and images of ${bundles.length === 1 ? "your show" : `your ${bundles.length} shows`} from this Mac? They stay in Google Drive and download again when they're shown.`))) return;
     setProgress("Working…");
     try {
-      const r = await makeAllOnlineOnly(bundles, (done, total) => setProgress(`Working… ${done + 1}/${total} shows`));
-      toast([
-        r.done ? `${r.done} file${r.done === 1 ? " is" : "s are"} now online only` : "Nothing more to make online only",
-        r.uploading && `${r.uploading} still uploading`,
-        ...r.notes.slice(0, 3),
-      ].filter(Boolean).join(" · "));
+      const n = await removeAllDownloads(bundles, (done, total) => setProgress(`Working… ${done + 1}/${total} shows`));
+      toast(n ? `Removed ${n} file${n === 1 ? "" : "s"} from this Mac` : "Nothing more to remove");
     } catch (e) {
       toast(String(e).replace(/^Error: /, ""));
     }
@@ -95,13 +91,13 @@ function StorageGroup() {
     <section className="sgroup">
       <div className="label">Storage</div>
       <div className="panel slist">
-        <SRow title="Make unused files online only" hint="Records, audio and clips not opened on this Mac for a while. They stay in Google Drive and download again when they're opened.">
-          <select value={days} aria-label="Make unused files online only" onChange={(e) => setUnusedDays(Number(e.target.value))}>
+        <SRow title="Remove downloads of unused shows" hint="Clips of shows not opened on this Mac for a while. They stay in Google Drive and download again when they're shown.">
+          <select value={days} aria-label="Remove downloads of unused shows" onChange={(e) => setUnusedDays(Number(e.target.value))}>
             {UNUSED_OPTIONS.map((o) => <option key={o.days} value={o.days}>{o.label}</option>)}
           </select>
         </SRow>
-        <SRow title="All files" hint="Every show's media, images too. Files still uploading stay until they're in Google Drive.">
-          <button disabled={Boolean(progress)} onClick={makeAll}><Icon name="cloud" size="sm" /> {progress ?? "Make all online only"}</button>
+        <SRow title="All downloads" hint="Every show's clips and images. Files still uploading stay until they're in Google Drive. Records and audio aren't touched.">
+          <button disabled={Boolean(progress)} onClick={removeAll}><Icon name="cloud" size="sm" /> {progress ?? "Remove all downloads"}</button>
         </SRow>
       </div>
     </section>

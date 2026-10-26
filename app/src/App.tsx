@@ -6,7 +6,6 @@ import "./App.css";
 import { backend, IMAGE_EXTENSIONS } from "./backend";
 import { AppSettings, HomeSettings } from "./components/AppSettings";
 import { ColumnsDialog } from "./components/ColumnsDialog";
-import { DriveSetup, useDriveCheck } from "./components/DriveSetup";
 import { ToolsSetup, useToolsCheck } from "./components/ToolsSetup";
 import { Home } from "./components/Home";
 import { ImportPage } from "./components/ImportPage";
@@ -23,6 +22,7 @@ import { useAdoptWatchFolders } from "./watchFolders";
 import { useStore, type View } from "./store";
 import { useAutoUpdate } from "./updates";
 import { useGoogleSync } from "./google/sync";
+import { isOffline, pushShow, useDriveLive } from "./drive/live";
 
 const SAVE_DELAY_MS = 600;
 
@@ -35,21 +35,19 @@ export default function App() {
   const drawerSongId = useStore((s) => s.drawerSongId);
   const importSeq = useStore((s) => s.importSeq);
   const dragging = useFileDrop();
-  const [driveReady, skipDrive] = useDriveCheck(user?.email);
   const [toolsReady, skipTools] = useToolsCheck(Boolean(user));
   useAuthCheck();
   useAutosave();
   useShortcuts();
   useAutoUpdate();
   useGoogleSync();
-  usePresence();
+  useDriveLive();
   useAdoptWatchFolders();
   useTidyResolved();
 
   if (!authChecked) return null;
   if (!user) return <div className="app"><UpdateBar /><WhatsNew /><SignIn /></div>;
-  if (!show && (driveReady === null || toolsReady === null)) return null;
-  if (!show && !driveReady) return <div className="app"><UpdateBar /><WhatsNew /><DriveSetup onDone={skipDrive} /></div>;
+  if (!show && toolsReady === null) return null;
   if (!show && !toolsReady) return <div className="app"><UpdateBar /><WhatsNew /><ToolsSetup onDone={skipTools} /></div>;
   if (!show) return <div className="app"><UpdateBar /><WhatsNew />{view === "prefs" ? <HomeSettings /> : <Home />}<Toasts /></div>;
 
@@ -97,29 +95,6 @@ function useTidyResolved() {
   }, [showId, keep, readOnly]);
 }
 
-const PRESENCE_EVERY_MS = 30000;
-
-/** Tell other Macs this show is open here (a small file in the bundle, synced by Drive), and see who else has it open. */
-function usePresence() {
-  const bundle = useStore((s) => s.bundle);
-  const user = useStore((s) => s.user);
-  const readOnly = useStore((s) => s.readOnly);
-  useEffect(() => {
-    if (!bundle || !user || readOnly) return;
-    const beat = () => backend.presenceBeat(bundle, user.email, user.name).then((o) => useStore.getState().setOthers(o)).catch(() => {});
-    beat();
-    const t = window.setInterval(beat, PRESENCE_EVERY_MS);
-    const leave = () => { backend.presenceLeave(bundle, user.email); };
-    window.addEventListener("beforeunload", leave);
-    return () => {
-      window.clearInterval(t);
-      window.removeEventListener("beforeunload", leave);
-      leave();
-      useStore.getState().setOthers([]);
-    };
-  }, [bundle, user, readOnly]);
-}
-
 async function closeShow() {
   await saveNow();
   useStore.getState().close();
@@ -141,16 +116,18 @@ function useAutosave() {
   }, [version]);
 }
 
+/** Save the show on this Mac (so nothing's lost offline), then upload it to Google Drive, merging anyone else's save. */
 async function saveNow() {
   const { show, bundle, setSaveState, readOnly } = useStore.getState();
   if (!show || !bundle || readOnly || useStore.getState().saveState === "saved") return;
   setSaveState("saving");
   try {
     await backend.save(bundle, show);
-    // Only mark saved if nothing changed while we were writing.
-    if (useStore.getState().show === show) setSaveState("saved");
+    if (backend.isDesktop) await pushShow(bundle, show);
+    // An edit while saving made it "unsaved" again, and saves again in a moment.
+    if (useStore.getState().saveState === "saving") setSaveState("saved");
   } catch (e) {
-    setSaveState("error", String(e));
+    if (useStore.getState().saveState === "saving") setSaveState(isOffline(e) ? "offline" : "error", String(e));
   }
 }
 

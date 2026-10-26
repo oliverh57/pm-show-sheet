@@ -2,8 +2,8 @@
 import { useEffect, useState } from "react";
 import { backend } from "../backend";
 import { syncNow, useSyncStatus } from "../google/sync";
-import { deleteOpenShow, describeLocation, openInDrive, renameOpenShow, timeAgo } from "../library";
-import { applySheetValue, clipName, keepResolvedDays, showCover, showImages } from "../model/ops";
+import { deleteOpenShow, openInDrive, renameOpenShow, timeAgo } from "../library";
+import { applySheetValue, bundleName, clipName, keepResolvedDays, showCover, showImages } from "../model/ops";
 import { DraftInput } from "./fields";
 import { useStore } from "../store";
 import { chooseAndMove } from "./Shell";
@@ -13,7 +13,7 @@ import { GoogleDriveMark, Icon } from "./icons";
 
 export function SharePage() {
   const show = useStore((s) => s.show)!;
-  const bundle = useStore((s) => s.bundle)!;
+  const location = useStore((s) => s.location);
   const sync = useSyncStatus();
   const { update, updateQuiet } = useStore.getState();
   const gs = show.google ?? {};
@@ -84,7 +84,7 @@ export function SharePage() {
       <div className="panel">
         <div className="label">Location</div>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 500 }}>{describeLocation(bundle)}</div><div className="muted small" style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{bundle.split("/").pop()}</div></div>
+          <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 500 }}>{location ?? "Google Drive"}</div><div className="muted small" style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{bundleName(show.name)}.showsheet</div></div>
           <button onClick={() => chooseAndMove()}><Icon name="folder" size="sm" /> Move to another folder…</button>
         </div>
         <p className="muted small" style={{ marginBottom: 0 }}>Move it into a shared drive to share it with the team.</p>
@@ -108,6 +108,7 @@ export function SyncBadge() {
 export function SettingsPage() {
   const show = useStore((s) => s.show)!;
   const bundle = useStore((s) => s.bundle)!;
+  const location = useStore((s) => s.location);
   const readOnly = useStore((s) => s.readOnly);
   const [deleting, setDeleting] = useState(false);
   const [pickingCover, setPickingCover] = useState(false);
@@ -129,7 +130,7 @@ export function SettingsPage() {
       <section className="sgroup">
         <div className="label">Google Drive</div>
         <div className="panel slist">
-          <SRow title={describeLocation(bundle)} hint={bundle.split("/").pop()} wrapTitle>
+          <SRow title={location ?? "Google Drive"} hint={`${bundleName(show.name)}.showsheet`} wrapTitle>
             <button onClick={() => openInDrive(bundle)}><GoogleDriveMark className="ico sm" /> Open</button>
             <button onClick={() => chooseAndMove()}><Icon name="folder" size="sm" /> Move…</button>
           </SRow>

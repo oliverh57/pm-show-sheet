@@ -13,6 +13,8 @@ import {
   reviewTab, type SheetProtection, showTab, snapshot, structureRequests, ARCHIVE_TAB, REVIEW_TAB, SHOW_TAB, type Conflict, type TabGrid,
 } from "./sheet";
 import { deckFingerprint, deckRequests } from "./slides";
+import { driveIdOf } from "../drive/media";
+import { readManifest } from "../drive/show";
 
 const SHEETS = "https://sheets.googleapis.com/v4/spreadsheets";
 const SLIDES = "https://slides.googleapis.com/v1/presentations";
@@ -58,11 +60,9 @@ const g = () => useStore.getState().show?.google ?? {};
 const ALL = "supportsAllDrives=true"; // shows are often in shared drives
 export const IMAGES_FOLDER = "Slides images";
 
-/** The Drive id of the open show's .showsheet folder (Drive for desktop has to have uploaded it first). */
+/** The Drive id of the open show's .showsheet folder. */
 async function showFolderId(): Promise<string> {
-  const id = await backend.driveItemId(useStore.getState().bundle!);
-  if (!id) throw new Error("Waiting for Google Drive to upload the show");
-  return id;
+  return (await readManifest(useStore.getState().bundle!)).folderId;
 }
 
 /**
@@ -132,6 +132,7 @@ async function ensureImages(songIds: string[], extra: string[] = []): Promise<Re
     if (!id) {
       const path = img.startsWith("/") ? img : `${bundle}/${img}`;
       try {
+        if (!img.startsWith("/")) await backend.driveFetch(bundle, [img]); // made on another Mac: download it first
         id = await backend.googleUpload(path, img.split("/").pop() ?? "render.jpg", g().media_folder_id ?? null, null, IMAGE_PX);
       } catch {
         continue; // missing file: the cell stays empty
@@ -162,13 +163,12 @@ async function pruneImages(): Promise<void> {
 const CLIPS_DIR = "media/clips/";
 
 /**
- * Clips are saved in the show's folder, so Drive for desktop uploads them with it: find each one's Drive id (and forget
+ * Clips are uploaded to the show's folder after they're made (src/drive/media.ts): find each one's Drive id (and forget
  * clips no song has any more). A clip not uploaded yet is looked for again next time.
  *
- * The clips folder is listed on Drive rather than trusting each file's Drive for desktop id: a file copied on the Mac
- * (a show moved across drives, a clip imported from elsewhere in Drive) keeps the id of the file it was copied from,
- * so the link would open the original (often binned, and not shared with anyone else). Listing also mends shows that
- * stored those ids before.
+ * The clips folder is listed on Drive rather than trusting stored ids: shows from when Drive for desktop synced them
+ * could hold the id of a file a clip was copied from (often binned, and not shared with anyone else), and listing
+ * mends those.
  */
 export async function resolveClips(): Promise<void> {
   const { show, bundle } = useStore.getState();
@@ -177,7 +177,7 @@ export async function resolveClips(): Promise<void> {
   const paths = new Set(Object.values(show.songs).flatMap((s) => (s.clips ?? []).map((c) => c.path)));
   const inFolder = [...paths].filter((p) => p.startsWith(CLIPS_DIR) && !p.slice(CLIPS_DIR.length).includes("/"));
   const onDrive = new Map<string, string>(); // file name → id, the most recently changed if two share a name
-  const folder = inFolder.length ? await backend.driveItemId(`${bundle}/${CLIPS_DIR.slice(0, -1)}`) : null;
+  const folder = inFolder.length ? await driveIdOf(`${bundle}/${CLIPS_DIR.slice(0, -1)}`, bundle) : null;
   if (folder) {
     const q = enc(`'${folder}' in parents and trashed = false`);
     let page: string | undefined;
@@ -194,7 +194,7 @@ export async function resolveClips(): Promise<void> {
       const id = onDrive.get(path.slice(CLIPS_DIR.length));
       if (id) next[path] = id; // not uploaded yet: no link until it is
     } else {
-      const id = known[path] ?? (await backend.driveItemId(`${bundle}/${path}`));
+      const id = known[path] ?? (await driveIdOf(`${bundle}/${path}`, bundle));
       if (id) next[path] = id;
     }
   }

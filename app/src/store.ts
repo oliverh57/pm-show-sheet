@@ -2,10 +2,11 @@
 // records the previous version for undo. Saving is wired up in App (it watches `version`).
 import { create } from "zustand";
 import type { GoogleUser, ThumbCandidate } from "./backend";
+import { merge3 } from "./drive/merge";
 import type { Show } from "./model/types";
 
 export type View = "songs" | "media" | "comments" | "share" | "sheet" | "import" | "settings" | "prefs"; // settings = this show; prefs = the app
-export type SaveState = "saved" | "saving" | "unsaved" | "error";
+export type SaveState = "saved" | "saving" | "unsaved" | "offline" | "error"; // offline: saved on this Mac, uploads when Drive can be reached
 export type MediaTab = "add" | "inbox";
 export type SongsLayout = "grid" | "list" | "present"; // present: one song at a time, full size
 
@@ -43,7 +44,8 @@ interface State {
   authChecked: boolean;
   show: Show | null;
   bundle: string | null;
-  readOnly: string | null; // why the open show can't be edited (it isn't in your Google Drive), or null
+  readOnly: string | null; // why the open show can't be edited (it's only shared with you to view), or null
+  location: string | null; // where the open show is in Google Drive ("Shared drives / X › 2026")
   others: { email: string; name: string }[]; // who else has the show open
   version: number; // bumps on every change; App saves when it moves
   past: Show[];
@@ -68,11 +70,18 @@ interface State {
   setUser(user: GoogleUser | null): void;
   load(show: Show, bundle: string, readOnly?: string | null): void;
   setOthers(others: { email: string; name: string }[]): void;
+  setLocation(location: string | null): void;
+  setReadOnly(readOnly: string | null): void;
   close(): void;
   setBundle(path: string): void; // the show was moved
   update(fn: (show: Show) => void): void;
   /** Change bookkeeping (Google sync ids, what was pushed) without an undo step. */
   updateQuiet(fn: (show: Show) => void): void;
+  /**
+   * Someone else's edits came from Drive: `sent` is the show this Mac synced, `merged` what came back. Their edits are
+   * replayed onto the show (keeping anything edited here since) and onto undo history, so undo never takes them away.
+   */
+  applyRemote(sent: Show, merged: Show): void;
   undo(): void;
   redo(): void;
   select(songId: string | null, colId?: string | null): void;
@@ -103,6 +112,7 @@ export const useStore = create<State>((set, get) => ({
   show: null,
   bundle: null,
   readOnly: null,
+  location: null,
   others: [],
   version: 0,
   past: [],
@@ -129,7 +139,7 @@ export const useStore = create<State>((set, get) => ({
     set({ user, authChecked: true });
   },
   load(show, bundle, readOnly = null) {
-    set({ show, bundle, readOnly, others: [], past: [], future: [], saveState: "saved", saveError: null, view: "songs", mediaTab: "add",
+    set({ show, bundle, readOnly, location: null, others: [], past: [], future: [], saveState: "saved", saveError: null, view: "songs", mediaTab: "add",
           selectedSongId: show.set_order[0] ?? null, selectedColId: "name", drawerSongId: null, importFiles: null, importSource: null, jobs: [], stillPicks: [] });
   },
   setBundle(bundle) {
@@ -138,13 +148,19 @@ export const useStore = create<State>((set, get) => ({
   setOthers(others) {
     set({ others });
   },
+  setLocation(location) {
+    set({ location });
+  },
+  setReadOnly(readOnly) {
+    set({ readOnly });
+  },
   close() {
-    set({ show: null, bundle: null, readOnly: null, others: [], past: [], future: [], selectedSongId: null, drawerSongId: null, importFiles: null, stillPicks: [], view: "songs" });
+    set({ show: null, bundle: null, readOnly: null, location: null, others: [], past: [], future: [], selectedSongId: null, drawerSongId: null, importFiles: null, stillPicks: [], view: "songs" });
   },
   update(fn) {
     const { show, past, version, readOnly } = get();
     if (!show) return;
-    if (readOnly) return get().toast("Read only: move this show into Google Drive to edit it");
+    if (readOnly) return get().toast(`Read only: ${readOnly}`);
     const next = structuredClone(show);
     fn(next);
     set({ show: next, past: [...past.slice(-HISTORY_LIMIT + 1), show], future: [], version: version + 1, saveState: "unsaved" });
@@ -155,6 +171,12 @@ export const useStore = create<State>((set, get) => ({
     const next = structuredClone(show);
     fn(next);
     set({ show: next, version: version + 1, saveState: "unsaved" });
+  },
+  applyRemote(sent, merged) {
+    const { show, past, future, version } = get();
+    if (!show) return;
+    const replay = (s: Show) => merge3(sent, s, merged).merged;
+    set({ show: show === sent ? merged : replay(show), past: past.map(replay), future: future.map(replay), version: version + 1 });
   },
   // Undo and redo never roll back sync bookkeeping: the Sheet and deck still exist.
   undo() {

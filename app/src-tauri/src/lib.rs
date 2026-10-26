@@ -17,7 +17,7 @@ use std::process::{Command, Stdio};
 use tauri::{AppHandle, Emitter};
 
 mod burnin;
-mod files;
+mod drive;
 mod google;
 mod ltc;
 mod shows;
@@ -109,8 +109,9 @@ fn safe_stem(name: &str) -> String {
     if trimmed.is_empty() { "clip".into() } else { trimmed }
 }
 
-/// Per-machine files kept beside project.json (render-cull decisions hold local paths, so they aren't show data).
-const SIDE_FILES: [&str; 1] = ["inbox.json"];
+/// Per-machine files kept beside project.json: render-cull decisions (they hold local paths, so they aren't show data),
+/// and for a show's copy of Google Drive its manifest, the version last agreed with Drive and a just-downloaded copy.
+const SIDE_FILES: [&str; 4] = ["inbox.json", ".drive.json", "base.json", ".remote.json"];
 
 #[tauri::command]
 fn side_read(bundle: String, name: String) -> Result<Option<Value>, String> {
@@ -131,6 +132,7 @@ fn side_write(bundle: String, name: String, value: Value) -> Result<(), String> 
         return Err(format!("unknown side file '{name}'"));
     }
     let bytes = serde_json::to_vec_pretty(&value).map_err(err("encode side file"))?;
+    fs::create_dir_all(&bundle).map_err(err("create show folder"))?;
     write_atomic(&PathBuf::from(&bundle).join(&name), &bytes)
 }
 
@@ -552,6 +554,10 @@ async fn image_crop(bundle: String, source: String, x: f64, y: f64, w: f64, h: f
 pub fn run() {
     tauri::Builder::default()
         .manage(google::TokenCache::default())
+        .setup(|app| {
+            drive::init(app.handle());
+            Ok(())
+        })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -559,11 +565,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             bundle_create, bundle_open, bundle_save, media_import, side_read, side_write, list_folder, probe_media,
             ltc_scan, clip_cut, frame_grab, image_crop, media_save,
-            shows::drive_shows_folder, shows::drive_status, shows::drive_open_app, tools::tools_status, tools::tools_install, tools::tools_install_in_terminal, shows::ensure_folder, shows::shows_list, shows::shows_summaries, shows::bundle_move,
-            shows::shows_scan, shows::drive_item_id, shows::presence_beat, shows::presence_leave, shows::bundle_trash, shows::bundle_trash_files, shows::bundle_rename,
-            files::file_states, files::make_online_only, files::make_unused_online_only, files::make_available, thumbs::thumb_candidates, stream::media_server,
+            tools::tools_status, tools::tools_install, tools::tools_install_in_terminal, shows::bundle_trash_files,
+            thumbs::thumb_candidates, stream::media_server,
             google::google_client_configured, google::google_set_client, google::google_sign_in,
-            google::google_current_user, google::google_sign_out, google::google_api, google::google_upload
+            google::google_current_user, google::google_sign_out, google::google_api, google::google_upload,
+            drive::drive_cache_root, drive::drive_download, drive::drive_upload, drive::drive_fetch, drive::paths_exist, drive::drive_evict, drive::drive_forget
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

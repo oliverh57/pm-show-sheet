@@ -7,6 +7,18 @@ export interface ReleaseNotes {
 }
 
 export const WHATS_NEW: Record<string, ReleaseNotes> = {
+  "0.5.0": {
+    summary: "Google Drive for desktop isn't needed any more, and shows shared with you appear in All shows.",
+    items: [
+      "The app opens and saves shows in Google Drive itself. You can uninstall Google Drive for desktop if you don't use it for anything else.",
+      "All shows lists shows shared with you as well as My Drive and shared drives, with where each one is. A show you can only view opens read only.",
+      "Two people editing a show at once no longer overwrite each other: edits to different things both stay, and if you both changed the same thing, yours is kept and you're told.",
+      "Other people's changes appear within about 10 seconds while you have a show open.",
+      "New show and Move choose a folder in Google Drive, including shared drives and folders shared with you.",
+      "Clips and images made on another Mac download the first time they're shown. Settings › Storage removes downloads to free up space; they come back when needed.",
+      "A record or audio file that isn't on this Mac shows Locate… on the Media page.",
+    ],
+  },
   "0.4.0": {
     summary: "Burned-in timecode on clips, share links for the Sheet, and colour dropdowns in the Sheet.",
     items: [
