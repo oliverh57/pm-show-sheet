@@ -45,8 +45,10 @@ type Folder = Awaited<ReturnType<typeof getFile>>;
 
 /** "My Drive", "Shared drives / PM - CLIENTS", or "Shared with you by Sam". */
 export function whereIs(folder: Folder, drives: Map<string, string>): string {
-  if (folder.driveId) return `Shared drives / ${drives.get(folder.driveId) ?? "a shared drive"}`;
-  if (folder.ownedByMe) return "My Drive";
+  // A shared drive you're a member of is listed; one you only reach through a share (the show's folder, or one above
+  // it, shared with you) isn't, and its name can't be read.
+  if (folder.driveId && drives.has(folder.driveId)) return `Shared drives / ${drives.get(folder.driveId)}`;
+  if (!folder.driveId && folder.ownedByMe) return "My Drive";
   const by = folder.sharingUser?.displayName || folder.sharingUser?.emailAddress || folder.owners?.[0]?.displayName || folder.owners?.[0]?.emailAddress;
   return by ? `Shared with you by ${by}` : "Shared with you";
 }

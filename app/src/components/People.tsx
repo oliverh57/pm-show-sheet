@@ -2,6 +2,7 @@
 // (see google/sharing.ts).
 import { useEffect, useState } from "react";
 import { backend } from "../backend";
+import { emailKey } from "../google/sheet";
 import { ACCESS, type Access, isOutside, LINK, listPeople, type Person, share, shareLink, unshare, validEmail } from "../google/sharing";
 import { syncNow } from "../google/sync";
 import { useStore } from "../store";
@@ -48,7 +49,7 @@ export function PeoplePanel() {
   }
 
   const to = email.trim();
-  const existing = people?.find((p) => p.email.toLowerCase() === to.toLowerCase());
+  const existing = people?.find((p) => emailKey(p.email) === emailKey(to));
   const outside = validEmail(to) && isOutside(to);
   const hint = ACCESS.find((a) => a.id === access)!.hint;
   const add = () => change("add", async () => { await share(to, access, notify, message, existing); setEmail(""); setMessage(""); },
@@ -62,7 +63,7 @@ export function PeoplePanel() {
   }, `Link copied: anyone with it can ${a === "edit" ? "edit the Sheet's ✎ columns" : "view the Sheet and deck"}`);
   const copyLink = () => link && navigator.clipboard.writeText(link).then(() => toast("Link copied"), () => toast("Couldn't copy the link"));
 
-  const others = people?.filter((p) => p.email.toLowerCase() !== user?.email.toLowerCase()) ?? []; // you're shown first
+  const others = people?.filter((p) => emailKey(p.email) !== emailKey(user?.email ?? "")) ?? []; // you're shown first
   const mine = others.filter((p) => p.access !== null);
   const team = others.filter((p) => p.access === null);
 

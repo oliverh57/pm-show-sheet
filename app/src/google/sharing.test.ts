@@ -87,5 +87,7 @@ describe("sharing a show", () => {
   it("knows who's outside the organisation", () => {
     expect(isOutside("ed@other.com")).toBe(true);
     expect(isOutside("Team@PM.com")).toBe(false);
+    useStore.setState({ user: { name: "Tom", email: "tom@googlemail.com", picture: null } });
+    expect(isOutside("tom@gmail.com")).toBe(false); // the same account
   });
 });

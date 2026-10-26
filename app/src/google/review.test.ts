@@ -236,6 +236,7 @@ describe("REVIEW tab", () => {
     expect(sheetAuthor([sam(5), me(11), ria(12)], since, [])).toEqual({ name: "Ria", email: "ria@pm.com" }); // Sam's edit was before the last read
     expect(sheetAuthor([me(11), me(12)], since, [])).toEqual({ name: "Oliver", email: "oliver@pm.com" }); // only you: it's yours
     expect(sheetAuthor([ria(11), sam(12)], since, ["sam@pm.com"])).toEqual({ name: "Ria", email: "ria@pm.com" }); // Sam syncs from the app
+    expect(sheetAuthor([ria(11), sam(12)], since, ["SAM@pm.com"])).toEqual({ name: "Ria", email: "ria@pm.com" });
     expect(sheetAuthor([ria(11), sam(12)], since, [])).toBeNull(); // can't tell
     expect(sheetAuthor([], since, [])).toBeNull();
   });

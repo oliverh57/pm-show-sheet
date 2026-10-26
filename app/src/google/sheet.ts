@@ -290,6 +290,9 @@ function lockedRuns(g: TabGrid): [number, number][] {
   return runs;
 }
 
+/** An email as one key per Google account: case doesn't matter, and @googlemail.com is the same account as @gmail.com. */
+export const emailKey = (email: string) => email.trim().toLowerCase().replace(/@googlemail\.com$/, "@gmail.com");
+
 /** A protected range on the tab, as the Sheets API lists it. */
 export interface SheetProtection {
   protectedRangeId: number;
@@ -309,8 +312,8 @@ export function protectionCurrent(g: TabGrid, ranges: SheetProtection[], editors
   const strict = ranges.filter((p) => !p.warningOnly);
   const warnings = ranges.filter((p) => p.warningOnly).map((p) => `${p.range?.startColumnIndex ?? 0}-${p.range?.endColumnIndex ?? ""}`);
   // Google may list more editors than were set (the owner), so only check everyone needed is there.
-  const can = new Set((strict[0]?.editors?.users ?? []).map((e) => e.toLowerCase()));
-  return strict.length === 1 && open(strict[0]) === sorted(g.editableCols.map(String)) && editors.every((e) => can.has(e.toLowerCase()))
+  const can = new Set((strict[0]?.editors?.users ?? []).map(emailKey));
+  return strict.length === 1 && open(strict[0]) === sorted(g.editableCols.map(String)) && editors.every((e) => can.has(emailKey(e)))
     && sorted(warnings) === sorted(lockedRuns(g).map(([c0, c1]) => `${c0}-${c1}`));
 }
 
@@ -837,7 +840,7 @@ export function sheetAuthor(revisions: SheetRevision[], since: number, appEditor
   const people = new Map<string, SheetAuthor & { me: boolean }>();
   for (const r of revisions) {
     const u = r.lastModifyingUser;
-    const key = (u?.emailAddress ?? u?.displayName ?? "").toLowerCase();
+    const key = u?.emailAddress ? emailKey(u.emailAddress) : (u?.displayName ?? "").toLowerCase();
     if (!u || !key || !(Date.parse(r.modifiedTime) > since)) continue;
     people.set(key, { name: u.displayName || u.emailAddress!, ...(u.emailAddress && { email: u.emailAddress }), me: Boolean(u.me) });
   }
@@ -846,8 +849,8 @@ export function sheetAuthor(revisions: SheetRevision[], since: number, appEditor
   const others = all.filter((p) => !p.me);
   if (others.length === 1) return named(others[0]);
   if (!others.length) return all.length ? named(all[0]) : null;
-  const app = new Set(appEditors.map((e) => e.toLowerCase()));
-  const outside = others.filter((p) => !p.email || !app.has(p.email.toLowerCase()));
+  const app = new Set(appEditors.map(emailKey));
+  const outside = others.filter((p) => !p.email || !app.has(emailKey(p.email)));
   return outside.length === 1 ? named(outside[0]) : null;
 }
 

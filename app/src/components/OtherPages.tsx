@@ -1,7 +1,7 @@
 // Share & publish (the always-on Google Sheet and deck, location, people) and the Sheet grid.
 import { useEffect, useState } from "react";
 import { backend } from "../backend";
-import { syncNow, useSyncStatus } from "../google/sync";
+import { LOCKED_OUT, syncNow, useSyncStatus } from "../google/sync";
 import { deleteOpenShow, openInDrive, renameOpenShow, timeAgo } from "../library";
 import { applySheetValue, bundleName, clipName, keepResolvedDays, showCover, showImages } from "../model/ops";
 import { DraftInput } from "./fields";
@@ -64,6 +64,7 @@ export function SharePage() {
         {sync.message?.startsWith("Sign in to Google again")
           ? <div style={{ marginTop: 8 }}><button className="sm primary" onClick={signInAgain}>Sign in again</button></div>
           : <div className="muted small">It tries again every 30 seconds.</div>}</div></div>}
+      {sync.state === "ok" && sync.message === LOCKED_OUT && <p className="muted small" style={{ marginTop: 0, marginBottom: 12 }}><Icon name="clock" size="sm" /> {LOCKED_OUT}</p>}
       {conflicts.length > 0 && (
         <div className="panel">
           <div className="label">Sheet edits that clashed</div>
@@ -87,7 +88,7 @@ export function SharePage() {
           <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 500 }}>{location ?? "Google Drive"}</div><div className="muted small" style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{bundleName(show.name)}.showsheet</div></div>
           <button onClick={() => chooseAndMove()}><Icon name="folder" size="sm" /> Move to another folder…</button>
         </div>
-        <p className="muted small" style={{ marginBottom: 0 }}>Move it into a shared drive to share it with the team.</p>
+        {location === "My Drive" && <p className="muted small" style={{ marginBottom: 0 }}>Move it into a shared drive to share it with the team.</p>}
       </div>
       <PeoplePanel />
     </div>
@@ -100,7 +101,7 @@ export function SyncBadge() {
   const [, tick] = useState(0);
   useEffect(() => { const t = window.setInterval(() => tick((n) => n + 1), 10000); return () => window.clearInterval(t); }, []);
   const signIn = sync.state === "error" && sync.message?.startsWith("Sign in to Google again");
-  const label = signIn ? "Sign in to Google again" : { off: sync.message ?? "Sync off", syncing: "Syncing…", error: "Sync stopped", ok: sync.lastSync ? `Synced ${timeAgo(sync.lastSync)}` : "Synced" }[sync.state];
+  const label = signIn ? "Sign in to Google again" : { off: sync.message ?? "Sync off", syncing: "Syncing…", error: "Sync stopped", ok: sync.message === LOCKED_OUT ? "Waiting for the Sheet" : sync.lastSync ? `Synced ${timeAgo(sync.lastSync)}` : "Synced" }[sync.state];
   return <span className={`sync-badge ${sync.state}`} title={sync.message ?? undefined}><span className="dot" />{label}</span>;
 }
 

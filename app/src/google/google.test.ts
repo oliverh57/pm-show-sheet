@@ -101,6 +101,9 @@ describe("SHOW SHEET tab", () => {
     expect(protectionUpdateRequests(g, 1001, current, ["me@x.com", "Collab@other.com"])).not.toEqual([]);
     const withOwner = current.map((p: { editors?: { users: string[] } }) => (p.editors ? { ...p, editors: { users: ["owner@x.com", ...p.editors.users] } } : p)) as never[];
     expect(protectionUpdateRequests(g, 1001, withOwner, ["ME@x.com"])).toEqual([]);
+    // Google lists a @gmail.com editor by the address it knows the account by, which may be @googlemail.com.
+    const listed = current.map((p: { editors?: { users: string[] } }) => (p.editors ? { ...p, editors: { users: ["me@x.com", "sam@googlemail.com"] } } : p)) as never[];
+    expect(protectionUpdateRequests(g, 1001, listed, ["me@x.com", "Sam@gmail.com"])).toEqual([]);
   });
 });
 

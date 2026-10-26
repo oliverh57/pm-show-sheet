@@ -8,6 +8,7 @@ import { backend } from "../backend";
 import { driveIdOf } from "../drive/media";
 import { readManifest } from "../drive/show";
 import { useStore } from "../store";
+import { emailKey } from "./sheet";
 
 const DRIVE = "https://www.googleapis.com/drive/v3/files";
 const ALL = "supportsAllDrives=true";
@@ -73,7 +74,7 @@ async function permissions(file: string): Promise<Permission[]> {
 
 const RANK = ["reader", "commenter", "writer", "fileOrganizer", "organizer", "owner"];
 const direct = (p: Permission) => !(p.permissionDetails ?? []).some((d) => d.inherited);
-const keyOf = (p: Permission) => (p.emailAddress ?? (p.type === "domain" ? p.domain : p.type) ?? p.id).toLowerCase();
+const keyOf = (p: Permission) => (p.emailAddress ? emailKey(p.emailAddress) : (p.type === "domain" ? p.domain : p.type) ?? p.id).toLowerCase();
 
 /** Everyone who can open the show, the Sheet or the deck, and what they have. */
 export async function listPeople(): Promise<Person[]> {
@@ -117,8 +118,8 @@ export async function listPeople(): Promise<Person[]> {
 
 /** Whether an email is outside the signed-in account's organisation (another domain). */
 export function isOutside(email: string): boolean {
-  const mine = useStore.getState().user?.email.split("@")[1]?.toLowerCase();
-  const theirs = email.trim().split("@")[1]?.toLowerCase();
+  const mine = emailKey(useStore.getState().user?.email ?? "").split("@")[1];
+  const theirs = emailKey(email).split("@")[1];
   return Boolean(mine && theirs && mine !== theirs);
 }
 
@@ -177,10 +178,10 @@ async function revoke(grants: Person["grants"]) {
 }
 
 function setAppEditor(email: string, on: boolean) {
-  const lower = email.toLowerCase();
+  const key = emailKey(email);
   useStore.getState().updateQuiet((s) => {
     const list = (s.google ??= {}).app_editors ?? [];
-    const rest = list.filter((e) => e.toLowerCase() !== lower);
+    const rest = list.filter((e) => emailKey(e) !== key);
     s.google.app_editors = on ? [...rest, email] : rest;
   });
 }

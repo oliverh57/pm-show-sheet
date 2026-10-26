@@ -9,7 +9,7 @@ import type { GoogleSync, Show } from "../model/types";
 import { applySheetValue, newId, songImagePaths } from "../model/ops";
 import { useStore } from "../store";
 import {
-  applyReviewEdits, colLetter, REPLY_FROM, sheetAuthor, type SheetRevision, columnChangeRequests, formatRuleRequests, mergeUpdateRequests, spareColumnRequests, type SheetFormatRule, type SheetMerge, contentRequests, diffReviewTab, diffShowTab, HEADER_ROWS, keptCells, protectionUpdateRequests, reconcileRequests, reconcileRows,
+  applyReviewEdits, colLetter, emailKey, REPLY_FROM, sheetAuthor, type SheetRevision, columnChangeRequests, formatRuleRequests, mergeUpdateRequests, spareColumnRequests, type SheetFormatRule, type SheetMerge, contentRequests, diffReviewTab, diffShowTab, HEADER_ROWS, keptCells, protectionUpdateRequests, reconcileRequests, reconcileRows,
   reviewTab, type SheetProtection, showTab, snapshot, structureRequests, ARCHIVE_TAB, REVIEW_TAB, SHOW_TAB, type Conflict, type TabGrid,
 } from "./sheet";
 import { deckFingerprint, deckRequests } from "./slides";
@@ -301,9 +301,19 @@ function recordConflicts(conflicts: Conflict[]) {
   useStore.getState().toast(`${fresh.length} Sheet edit${fresh.length === 1 ? "" : "s"} clashed with the app. See Share & publish.`);
 }
 
+/** Why this Mac isn't writing the Sheet yet: its locked columns aren't open to this account. */
+export const LOCKED_OUT = "The Sheet's locked columns aren't open to you yet. They open the next time someone who can already edit them has the show open (their app adds you); until then their app keeps the Sheet up to date.";
+let lockedOut = false;
+
 async function pushSheet(): Promise<void> {
   const { user } = useStore.getState();
   const ssid = g().spreadsheet_id!;
+  // Everyone who syncs the show from the app writes every column, so each one goes on the lock's editors (and stays
+  // there, so a collaborator's sync doesn't lock out whoever made the show). Added before writing: the show reaches
+  // the other Macs through Drive, and one whose account can edit the lock adds this one on its next push. It's put in
+  // as this account signs in (someone may have shared it as @gmail.com when Google knows it as @googlemail.com).
+  const me = user?.email.toLowerCase();
+  if (me && !(g().app_editors ?? []).some((e) => e.toLowerCase() === me)) meta((x) => { x.app_editors = [...(x.app_editors ?? []).filter((e) => emailKey(e) !== emailKey(me)), me]; });
   const show = useStore.getState().show!;
   const images = await ensureImages([...show.set_order, ...show.archive], reviewStills(show));
   const urls = Object.fromEntries(Object.entries(images).map(([k, v]) => [k, v.url]));
@@ -346,7 +356,14 @@ async function pushSheet(): Promise<void> {
     if (!columnsChanged.has(id)) keep.set(id, keptCells(grid, id === REVIEW_TAB_ID ? "review" : "show", pushed, g().published ?? {}, new Set(rowIds.filter(Boolean))));
   }
   for (const [grid, id] of grids) reqs.push(...contentRequests(grid, id, keep.get(id)), ...formatRuleRequests(grid, id, tabs.get(id)?.conditionalFormats ?? []));
-  await api("POST", `${SHEETS}/${ssid}:batchUpdate`, { requests: reqs });
+  try {
+    await api("POST", `${SHEETS}/${ssid}:batchUpdate`, { requests: reqs });
+  } catch (e) {
+    if (!/protected cell or object/i.test(String(e))) throw e;
+    lockedOut = true; // not an error: tried again each push until the lock lets this account in
+    return;
+  }
+  lockedOut = false;
   meta((x) => { x.tab_id = TAB_ID; x.archive_tab_id = ARCHIVE_TAB_ID; if (reviewing) x.review_tab_id = REVIEW_TAB_ID; x.published = pushed; });
   lastSheet = sheetFingerprint(show);
   await lockTabs(ssid, grids, user?.email ?? "", columnsChanged);
@@ -360,10 +377,10 @@ let lockRefused: string | null = null; // why Google last refused the tabs' lock
  * the ranges read fresh (a column deleted in the push can change them), so a lock Google refuses never stops the sync.
  */
 async function lockTabs(ssid: string, grids: [TabGrid, number][], me: string, columnsChanged: Set<number>) {
-  // Everyone who syncs the show from the app writes every column, so each one goes on the lock's editors (and stays
-  // there, so a collaborator's sync doesn't lock out whoever made the show).
-  if (me && !(g().app_editors ?? []).some((e) => e.toLowerCase() === me.toLowerCase())) meta((x) => { x.app_editors = [...(x.app_editors ?? []), me]; });
-  const editors = [...new Set([me, ...(g().app_editors ?? [])].filter(Boolean).map((e) => e.toLowerCase()))];
+  // One address per account, your own last so its spelling wins (Google lists the one it knows the account by).
+  const byAccount = new Map<string, string>();
+  for (const e of [...(g().app_editors ?? []), me].filter(Boolean)) byAccount.set(emailKey(e), e.toLowerCase());
+  const editors = [...byAccount.values()];
   try {
     const res = await api<SheetMeta>("GET", `${SHEETS}/${ssid}?fields=${enc("sheets(properties(sheetId),protectedRanges(protectedRangeId,warningOnly,range,unprotectedRanges,editors))")}`);
     const reqs = grids.flatMap(([grid, id]) => {
@@ -415,7 +432,8 @@ let generation = 0; // bumps when the open show changes, so stale jobs stop
 
 function sheetFingerprint(show: Show): string {
   return JSON.stringify([show.name, show.columns, show.set_order, show.archive,
-    Object.values(show.songs).map((s) => [s.id, s.fields, s.statuses, s.colours, s.hero, s.images, s.segues_into_next, s.clips]), show.google?.clips, show.reviews]);
+    Object.values(show.songs).map((s) => [s.id, s.fields, s.statuses, s.colours, s.hero, s.images, s.segues_into_next, s.clips]), show.google?.clips, show.reviews,
+    show.google?.app_editors]); // someone new using the show in the app: push, so the lock lets them in
 }
 
 function run(job: () => Promise<void>) {
@@ -425,7 +443,7 @@ function run(job: () => Promise<void>) {
     status({ state: "syncing" });
     try {
       await job();
-      if (gen === generation) status({ state: "ok", message: null, lastSync: Date.now() });
+      if (gen === generation) status({ state: "ok", message: lockedOut ? LOCKED_OUT : null, lastSync: Date.now() });
     } catch (e) {
       if (gen !== generation) return;
       status({ state: "error", message: String(e).replace(/^Error: /, ""), deck: "idle" });
@@ -454,6 +472,7 @@ export function useGoogleSync() {
   useEffect(() => {
     generation++;
     lastSheet = null;
+    lockedOut = false;
     lastDeck = useStore.getState().show?.google?.deck_hash ?? null; // don't redraw an unchanged deck on open
     if (!bundle || !user) return status({ state: "off", message: null });
     if (readOnly) return status({ state: "off", message: "Read only" });

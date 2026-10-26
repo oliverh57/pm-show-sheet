@@ -7,6 +7,15 @@ export interface ReleaseNotes {
 }
 
 export const WHATS_NEW: Record<string, ReleaseNotes> = {
+  "0.5.1": {
+    summary: "Fixes for shows shared with someone on another Google account.",
+    items: [
+      "Google sync no longer stops for someone a show was just shared with. Until the Sheet's locked columns open to them, it waits, and the Sheet is kept up to date by whoever made the show.",
+      "Their app adds them to the Sheet's lock by themselves the next time the show's owner has it open.",
+      "@gmail.com and @googlemail.com addresses are known to be the same person, so nobody is listed twice or marked Outside.",
+      "A show in a shared drive you aren't a member of says Shared with you, rather than \"a shared drive\".",
+    ],
+  },
   "0.5.0": {
     summary: "Google Drive for desktop isn't needed any more, and shows shared with you appear in All shows.",
     items: [
