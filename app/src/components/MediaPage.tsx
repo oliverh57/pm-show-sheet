@@ -115,7 +115,6 @@ function Library() {
   const [playing, setPlaying] = useState<string | null>(null);
   const [watching, setWatching] = useState<{ songId: string; path: string } | null>(null); // a song clip in the viewer, with its comments
   const [openClips, setOpenClips] = useState<string | null>(null);
-  const [recutId, setRecutId] = useState<string | null>(null);
   const [repicking, setRepicking] = useState<{ id: string; done: number; total: number } | null>(null);
   const [folded, toggleFold] = useFolded();
   const bundle = useStore((s) => s.bundle)!;
@@ -144,7 +143,7 @@ function Library() {
     if (r.ltc?.channel === null || r.ltc?.channel === undefined || !old.length || cutting) return null;
     return (
       <button className="sm" title="Cut these clips again with the record's timecode on one side, so anyone can download them with LTC"
-              onClick={() => { setRecutId(r.id); runClipJobs(bundle, r, old.map((c) => ({ song_id: c.songId, in: c.in, out: c.out, source: c.source })), false); }}>
+              onClick={() => runClipJobs(bundle, r, old.map((c) => ({ song_id: c.songId, in: c.in, out: c.out, source: c.source })), false)}>
         <Icon name="radio" size="sm" /> Re-cut {old.length} clip{old.length === 1 ? "" : "s"} with timecode
       </button>
     );
@@ -175,9 +174,10 @@ function Library() {
           const headline = clips.length ? [`${clips.length} clip${clips.length === 1 ? "" : "s"}${marks > clips.length ? ` of ${marks}` : ""}`, stillsText].filter(Boolean).join(" · ")
             : stills.length ? `${stillsText} · no clips` : marks ? `${marks} song${marks === 1 ? "" : "s"} marked, no clips yet` : r.ltc?.blocks.length ? `${r.ltc.blocks.length} TC blocks, not split yet` : "Not split yet";
           const category = show.columns.find((c) => c.id === (r.image_col ?? "hero"));
-          const runningJob = jobs.find((j) => j.status === "running");
-          const doneJobs = jobs.filter((j) => j.status === "done").length;
-          const showProgress = cutting && (marks > clips.length || recutId === r.id);
+          const recJobs = jobs.filter((j) => j.recordId === r.id);
+          const runningJob = recJobs.find((j) => j.status === "running");
+          const doneJobs = recJobs.filter((j) => j.status === "done").length;
+          const showProgress = recJobs.some((j) => j.status === "queued" || j.status === "running");
           const open = !folded.has(r.id);
           return (
             <div key={r.id} className="rec-group">
@@ -204,7 +204,7 @@ function Library() {
               {showProgress && (
                 <div className="rec-progress">
                   <span className="spinner" style={{ width: 12, height: 12, borderWidth: 1.5 }} />
-                  <span>Cutting clip {Math.min(doneJobs + 1, jobs.length)} of {jobs.length}{runningJob ? ` · ${runningJob.label}` : ""}</span>
+                  <span>Cutting clip {Math.min(doneJobs + 1, recJobs.length)} of {recJobs.length}{runningJob ? ` · ${runningJob.label}` : ""}</span>
                   <span className="bar"><span style={{ width: `${Math.round((runningJob?.progress ?? 0) * 100)}%` }} /></span>
                 </div>
               )}

@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { backend } from "../backend";
 import { type Gel, searchGels, swatchFill } from "../model/gels";
-import { addImages, categories, deptCategory, ensureCategory, fieldSwatches, GENERAL, imageCategory, isHeroImage, MAX_SWATCHES, setHero, setImageCategory } from "../model/ops";
+import { addImages, categories, deptCategory, ensureCategory, fieldSwatches, GENERAL, imageCategory, imageLabel, isHeroImage, MAX_SWATCHES, setHero, setImageCategory } from "../model/ops";
 import { CategoriesDialog } from "./Categories";
 import type { ColourSwatch, Song } from "../model/types";
 import { deleteSongImage } from "../library";
@@ -143,6 +143,7 @@ export function Media({ song }: { song: Song }) {
               <img src={backend.mediaUrl(bundle, p)} alt="" />
               <SaveCopy path={`${bundle}/${p}`} compact />
               <figcaption>
+                <span className="name" title={p.split("/").pop()}>{imageLabel(show, p)}</span>
                 {isHeroImage(song, p) ? <span className="pill" title="The song's main image: General (the SONG IMAGE column), its card and slide">MAIN</span>
                   : <button className="link" title="Make it the song's main image: General (the SONG IMAGE column), its card and slide" onClick={() => update((s) => setHero(s, song.id, p))}>Make main</button>}
                 <select className={`category ${imageCategory(show, song, p) ? "on" : ""}`} value={imageCategory(show, song, p)} aria-label="Category"

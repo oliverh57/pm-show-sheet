@@ -74,13 +74,46 @@ export function parseHex(text: string): string | null {
   return /^[0-9a-f]{6}$/i.test(h) ? `#${h}`.toUpperCase() : null;
 }
 
-/** A swatch for a colour typed by name ("Steel Blue", "CTB", "L201") or hex; any other text labels a swatch of `hex`. */
+/**
+ * A swatch for a colour typed by name ("Steel Blue", "CTB", "L201") or hex; any other text labels a swatch of `hex`.
+ * Spacing, punctuation and a slip or two in a longer name are forgiven ("babypink", "Babby Pink" → Baby Pink), when only
+ * one colour is that close.
+ */
 export function swatchFor(text: string, hex = "#808080"): ColourSwatch {
   const lower = text.trim().toLowerCase();
-  const gel = GELS.find((g) => g.label.toLowerCase() === lower) ?? GELS.find((g) => g.name.toLowerCase() === lower || g.code.toLowerCase() === lower);
+  const gel = GELS.find((g) => g.label.toLowerCase() === lower) ?? GELS.find((g) => g.name.toLowerCase() === lower || g.code.toLowerCase() === lower)
+    ?? (parseHex(text) ? undefined : nearGel(lower));
   if (gel) return { hex: gel.hex, label: gel.label, ...(gel.pie && { pie: gel.pie }) };
   const parsed = parseHex(text);
   return parsed ? { hex: parsed, label: parsed } : { hex, label: text.trim() };
+}
+
+const squash = (s: string) => s.toLowerCase().replace(/[^a-z0-9½¼¾]/g, "");
+
+/** The one gel whose label or name is within a typo of `text` (none for short names, where a slip makes another word). */
+function nearGel(text: string) {
+  const t = squash(text);
+  const allowed = t.length >= 8 ? 2 : t.length >= 5 ? 1 : 0;
+  let best: (typeof GELS)[number] | undefined;
+  let bestD = Infinity;
+  let tied = false;
+  for (const g of GELS) {
+    const d = Math.min(editDistance(t, squash(g.label)), editDistance(t, squash(g.name)));
+    if (d < bestD) { best = g; bestD = d; tied = false; }
+    else if (d === bestD && best?.hex !== g.hex) tied = true;
+  }
+  return bestD === 0 || (bestD <= allowed && !tied) ? best : undefined;
+}
+
+function editDistance(a: string, b: string): number {
+  if (Math.abs(a.length - b.length) > 2) return 3; // further than any typo allowed
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= b.length; j++) row[j] = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = row;
+  }
+  return prev[b.length];
 }
 
 /** What a typed value becomes in a field, or null if the field can't take it: a choice field takes one of its options, in any case. */
@@ -1190,18 +1223,27 @@ export function recordStillOf(show: Show, recordId: string, songId: string): str
   return stills.find((p) => mine.has(p));
 }
 
-/** Whether a song has a clip cut from a record for this mark: the same in and out (a moved mark needs cutting again). */
-export function hasClipFor(show: Show, recordId: string, mark: SongMark): boolean {
-  return (show.songs[mark.song_id]?.clips ?? []).some((c) => c.record_id === recordId && Math.abs(c.in - mark.in) < 0.5 && Math.abs(c.out - mark.out) < 0.5);
+/** Whether a record's clips get its TC burned into the corner: asked for, and it has LTC to draw. */
+export function burnsTc(record: SourceRecord | undefined): boolean {
+  return Boolean(record?.burn_tc && record.ltc?.blocks.length);
+}
+
+/**
+ * Whether a song has a clip cut from a record for this mark: the same in and out (a moved mark needs cutting again),
+ * and with burned-in TC or not as `burn` says (the record's choice unless given).
+ */
+export function hasClipFor(show: Show, recordId: string, mark: SongMark, burn = burnsTc(show.records?.find((r) => r.id === recordId))): boolean {
+  return (show.songs[mark.song_id]?.clips ?? []).some((c) =>
+    c.record_id === recordId && Math.abs(c.in - mark.in) < 0.5 && Math.abs(c.out - mark.out) < 0.5 && Boolean(c.burn_tc) === burn);
 }
 
 /**
  * The marks there's still something to make from, so marking one more song in a record doesn't make every song's
- * clip and thumbnail again: with clips, songs with no clip for their mark yet; thumbnails only, songs with no still
- * from the record yet.
+ * clip and thumbnail again: with clips, songs with no clip for their mark yet (or one with the TC burned in when
+ * that's changed); thumbnails only, songs with no still from the record yet.
  */
-export function marksToMake(show: Show, recordId: string, marks: SongMark[], makeClips: boolean): SongMark[] {
-  return marks.filter((m) => (makeClips ? !hasClipFor(show, recordId, m) : !recordStillOf(show, recordId, m.song_id)));
+export function marksToMake(show: Show, recordId: string, marks: SongMark[], makeClips: boolean, burn?: boolean): SongMark[] {
+  return marks.filter((m) => (makeClips ? !hasClipFor(show, recordId, m, burn) : !recordStillOf(show, recordId, m.song_id)));
 }
 
 /** A manual start mark that isn't a song (a break, crowd, a changeover): it only ends the song before it. */
@@ -1271,6 +1313,13 @@ export function clipLabel(show: Show, clip: Clip): string {
   const record = (show.records ?? []).find((r) => r.id === clip.record_id);
   if (record) return cleanLabel(record.label ?? guessRecordLabel(show, record.path)) || record.name;
   return fileName(clip.path).replace(/\.[^.]+$/, "");
+}
+
+/** What a song image is called on its Media tab: the record it's a still from ("NYC T5"), else its file name. */
+export function imageLabel(show: Show, path: string): string {
+  const record = (show.records ?? []).find((r) => r.stills?.includes(path));
+  if (record) return cleanLabel(record.label ?? guessRecordLabel(show, record.path)) || record.name;
+  return fileName(path).replace(/\.[^.]+$/, "");
 }
 
 /** A safe file name for a clip or grab: "03 Diamond Eyes". */

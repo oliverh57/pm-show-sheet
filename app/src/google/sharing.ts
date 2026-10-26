@@ -124,17 +124,23 @@ export function isOutside(email: string): boolean {
 
 export const validEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
 
+/** "Anyone with the link": shared like a person, under this in place of an email (it's how listPeople lists it). */
+export const LINK = "anyone";
+
 /**
  * Give someone access (replacing what they had from the app). Google emails them a link when `notify`, with `message`.
  * Sharing the whole show makes them one of the people who use it in the app; the next sync opens the Sheet's locked
- * columns to them.
+ * columns to them. `LINK` shares with anyone who has the link, never the whole show.
  */
 export async function share(email: string, access: Access, notify: boolean, message: string, had?: Person) {
   const f = await showFiles();
   const to = email.trim();
+  const anyone = to === LINK;
+  if (anyone && access === "app") throw new Error("A link can't share the whole show: share it with someone by email");
+  const grantee = anyone ? { type: "anyone", allowFileDiscovery: false } : { type: "user", emailAddress: to };
   const grant = (file: string, role: Role, mail: boolean) =>
-    api("POST", `${DRIVE}/${file}/permissions?${ALL}&sendNotificationEmail=${mail}${mail && message.trim() ? `&emailMessage=${encodeURIComponent(message.trim())}` : ""}`,
-      { type: "user", role, emailAddress: to });
+    api("POST", `${DRIVE}/${file}/permissions?${ALL}&sendNotificationEmail=${mail && !anyone}${mail && message.trim() ? `&emailMessage=${encodeURIComponent(message.trim())}` : ""}`,
+      { ...grantee, role });
   if (had) await revoke(had.grants);
   if (access === "app") {
     await grant(f.folder, "writer", notify);
@@ -145,7 +151,17 @@ export async function share(email: string, access: Access, notify: boolean, mess
     if (f.deck) await grant(f.deck, roles.deck, false);
     for (const m of f.media) await grant(m, roles.media, false);
   }
-  setAppEditor(to, access === "app");
+  if (!anyone) setAppEditor(to, access === "app");
+}
+
+/**
+ * Make (or change) the Sheet's link: anyone who has it can view the Sheet and deck, or edit the Sheet's ✎ columns, and
+ * open the clips and images they show. Returns the Sheet's address to send them.
+ */
+export async function shareLink(access: "view" | "edit", had?: Person): Promise<string> {
+  await share(LINK, access, false, "", had);
+  const gs = useStore.getState().show?.google ?? {};
+  return gs.sheet_url ?? `https://docs.google.com/spreadsheets/d/${gs.spreadsheet_id}/edit`;
 }
 
 /** Take away everything someone was given on the show's files. */

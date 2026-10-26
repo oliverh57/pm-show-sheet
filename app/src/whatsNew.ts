@@ -7,6 +7,19 @@ export interface ReleaseNotes {
 }
 
 export const WHATS_NEW: Record<string, ReleaseNotes> = {
+  "0.4.0": {
+    summary: "Burned-in timecode on clips, share links for the Sheet, and colour dropdowns in the Sheet.",
+    items: [
+      "Burn the timecode into clips: a card in the bottom-right corner with the song, the record's TC and its frame rate. Choose it when you add a show record.",
+      "Share: generate a link for viewing or editing the Sheet, and copy it to send to anyone.",
+      "Colour cells in the Google Sheet have a dropdown of gels and the show's colours, and fill with the colour you pick.",
+      "Typed colour names forgive small slips: \"babypink\" or \"Babby Pink\" finds Baby Pink.",
+      "Edits made in the Sheet while the app is syncing are no longer overwritten.",
+      "Clip links in the Sheet open the right file after a show is moved or copied, and several clips in one cell are spaced apart.",
+      "25 fps records with a stray garbled frame are no longer read as 29.97.",
+      "Images show their name in a song's media, and each record shows only its own clip progress.",
+    ],
+  },
   "0.3.0": {
     summary: "Comments on videos and images, synced with a REVIEW tab in the Google Sheet, and a way to free up space on this Mac.",
     items: [

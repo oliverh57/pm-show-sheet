@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import sample from "./sample_show.json";
 import {
-  addColumn, addImages, addNote, addSong, archiveSong, cellValue, deleteSong, ltcFromName, moveColumn, moveSong,
+  addColumn, addImages, addNote, addSong, archiveSong, cellValue, deleteSong, imageLabel, ltcFromName, moveColumn, moveSong,
   newShow, removeColumn, removeImage, restoreSong, setHero, setHeroCrop,
 } from "./ops";
 import type { Show } from "./types";
@@ -212,6 +212,14 @@ describe("set lists and timecode", () => {
     // A moved mark is cut again; a clip from another record doesn't count.
     expect(marksToMake(show, "r1", [mark("s_harbour", 100, 260)], true)).toHaveLength(1);
     expect(marksToMake(show, "r2", [mark("s_harbour", 100, 200)], true)).toHaveLength(1);
+    // Turning burned-in TC on cuts Harbour again, once the record has LTC to draw.
+    expect(marksToMake(show, "r1", [mark("s_harbour", 100, 200)], true, true)).toHaveLength(1);
+    show.records[0].burn_tc = true;
+    expect(marksToMake(show, "r1", [mark("s_harbour", 100, 200)], true)).toHaveLength(0);
+    show.records[0].ltc = { channel: 1, fps: 25, blocks: [{ file_start: 0, file_end: 300, tc_start: "01:00:00:00", tc_end: "01:05:00:00" }], duration: 300 };
+    expect(marksToMake(show, "r1", [mark("s_harbour", 100, 200)], true)).toHaveLength(1);
+    show.songs.s_harbour.clips[0].burn_tc = true;
+    expect(marksToMake(show, "r1", [mark("s_harbour", 100, 200)], true)).toHaveLength(0);
   });
   it("makes folder-safe bundle names", async () => {
     const { bundleName } = await import("./ops");
@@ -352,6 +360,15 @@ describe("gel names", () => {
     const show = fresh();
     expect(show.songs.s_lights.colours[0].label).toBe("L106");
     expect(migrate(show).songs.s_lights.colours[0].label).toBe("Primary Red");
+  });
+  it("finds a colour typed with a slip or different spacing, but not a short or far-off name", async () => {
+    const { swatchFor } = await import("./ops");
+    expect(swatchFor("Babby Pink", "#FF0000")).toEqual({ hex: "#FFC4DC", label: "Baby Pink" });
+    expect(swatchFor("babypink").label).toBe("Baby Pink");
+    expect(swatchFor("open-white").label).toBe("Open White");
+    expect(swatchFor("Rad", "#123456")).toEqual({ hex: "#123456", label: "Rad" }); // too short to guess
+    expect(swatchFor("Laser green", "#123456")).toEqual({ hex: "#123456", label: "Laser green" }); // a name of their own
+    expect(swatchFor("#ff8800").label).toBe("#FF8800");
   });
 });
 
@@ -763,5 +780,14 @@ describe("renaming a category", () => {
     expect(show.departments!.find((d) => d.id === "CONTENT")!.label).toBeUndefined();
     expect(col(show, content).label).toBe("CONTENT");
     expect(deptList(show)).toContain("CONTENT");
+  });
+});
+
+describe("image labels", () => {
+  it("names a record's still after its record, and any other image after its file", () => {
+    const show = fresh();
+    show.records = [{ id: "r1", path: "/x/Overmono - Torono.mp4", name: "Overmono - Torono.mp4", scope: "show", added_at: "", label: "nyc t5", stills: ["renders/03 Intro.jpg"] }];
+    expect(imageLabel(show, "renders/03 Intro.jpg")).toBe("NYC T5");
+    expect(imageLabel(show, "renders/dog render.png")).toBe("dog render");
   });
 });

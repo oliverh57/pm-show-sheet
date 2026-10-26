@@ -8,7 +8,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ask, open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { showCover } from "./model/ops";
-import type { CropRect, InboxState, LtcResult, MediaInfo, Show } from "./model/types";
+import type { CropRect, InboxState, LtcResult, MediaInfo, Show, TcBlock } from "./model/types";
 import sample from "./model/sample_show.json";
 
 export type MediaKind = "renders" | "grabs" | "clips" | "layout" | "inspo";
@@ -127,8 +127,12 @@ export interface Backend {
 
   // Timecode and clips (see src-tauri/src/ltc.rs and lib.rs)
   ltcScan(path: string, onProgress?: (fraction: number) => void): Promise<LtcResult>;
-  /** `ltcChannel`: the record's LTC channel, kept in the clip on one side; the clip's name then ends `_LTC-L` or `_LTC-R`. */
-  cutClip(job: string, bundle: string, source: string, start: number, end: number, name: string, ltcChannel: number | null, onProgress?: (fraction: number) => void): Promise<string>;
+  /**
+   * `ltcChannel`: the record's LTC channel, kept in the clip on one side; the clip's name then ends `_LTC-L` or `_LTC-R`.
+   * `burnIn`: the record's LTC and the song, drawn as a card in the clip's bottom-right corner (see src-tauri/src/burnin.rs).
+   */
+  cutClip(job: string, bundle: string, source: string, start: number, end: number, name: string, ltcChannel: number | null,
+    burnIn: { fps: number; blocks: TcBlock[]; song: string; number: string | null } | null, onProgress?: (fraction: number) => void): Promise<string>;
   grabFrame(bundle: string, source: string, time: number, name: string): Promise<string>;
   /** Crop an image into media/crops/ (`crop` in fractions of the picture). Returns the bundle-relative path. */
   cropImage(bundle: string, source: string, crop: CropRect, name: string): Promise<string>;
@@ -345,8 +349,8 @@ const desktop: Backend = {
   async ltcScan(path, onProgress) {
     return withProgress("ltc-progress", path, onProgress, async () => (await invoke("ltc_scan", { path })) as LtcResult);
   },
-  async cutClip(job, bundle, source, start, end, name, ltcChannel, onProgress) {
-    return withProgress("clip-progress", job, onProgress, async () => (await invoke("clip_cut", { job, bundle, source, start, end, name, ltcChannel })) as string);
+  async cutClip(job, bundle, source, start, end, name, ltcChannel, burnIn, onProgress) {
+    return withProgress("clip-progress", job, onProgress, async () => (await invoke("clip_cut", { job, bundle, source, start, end, name, ltcChannel, burnIn })) as string);
   },
   async grabFrame(bundle, source, time, name) {
     return (await invoke("frame_grab", { bundle, source, time, name })) as string;
@@ -558,7 +562,7 @@ const browser: Backend = {
     if (!/\b(L?TC)\b/i.test(path) || /NO TIMECODE/i.test(path)) return { channel: null, fps: null, blocks: [], duration: 5700 };
     return PREVIEW_LTC;
   },
-  async cutClip(_job, _bundle, source, start, end, _name, _keep, onProgress) {
+  async cutClip(_job, _bundle, source, start, end, _name, _keep, _burnIn, onProgress) {
     for (let i = 1; i <= 8; i++) { await new Promise((r) => setTimeout(r, 80)); onProgress?.(i / 8); }
     return `${source}#t=${start},${end}`; // preview doesn't cut: it points at the source
   },

@@ -5,7 +5,7 @@
 //! grouped into TC blocks: runs where timecode advances in step with file time. In the example
 //! content each block is one song, and the blocks are not in TC order.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -96,12 +96,14 @@ impl Decoder {
     }
 }
 
-/// 24, 25, 29.97 (drop-frame) or 30, from the highest frame number seen.
+/// 24, 25, 29.97 (drop-frame) or 30, from the highest frame number seen. A few garbled frames don't
+/// count: example record A has one stray drop-frame flag in 132,602 frames of 25 fps LTC.
 pub fn detect_fps(frames: &[Frame]) -> f64 {
-    if frames.iter().any(|f| f.drop) {
+    if frames.iter().filter(|f| f.drop).count() * 2 > frames.len() {
         return 29.97;
     }
-    match frames.iter().map(|f| f.f).max().unwrap_or(24) + 1 {
+    let seen = |n: u8| frames.iter().filter(|f| f.f == n).count() * 100 >= frames.len();
+    match (0..30).rev().find(|&n| seen(n)).unwrap_or(23) + 1 {
         24 => 24.0,
         30 => 30.0,
         _ => 25.0,
@@ -116,7 +118,7 @@ pub fn format_tc(f: &Frame) -> String {
     format!("{:02}:{:02}:{:02}{}{:02}", f.h, f.m, f.s, if f.drop { ';' } else { ':' }, f.f)
 }
 
-#[derive(Serialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct TcBlock {
     pub file_start: f64,
     pub file_end: f64,
@@ -274,6 +276,14 @@ mod tests {
         let blocks = to_blocks(&d.frames, 30.0);
         assert_eq!(blocks.len(), 1, "crosses 11:00:00:00 without breaking: {blocks:?}");
         assert!(blocks[0].tc_end.starts_with("11:00:0"));
+    }
+
+    #[test]
+    fn a_stray_frame_doesnt_change_the_rate() {
+        let mut frames: Vec<Frame> = (0..500).map(|i| Frame { t: i as f64 / 25.0, h: 1, m: 0, s: (i / 25) as u8, f: (i % 25) as u8, drop: false }).collect();
+        frames[100].drop = true;
+        frames[200].f = 28;
+        assert_eq!(detect_fps(&frames), 25.0);
     }
 
     #[test]

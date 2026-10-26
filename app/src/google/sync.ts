@@ -9,7 +9,7 @@ import type { GoogleSync, Show } from "../model/types";
 import { applySheetValue, newId, songImagePaths } from "../model/ops";
 import { useStore } from "../store";
 import {
-  applyReviewEdits, colLetter, REPLY_FROM, sheetAuthor, type SheetRevision, columnChangeRequests, formatRuleRequests, mergeUpdateRequests, type SheetFormatRule, type SheetMerge, contentRequests, diffReviewTab, diffShowTab, HEADER_ROWS, protectionUpdateRequests, reconcileRequests, reconcileRows,
+  applyReviewEdits, colLetter, REPLY_FROM, sheetAuthor, type SheetRevision, columnChangeRequests, formatRuleRequests, mergeUpdateRequests, spareColumnRequests, type SheetFormatRule, type SheetMerge, contentRequests, diffReviewTab, diffShowTab, HEADER_ROWS, keptCells, protectionUpdateRequests, reconcileRequests, reconcileRows,
   reviewTab, type SheetProtection, showTab, snapshot, structureRequests, ARCHIVE_TAB, REVIEW_TAB, SHOW_TAB, type Conflict, type TabGrid,
 } from "./sheet";
 import { deckFingerprint, deckRequests } from "./slides";
@@ -159,28 +159,47 @@ async function pruneImages(): Promise<void> {
   }
 }
 
+const CLIPS_DIR = "media/clips/";
+
 /**
  * Clips are saved in the show's folder, so Drive for desktop uploads them with it: find each one's Drive id (and forget
  * clips no song has any more). A clip not uploaded yet is looked for again next time.
+ *
+ * The clips folder is listed on Drive rather than trusting each file's Drive for desktop id: a file copied on the Mac
+ * (a show moved across drives, a clip imported from elsewhere in Drive) keeps the id of the file it was copied from,
+ * so the link would open the original (often binned, and not shared with anyone else). Listing also mends shows that
+ * stored those ids before.
  */
-async function resolveClips(): Promise<void> {
+export async function resolveClips(): Promise<void> {
   const { show, bundle } = useStore.getState();
   if (!show || !bundle) return;
   const known = g().clips ?? {};
   const paths = new Set(Object.values(show.songs).flatMap((s) => (s.clips ?? []).map((c) => c.path)));
-  const found: Record<string, string> = {};
-  for (const path of paths) {
-    if (known[path]) continue;
-    const id = await backend.driveItemId(`${bundle}/${path}`);
-    if (id) found[path] = id;
+  const inFolder = [...paths].filter((p) => p.startsWith(CLIPS_DIR) && !p.slice(CLIPS_DIR.length).includes("/"));
+  const onDrive = new Map<string, string>(); // file name → id, the most recently changed if two share a name
+  const folder = inFolder.length ? await backend.driveItemId(`${bundle}/${CLIPS_DIR.slice(0, -1)}`) : null;
+  if (folder) {
+    const q = enc(`'${folder}' in parents and trashed = false`);
+    let page: string | undefined;
+    do {
+      const res = await api<{ files?: { id: string; name: string }[]; nextPageToken?: string }>("GET",
+        `${DRIVE}?q=${q}&fields=${enc("nextPageToken,files(id,name)")}&orderBy=modifiedTime%20desc&pageSize=1000&${ALL}&includeItemsFromAllDrives=true${page ? `&pageToken=${enc(page)}` : ""}`);
+      for (const f of res.files ?? []) if (!onDrive.has(f.name)) onDrive.set(f.name, f.id);
+      page = res.nextPageToken;
+    } while (page);
   }
-  const gone = Object.keys(known).filter((p) => !paths.has(p));
-  if (!Object.keys(found).length && !gone.length) return;
-  meta((x) => {
-    const next = { ...x.clips, ...found };
-    for (const p of gone) delete next[p];
-    x.clips = next;
-  });
+  const next: Record<string, string> = {};
+  for (const path of paths) {
+    if (folder && inFolder.includes(path)) {
+      const id = onDrive.get(path.slice(CLIPS_DIR.length));
+      if (id) next[path] = id; // not uploaded yet: no link until it is
+    } else {
+      const id = known[path] ?? (await backend.driveItemId(`${bundle}/${path}`));
+      if (id) next[path] = id;
+    }
+  }
+  const same = Object.keys(next).length === Object.keys(known).length && Object.entries(next).every(([p, id]) => known[p] === id);
+  if (!same) meta((x) => { x.clips = next; });
 }
 
 /** Clip path → where it plays on Drive. */
@@ -297,6 +316,10 @@ async function pushSheet(): Promise<void> {
   const tabs = new Map(metaRes.sheets.map((s) => [s.properties.sheetId, s]));
   const reqs: object[] = [];
   const columnsChanged = new Set<number>();
+  // Snapshot the show that's pushed, not the current one: an edit made while the push is in flight isn't in the
+  // Sheet, and recording it as published would make the next pull read the Sheet's old value as a collaborator's edit.
+  const pushed = snapshot(show);
+  const keep = new Map<number, (row: number, col: number) => boolean>(); // by tab: the ✎ cells left as they are (see keptCells)
   const existing = grids.filter(([, id]) => tabs.has(id));
   const read = existing.length ? await api<{ valueRanges: { values?: unknown[][] }[] }>("GET",
     `${SHEETS}/${ssid}/values:batchGet?valueRenderOption=UNFORMATTED_VALUE&${existing.flatMap(([, id]) => {
@@ -316,15 +339,14 @@ async function pushSheet(): Promise<void> {
     if (headerIds.join("|") !== grid.colIds.join("|")) {
       columnsChanged.add(id);
       reqs.push(...columnChangeRequests(grid, id, tab.properties.gridProperties?.columnCount ?? headerIds.length));
-    } else reqs.push(...mergeUpdateRequests(grid, id, tab.merges ?? []));
+    } else reqs.push(...mergeUpdateRequests(grid, id, tab.merges ?? []), ...spareColumnRequests(grid, id, tab.properties.gridProperties?.columnCount ?? headerIds.length));
     const rowIds = (read.valueRanges[at + 1]?.values ?? []).map((r) => (r?.[0] === undefined ? "" : String(r[0])));
     reqs.push(...reconcileRequests(reconcileRows(rowIds, grid.rowIds), id));
+    // Changed columns put cells under other columns, so they're all written.
+    if (!columnsChanged.has(id)) keep.set(id, keptCells(grid, id === REVIEW_TAB_ID ? "review" : "show", pushed, g().published ?? {}, new Set(rowIds.filter(Boolean))));
   }
-  for (const [grid, id] of grids) reqs.push(...contentRequests(grid, id), ...formatRuleRequests(grid, id, tabs.get(id)?.conditionalFormats ?? []));
+  for (const [grid, id] of grids) reqs.push(...contentRequests(grid, id, keep.get(id)), ...formatRuleRequests(grid, id, tabs.get(id)?.conditionalFormats ?? []));
   await api("POST", `${SHEETS}/${ssid}:batchUpdate`, { requests: reqs });
-  // Snapshot the show that was pushed, not the current one: an edit made while the push was in flight isn't in the
-  // Sheet, and recording it as published would make the next pull read the Sheet's old value as a collaborator's edit.
-  const pushed = snapshot(show);
   meta((x) => { x.tab_id = TAB_ID; x.archive_tab_id = ARCHIVE_TAB_ID; if (reviewing) x.review_tab_id = REVIEW_TAB_ID; x.published = pushed; });
   lastSheet = sheetFingerprint(show);
   await lockTabs(ssid, grids, user?.email ?? "", columnsChanged);

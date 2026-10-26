@@ -13,6 +13,7 @@ export type SongsLayout = "grid" | "list" | "present"; // present: one song at a
 export interface Job {
   id: string;
   label: string; // the song name
+  recordId?: string; // the show record it's cutting from
   kind?: "clip" | "thumbnail"; // what it's making: cutting a clip, or lining up a song's thumbnail choices
   progress: number; // 0–1
   status: "queued" | "running" | "done" | "error";

@@ -1,6 +1,6 @@
 // Adding media: "What is this media?" → then, for a show record, read its LTC and split it into songs
 // (or mark songs by hand when there's no timecode) and cut a clip per song in the background.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { backend } from "../backend";
 import { pickTopStills, runClipJobs } from "../jobs";
 import {
@@ -128,6 +128,18 @@ function ClipLabel({ value, onChange, asked }: { value: string; onChange: (v: st
   );
 }
 
+/** What the burned-in card looks like in a clip's bottom-right corner (drawn for real in src-tauri/src/burnin.rs). */
+function BurnSample({ fps = 25, tc = "09:01:42:19" }: { fps?: number; tc?: string }) {
+  const show = useStore((s) => s.show)!;
+  const first = show.set_order[0];
+  return (
+    <span className="tc-burn">
+      <span className="top">{first && <span className="n">01</span>}{show.songs[first]?.fields.name || "Song name"}</span>
+      <span className="bot"><span className="dot" /><span className="tc">{tc}</span><span className="fps">{fps} fps</span></span>
+    </span>
+  );
+}
+
 /** Renders go in Content by default, or General if the show has no Content category. */
 const renderCategory = (show: Show) => categories(show).find((c) => c.id === deptCategory("CONTENT"))?.id ?? GENERAL;
 
@@ -145,6 +157,7 @@ function WhatStep({ files, onNext }: { files: string[]; onNext: (step: Step, sou
   const folders = files.filter((p) => kindOf(p) === "folder");
   const [folderSong, setFolderSong] = useState(() => (folders[0] && guessSong(show, folders[0])) || ""); // "": different songs
   const [hasLtc, setHasLtc] = useState<"yes" | "no" | "unsure" | null>(null);
+  const [burn, setBurn] = useState(false);
   const [make, setMake] = useState<Make>("clips");
   const [info, setInfo] = useState<MediaInfo | undefined>();
   const [busy, setBusy] = useState(false);
@@ -154,8 +167,10 @@ function WhatStep({ files, onNext }: { files: string[]; onNext: (step: Step, sou
   }, [files]);
 
   // One question at a time: answering moves on, answered ones fold into a line above (with Change).
-  type Q = "what" | "ltc" | "make" | "name" | "category" | "audio" | "song" | "folderSong";
-  const questions: Q[] = what === "show" ? ["what", "ltc", "make", "name", "category"] : what === "song" ? ["what", "song", "category"]
+  type Q = "what" | "ltc" | "make" | "burn" | "name" | "category" | "audio" | "song" | "folderSong";
+  // Burned-in TC is offered for clips of a record that may have LTC.
+  const offerBurn = make === "clips" && hasLtc !== "no";
+  const questions: Q[] = what === "show" ? ["what", "ltc", "make", ...(offerBurn ? ["burn" as const] : []), "name", "category"] : what === "song" ? ["what", "song", "category"]
     : what === "audio" ? ["what", "audio", ...(audioScope === "song" ? ["song" as const] : [])]
     : ["what", ...(folders.length ? ["folderSong" as const] : []), "category"];
   // Renders have their own category (Content by default); a record's or song clip's stills go in `tag`.
@@ -164,7 +179,7 @@ function WhatStep({ files, onNext }: { files: string[]; onNext: (step: Step, sou
   const current = questions[Math.min(at, questions.length - 1)];
   const last = at >= questions.length - 1;
   const advance = () => setAt((i) => i + 1);
-  const card = (on: boolean, pick: () => void, t: string, d: string, icon?: IconName, colour?: string) => (
+  const card = (on: boolean, pick: () => void, t: string, d: ReactNode, icon?: IconName, colour?: string) => (
     <button key={t} className={`qopt ${on ? "on" : ""}`} onClick={() => { pick(); advance(); }}>
       <span className="radio" />{icon && <span style={{ color: colour, display: "grid" }}><Icon name={icon} size="lg" /></span>}
       <div><div className="t">{t}</div><div className="d">{d}</div></div>
@@ -174,13 +189,13 @@ function WhatStep({ files, onNext }: { files: string[]; onNext: (step: Step, sou
   const LTC = { yes: "Yes", no: "No", unsure: "Not sure" };
   const songLabel = (id: string) => (show.set_order.includes(id) ? `${String(show.set_order.indexOf(id) + 1).padStart(2, "0")} · ` : "Archive · ") + (show.songs[id]?.fields.name || "Untitled");
   const ask: Record<Q, string> = {
-    what: "What is this media?", ltc: "Does this video have striped LTC?", make: "What would you like to do?", name: "What is this record?",
+    what: "What is this media?", ltc: "Does this video have striped LTC?", make: "What would you like to do?", burn: "Burn the timecode into the clips?", name: "What is this record?",
     category: what === "renders" ? `Which category ${files.length === 1 && !folders.length ? "does it" : "do they"} go in?` : what === "song" ? "Which category do its stills go in?" : "Which category do its thumbnails go in?",
     audio: "Whole show or one song?", song: "Which song?",
     folderSong: `Which song are the renders in ${folders.length === 1 ? "this folder" : "these folders"} for?`,
   };
   const answer: Record<Q, string> = {
-    what: WHAT[what], ltc: hasLtc ? LTC[hasLtc] : "", make: make === "clips" ? "Video clips & thumbnails" : "Thumbnails only", name: label,
+    what: WHAT[what], ltc: hasLtc ? LTC[hasLtc] : "", make: make === "clips" ? "Video clips & thumbnails" : "Thumbnails only", burn: burn ? "Yes, bottom right" : "No", name: label,
     category: categories(show).find((c) => c.id === cat)?.name ?? "",
     folderSong: folderSong ? songLabel(folderSong) : "Different songs", audio: `${audioScope === "show" ? "Whole show" : "One song"}${version.trim() ? ` · ${version.trim()}` : ""}`, song: songId ? songLabel(songId) : "",
   };
@@ -197,7 +212,7 @@ function WhatStep({ files, onNext }: { files: string[]; onNext: (step: Step, sou
           files.forEach((p, i) => {
             // No LTC: don't read the audio for it, go straight to marking songs by hand.
             const ltc = hasLtc === "no" ? { channel: null, fps: null, blocks: [], duration: infos[i]?.duration ?? 0 } : undefined;
-            const id = addRecord(s, { path: p, scope: "show", info: infos[i], label: cleanLabel(label), image_col, ...(ltc ? { ltc } : {}) });
+            const id = addRecord(s, { path: p, scope: "show", info: infos[i], label: cleanLabel(label), image_col, ...(ltc ? { ltc } : {}), ...(offerBurn && burn ? { burn_tc: true } : {}) });
             if (i === 0) first = id;
           });
         });
@@ -268,6 +283,12 @@ function WhatStep({ files, onNext }: { files: string[]; onNext: (step: Step, sou
         <div className="question">
           {card(make === "clips", () => setMake("clips"), "Video clips & thumbnails", "A 720p clip of each song, with its best frame as the thumbnail.", "film", "var(--tc)")}
           {card(make === "stills", () => setMake("stills"), "Thumbnails only", "No clips: next, you pick each song's thumbnail from its best frames.", "image", "var(--accent)")}
+        </div>
+      )}
+      {current === "burn" && (
+        <div className="question">
+          {card(!burn, () => setBurn(false), "No", "Clips as recorded.")}
+          {card(burn, () => setBurn(true), "Yes, bottom right", <>A card with the song, show TC and frame rate in each clip's corner.<br /><BurnSample /></>)}
         </div>
       )}
       {current === "name" && <ClipLabel value={label} onChange={setLabel} asked />}
@@ -373,6 +394,7 @@ function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file:
   });
   const [make, setMake] = useState<Make>(isRecord ? initialMake : "none");
   const makeClips = make === "clips";
+  const [burn, setBurn] = useState(() => isRecord && Boolean((file as SourceRecord).burn_tc));
   const [label, setLabel] = useState(() => (isRecord ? (file as SourceRecord).label ?? guessRecordLabel(show, file.path) : ""));
   const [tag, setTag] = useState(() => (isRecord ? (file as SourceRecord).image_col ?? GENERAL : ""));
   const wantsStills = make !== "none";
@@ -504,6 +526,10 @@ function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file:
         const r = s.records?.find((x) => x.id === file.id);
         if (r) r.label = cleanLabel(label);
         if (r && tag) r.image_col = ensureCategory(s, tag);
+        if (r && makeClips) {
+          if (burn) r.burn_tc = true;
+          else delete r.burn_tc;
+        }
       }
     });
     if (!isRecord) {
@@ -512,7 +538,7 @@ function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file:
       return;
     }
     // Songs that already have their clip (or thumbnail) from this record aren't made again.
-    const todo = marksToMake(useStore.getState().show!, file.id, marks, makeClips);
+    const todo = marksToMake(useStore.getState().show!, file.id, marks, makeClips, burn);
     if (make !== "none" && todo.length) {
       const record = useStore.getState().show?.records?.find((x) => x.id === file.id);
       runClipJobs(bundle, { ...(file as SourceRecord), label: cleanLabel(label), image_col: record?.image_col, song_marks: marks }, todo, true, makeClips);
@@ -536,7 +562,7 @@ function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file:
   const colour = (i: number) => `hsl(${(i * 47 + 210) % 360} 70% 82%)`;
   const assignedCount = segs.filter((g) => isSong(g.song)).length;
   const toMake = isRecord
-    ? marksToMake(show, file.id, segs.flatMap((g, k) => (isSong(g.song) ? [{ song_id: g.song, in: g.start, out: endOf(k), source: "auto_tc" as const }] : [])), makeClips).length
+    ? marksToMake(show, file.id, segs.flatMap((g, k) => (isSong(g.song) ? [{ song_id: g.song, in: g.start, out: endOf(k), source: "auto_tc" as const }] : [])), makeClips, burn).length
     : 0;
 
   return (
@@ -646,6 +672,11 @@ function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file:
                 <MakeChoice make={make} onMake={setMake} allowNone />
               </div>
               {makeClips && <ClipLabel value={label} onChange={setLabel} />}
+              {makeClips && (
+                <label className="check" style={{ marginTop: 14 }}>
+                  <input type="checkbox" checked={burn} onChange={() => setBurn(!burn)} /> Burn the timecode into the clips <BurnSample fps={fps} tc={blocks[0]?.tc_start} />
+                </label>
+              )}
               {wantsStills && <div style={{ marginTop: 16 }}><div className="label">Category</div><CategoryPicker value={tag} onChange={setTag} /></div>}
             </>
           )}

@@ -2,7 +2,7 @@
 // (see google/sharing.ts). Also the shows shared with you, on All shows, to add to your Drive.
 import { useEffect, useState } from "react";
 import { backend } from "../backend";
-import { ACCESS, type Access, addToMyDrive, isOutside, listPeople, type Person, share, type SharedShow, sharedWithMe, unshare, validEmail } from "../google/sharing";
+import { ACCESS, type Access, addToMyDrive, isOutside, LINK, listPeople, type Person, share, shareLink, type SharedShow, sharedWithMe, unshare, validEmail } from "../google/sharing";
 import { syncNow } from "../google/sync";
 import { useStore } from "../store";
 import { Avatar, Icon } from "./icons";
@@ -21,6 +21,7 @@ export function PeoplePanel() {
   const [notify, setNotify] = useState(true);
   const [message, setMessage] = useState("");
   const [showTeam, setShowTeam] = useState(false);
+  const [link, setLink] = useState<string | null>(null); // the Sheet's address, once a link's been made
   const toast = useStore((s) => s.toast);
 
   async function load() {
@@ -53,6 +54,14 @@ export function PeoplePanel() {
   const add = () => change("add", async () => { await share(to, access, notify, message, existing); setEmail(""); setMessage(""); },
     `Shared with ${to}${access === "app" ? ": they'll find it under Shared with you in the app" : ""}`);
 
+  const linkPerson = people?.find((p) => p.email === LINK && p.access !== null);
+  const makeLink = (a: "view" | "edit") => change(`link-${a}`, async () => {
+    const url = await shareLink(a, linkPerson);
+    setLink(url);
+    await navigator.clipboard.writeText(url).catch(() => {});
+  }, `Link copied: anyone with it can ${a === "edit" ? "edit the Sheet's ✎ columns" : "view the Sheet and deck"}`);
+  const copyLink = () => link && navigator.clipboard.writeText(link).then(() => toast("Link copied"), () => toast("Couldn't copy the link"));
+
   const others = people?.filter((p) => p.email.toLowerCase() !== user?.email.toLowerCase()) ?? []; // you're shown first
   const mine = others.filter((p) => p.access !== null);
   const team = others.filter((p) => p.access === null);
@@ -79,7 +88,7 @@ export function PeoplePanel() {
           </div>
           <select value={p.access!} disabled={Boolean(busy) || Boolean(readOnly)} aria-label={`What ${p.name} can do`}
                   onChange={(e) => { const a = e.target.value as Access; change(p.email, () => share(p.email, a, false, "", p), `Changed what ${p.name} can do`); }}>
-            {ACCESS.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+            {ACCESS.filter((a) => p.email !== LINK || a.id !== "app").map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
           </select>
           <button className="icon" title={`Stop sharing with ${p.name}`} disabled={Boolean(busy) || Boolean(readOnly)}
                   onClick={() => change(p.email, () => unshare(p), `Stopped sharing with ${p.name}`)}>
@@ -133,6 +142,27 @@ export function PeoplePanel() {
               {notify && <input value={message} placeholder="Message (optional)" aria-label="Message" onChange={(e) => setMessage(e.target.value)} />}
             </>
           )}
+          <div className="share-link">
+            <div className="share-row">
+              <button disabled={Boolean(busy) || Boolean(readOnly)} onClick={() => makeLink("view")}>
+                <Icon name="link" size="sm" /> {busy === "link-view" ? "Making link…" : "Generate link for viewing"}
+              </button>
+              <button disabled={Boolean(busy) || Boolean(readOnly)} onClick={() => makeLink("edit")}>
+                <Icon name="link" size="sm" /> {busy === "link-edit" ? "Making link…" : "Generate link for editing"}
+              </button>
+            </div>
+            {link && (
+              <div className="share-row">
+                <input readOnly value={link} aria-label="Link to the Sheet" onFocus={(e) => e.target.select()} />
+                <button className="icon" title="Copy link" onClick={copyLink}><Icon name="copy" size="sm" /></button>
+              </div>
+            )}
+            <p className="muted small">
+              {linkPerson
+                ? `The link is on: anyone with it can ${linkPerson.access === "edit" ? "edit the Sheet's ✎ columns" : linkPerson.access === "comment" ? "comment on the Sheet and deck" : "view the Sheet and deck"}, and open the clips and images they show. Remove “Anyone with the link” above to turn it off.`
+                : "Anyone you send the link to can open the Sheet, the deck, and the clips and images they show; a link for editing lets them edit the Sheet's ✎ columns too."}
+            </p>
+          </div>
         </div>
       )}
     </div>

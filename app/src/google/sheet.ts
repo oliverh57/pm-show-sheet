@@ -5,6 +5,7 @@ import {
   addReview, cellValue, clipLabel, deptColour, deptLabel, deptList, deptName, findReview, parseTc, placeTc, recordTc, replyToReview, setReviewDone, sheetEditable,
   songByLabel, songImage, songNumber,
 } from "../model/ops";
+import { GELS } from "../model/gels";
 import type { ColumnDef, ReviewComment, Show, Song } from "../model/types";
 
 export const SHOW_TAB = "SHOW SHEET";
@@ -12,6 +13,8 @@ export const ARCHIVE_TAB = "ARCHIVED SONGS";
 export const REVIEW_TAB = "REVIEW";
 export const HEADER_ROWS = 4; // 0: column ids (hidden) · 1: banner · 2: department band · 3: labels
 const SPARE_ROWS = 100;
+const SPARE_COLS = 1; // an empty column after the last, so a dropdown in the last column isn't cut off at the edge
+const SPARE_COL_WIDTH = 30;
 
 // House style
 const FONT_HEAD = "Lexend";
@@ -54,13 +57,15 @@ function cellApi(c: Cell) {
   const d: Record<string, unknown> = {};
   if (c.links?.length) {
     // One string, with a run per line: linked lines carry their url, the others reset to plain.
+    // A blank line between them keeps several clips in one cell visibly apart.
+    const SEP = "\n\n";
     let at = 0;
-    d.textFormatRuns = c.links.map((l, i) => {
+    d.textFormatRuns = c.links.map((l) => {
       const run = { startIndex: at, format: l.url ? { link: { uri: l.url }, underline: true } : {} };
-      at += l.text.length + (i < c.links!.length - 1 ? 1 : 0);
+      at += l.text.length + SEP.length;
       return run;
     });
-    d.userEnteredValue = { stringValue: c.links.map((l) => l.text).join("\n") };
+    d.userEnteredValue = { stringValue: c.links.map((l) => l.text).join(SEP) };
   } else if (c.formula) d.userEnteredValue = { formulaValue: c.formula };
   else if (typeof c.value === "boolean") d.userEnteredValue = { boolValue: c.value };
   else if (c.value !== undefined && c.value !== null && c.value !== "") d.userEnteredValue = { stringValue: String(c.value) };
@@ -94,6 +99,9 @@ export interface TabGrid {
   noChoiceRows?: number[]; // data rows with tick boxes but no dropdowns (the REVIEW tab's replies: their song and department are their comment's)
   choicesBelow?: boolean; // the dropdowns go on down the empty rows below the data too, for rows typed there (REVIEW's new comments)
   greyWhenTicked?: number; // a tick column: a ticked row turns grey and struck through, straight away in the Sheet (REVIEW's RESOLVED)
+  colourPickCols?: number[]; // colour cells and colour fields: a dropdown of `colours` to search as you type (other names, and lists, allowed with a warning)
+  colourFillCols?: number[]; // the same columns: filled straight away in the Sheet when they name one of `colours` (a list, its first)
+  colours?: { label: string; hex: string }[];
 }
 
 /** Runs of equal keys as [start, end, key], never crossing `splitAt`. */
@@ -203,7 +211,26 @@ export function showTab(show: Show, imageUrls: Record<string, string>, clipUrls:
     choiceCols: cols.flatMap((c, i): [number, string[]][] => (c.type === "choice" ? [[i + 1, c.options ?? []]] : [])),
     editableCols: cols.flatMap((c, i) => (sheetEditable(c) ? [i + 1] : [])),
     dataRowHeight: cols.some((c) => c.type === "image") ? 110 : 48,
+    colourPickCols: cols.flatMap((c, i) => (c.type === "colour" || c.type === "palette" ? [i + 1] : [])),
+    colourFillCols: cols.flatMap((c, i) => (c.type === "colour" || c.type === "palette" ? [i + 1] : [])),
+    colours: sheetColours(show),
   };
+}
+
+const MAX_DROPDOWN = 500; // the most options a Sheets dropdown takes
+
+/** What the Sheet's colour cells offer and fill: the gel library, then names of the show's own that aren't in it. */
+export function sheetColours(show: Show): { label: string; hex: string }[] {
+  const out = new Map<string, { label: string; hex: string }>();
+  const add = (label: string | undefined, hex: string) => {
+    const name = label?.trim();
+    if (name && !out.has(name.toLowerCase())) out.set(name.toLowerCase(), { label: name, hex: hex.toUpperCase() });
+  };
+  for (const g of GELS) add(g.label, g.hex);
+  for (const song of Object.values(show.songs)) {
+    for (const sw of [...song.colours, ...Object.values(song.swatches ?? {}).flat()]) add(sw.label, sw.hex);
+  }
+  return [...out.values()];
 }
 
 // --- requests ----------------------------------------------------------------
@@ -217,15 +244,15 @@ const range = (sheetId: number, r0?: number, r1?: number, c0?: number, c1?: numb
 const dim = (sheetId: number, dimension: "ROWS" | "COLUMNS", startIndex: number, endIndex: number, properties: object, fields: string) =>
   ({ updateDimensionProperties: { range: { sheetId, dimension, startIndex, endIndex }, properties, fields } });
 
-const updateCells = (sheetId: number, rowIndex: number, rows: Cell[][]) =>
-  ({ updateCells: { start: { sheetId, rowIndex, columnIndex: 0 }, rows: rows.map((r) => ({ values: r.map(cellApi) })), fields: "userEnteredValue,userEnteredFormat,textFormatRuns" } });
+const updateCells = (sheetId: number, rowIndex: number, rows: Cell[][], fields = "userEnteredValue,userEnteredFormat,textFormatRuns", columnIndex = 0) =>
+  ({ updateCells: { start: { sheetId, rowIndex, columnIndex }, rows: rows.map((r) => ({ values: r.map(cellApi) })), fields } });
 
 /** One-off requests for a brand-new tab: create, merge, size, hide the id row/column. (It's locked by protectionUpdateRequests.) */
 export function structureRequests(g: TabGrid, sheetId: number): object[] {
   const n = g.colIds.length;
   const reqs: object[] = [{ addSheet: { properties: {
     sheetId, title: g.title, tabColor: rgb(g.tabColour),
-    gridProperties: { rowCount: HEADER_ROWS + g.dataRows.length + SPARE_ROWS, columnCount: n, frozenRowCount: HEADER_ROWS, frozenColumnCount: g.frozenCols },
+    gridProperties: { rowCount: HEADER_ROWS + g.dataRows.length + SPARE_ROWS, columnCount: n + SPARE_COLS, frozenRowCount: HEADER_ROWS, frozenColumnCount: g.frozenCols },
   } } }];
   reqs.push(...layoutRequests(g, sheetId));
   return reqs;
@@ -314,14 +341,47 @@ export function mergeUpdateRequests(g: TabGrid, sheetId: number, current: SheetM
 export interface SheetFormatRule { booleanRule?: { condition?: { values?: { userEnteredValue?: string }[] } } }
 
 const TICKED_RULE = "PMSS"; // in the rule's formula, so it's told apart from rules people added themselves
+const COLOUR_RULE = "PMSS colour"; // the same, for the colour fills
 
 /**
- * The grey-when-ticked rule, set afresh on every push (it covers the rows there are now). Only the app's own rule is
- * taken out: conditional formats people added stay.
+ * The colour fills: a rule for each colour, filling a colour cell (any case, spaces around it) that names it, or whose
+ * list ("Red, Blue") starts with it, as the app fills it, down to the bottom of the tab. The colour and the columns are in the formula, so the rules are only made again when one changes.
+ */
+function colourRules(g: TabGrid, sheetId: number): { formula: string; rule: object }[] {
+  const cols = g.colourFillCols ?? [];
+  if (!cols.length || !g.colours?.length) return [];
+  const cell = `${colLetter(cols[0])}${HEADER_ROWS + 1}`; // relative: each cell tests itself
+  const where = cols.map(colLetter).join(",");
+  return g.colours.map(({ label, hex }) => {
+    const first = `LEFT(${cell},FIND(",",${cell}&",")-1)`;
+    const formula = `=AND(LOWER(TRIM(${first}))="${label.toLowerCase().replace(/"/g, '""')}",N("${COLOUR_RULE} ${where} ${hex}")=0)`;
+    return { formula, rule: {
+      ranges: cols.map((c) => range(sheetId, HEADER_ROWS, undefined, c, c + 1)),
+      booleanRule: { condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: formula }] },
+                     format: { backgroundColor: rgb(hex), textFormat: { foregroundColor: rgb(textOn(hex)) } } },
+    } };
+  });
+}
+
+/**
+ * The app's own conditional formats: the grey-when-ticked rule, set afresh on every push (it covers the rows there are
+ * now), and the colour fills, made again only when they've changed. Conditional formats people added stay.
  */
 export function formatRuleRequests(g: TabGrid, sheetId: number, current: SheetFormatRule[]): object[] {
-  const reqs: object[] = current.flatMap((r, i) => (r.booleanRule?.condition?.values?.[0]?.userEnteredValue?.includes(TICKED_RULE) ? [i] : []))
-    .reverse().map((index) => ({ deleteConditionalFormatRule: { sheetId, index } }));
+  const formulaOf = (r: SheetFormatRule) => r.booleanRule?.condition?.values?.[0]?.userEnteredValue ?? "";
+  const loose = (f: string) => f.replace(/\s+/g, "").toLowerCase();
+  const colours = colourRules(g, sheetId);
+  const haveColours = current.filter((r) => formulaOf(r).includes(COLOUR_RULE)).map((r) => loose(formulaOf(r)));
+  const coloursSame = haveColours.length === colours.length && colours.every((c, i) => loose(c.formula) === haveColours[i]);
+  const drop = current.flatMap((r, i) => {
+    const f = formulaOf(r);
+    return f.includes(COLOUR_RULE) ? (coloursSame ? [] : [i]) : f.includes(TICKED_RULE) ? [i] : [];
+  });
+  const reqs: object[] = drop.reverse().map((index) => ({ deleteConditionalFormatRule: { sheetId, index } }));
+  if (!coloursSame) {
+    // Added in reverse at the top, so they end up in the library's order, after the app's other rules.
+    for (const c of [...colours].reverse()) reqs.push({ addConditionalFormatRule: { index: 0, rule: c.rule } });
+  }
   if (g.greyWhenTicked === undefined) return reqs;
   const cell = `$${colLetter(g.greyWhenTicked)}${HEADER_ROWS + 1}`;
   reqs.push({ addConditionalFormatRule: { index: 0, rule: {
@@ -351,7 +411,7 @@ function layoutRequests(g: TabGrid, sheetId: number): object[] {
  * protectionUpdateRequests.
  */
 export function columnChangeRequests(g: TabGrid, sheetId: number, currentCols: number): object[] {
-  const n = g.colIds.length;
+  const n = g.colIds.length + SPARE_COLS;
   const reqs: object[] = [{ unmergeCells: { range: range(sheetId, 0, HEADER_ROWS) } }];
   if (n > currentCols) reqs.push({ appendDimension: { sheetId, dimension: "COLUMNS", length: n - currentCols } });
   if (n < currentCols) reqs.push({ deleteDimension: { range: { sheetId, dimension: "COLUMNS", startIndex: n, endIndex: currentCols } } });
@@ -360,11 +420,57 @@ export function columnChangeRequests(g: TabGrid, sheetId: number, currentCols: n
   return reqs;
 }
 
-/** Sent on every push: header text, every data row, tick and dropdown validation, row heights. */
-export function contentRequests(g: TabGrid, sheetId: number): object[] {
+/** The spare column, for a tab made before it had one (the columns otherwise unchanged). */
+export function spareColumnRequests(g: TabGrid, sheetId: number, currentCols: number): object[] {
+  const n = g.colIds.length + SPARE_COLS;
+  return currentCols < n ? [{ appendDimension: { sheetId, dimension: "COLUMNS", length: n - currentCols } }] : [];
+}
+
+/**
+ * The ✎ cells a push leaves as they are in the Sheet: those the app hasn't changed since the last push. The Sheet has
+ * the same there, or an edit someone typed after the pull read it (while the sync uploaded images, say), which writing
+ * the whole row would wipe without anyone knowing; the next pull brings it in. Every cell of a row the push is adding
+ * (not in `inSheet`) is written. `now` is the snapshot of the show being pushed.
+ */
+export function keptCells(g: TabGrid, kind: "show" | "review", now: Record<string, string | boolean>, published: Record<string, string | boolean>,
+  inSheet: Set<string>): (row: number, col: number) => boolean {
+  const editable = new Set(g.editableCols);
+  return (row, col) => {
+    const rid = g.rowIds[row];
+    if (!editable.has(col) || !inSheet.has(rid)) return false;
+    // REPLY is pushed empty and the pull empties it once it's read, so a reply in it is one typed since.
+    if (kind === "review" && g.colIds[col] === "reply") return `review|${rid}|done` in now;
+    const key = `${kind}|${rid}|${g.colIds[col]}`;
+    return key in now && published[key] === now[key];
+  };
+}
+
+/** The data rows, leaving the values of `keep` cells alone (their format is still set). */
+function dataRequests(g: TabGrid, sheetId: number, keep?: (row: number, col: number) => boolean): object[] {
+  const rows = g.dataRows;
+  if (!keep || !rows.some((r, ri) => r.some((_, ci) => keep(ri, ci)))) return [updateCells(sheetId, HEADER_ROWS, rows)];
+  // A field mask covers every cell it's sent with, so: formats for all, then the values a column at a time, in runs of rows.
+  const reqs: object[] = [updateCells(sheetId, HEADER_ROWS, rows, "userEnteredFormat")];
+  g.colIds.forEach((_, ci) => {
+    for (const [r0, r1, kept] of runs(rows.map((_, ri) => keep(ri, ci)), 0)) {
+      if (!kept) reqs.push(updateCells(sheetId, HEADER_ROWS + r0, rows.slice(r0, r1).map((r) => [r[ci]]), "userEnteredValue,textFormatRuns", ci));
+    }
+  });
+  return reqs;
+}
+
+/**
+ * Sent on every push: header text, every data row (but the `keep` cells' values: see keptCells), tick and dropdown
+ * validation, row heights.
+ */
+export function contentRequests(g: TabGrid, sheetId: number, keep?: (row: number, col: number) => boolean): object[] {
   const reqs: object[] = [updateCells(sheetId, 0, g.headerRows)];
-  if (g.dataRows.length) reqs.push(updateCells(sheetId, HEADER_ROWS, g.dataRows));
+  if (g.dataRows.length) reqs.push(...dataRequests(g, sheetId, keep));
   const end = HEADER_ROWS + g.dataRows.length;
+  // The spare column stays blank, white and narrow: Sheets gives an added column the format and width of the one before it.
+  const spare = g.colIds.length;
+  reqs.push({ repeatCell: { range: range(sheetId, 0, undefined, spare, spare + SPARE_COLS), cell: { userEnteredFormat: { backgroundColor: rgb(WHITE) } }, fields: "userEnteredValue,userEnteredFormat" } });
+  reqs.push(dim(sheetId, "COLUMNS", spare, spare + SPARE_COLS, { pixelSize: SPARE_COL_WIDTH }, "pixelSize"));
   // Rules stay on the cells they were set on, so after a column is added, removed or moved an old tick or
   // dropdown rule sits on whatever column took its place: clear them all, then set the current ones.
   reqs.push({ setDataValidation: { range: range(sheetId, HEADER_ROWS) } });
@@ -389,6 +495,14 @@ export function contentRequests(g: TabGrid, sheetId: number): object[] {
       if (!options.length) continue;
       const rule = { condition: { type: "ONE_OF_LIST", values: options.map((o) => ({ userEnteredValue: o })) }, strict: true, showCustomUi: true };
       reqs.push({ setDataValidation: { range: range(sheetId, r0, r1, ci, ci + 1), rule } });
+    }
+  }
+  if (g.colours?.length) {
+    for (const [r0, r1] of spans(plain, false)) {
+      for (const ci of g.colourPickCols ?? []) {
+        const values = g.colours.slice(0, MAX_DROPDOWN).map((c) => ({ userEnteredValue: c.label }));
+        reqs.push({ setDataValidation: { range: range(sheetId, r0, r1, ci, ci + 1), rule: { condition: { type: "ONE_OF_LIST", values }, strict: false, showCustomUi: true } } });
+      }
     }
   }
   if (g.rowHeights) {

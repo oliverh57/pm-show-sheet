@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import sample from "../model/sample_show.json";
 import { addReview, migrate, placeTc, recordTc, replyToReview, resolvedToTidy, reviewsOn, setReviewDone, songByLabel, tidyResolved, unplacedReviews } from "../model/ops";
 import type { Show, SourceRecord } from "../model/types";
-import { applyReviewEdits, contentRequests, sheetAuthor, diffReviewTab, formatRuleRequests, HEADER_ROWS, mergeUpdateRequests, reviewRows, reviewTab, showTab, snapshot } from "./sheet";
+import { applyReviewEdits, contentRequests, sheetAuthor, diffReviewTab, formatRuleRequests, HEADER_ROWS, keptCells, mergeUpdateRequests, reviewRows, reviewTab, showTab, snapshot } from "./sheet";
 
 /** The sample show with a whole-show record: LTC from 04:00:00:00 at 10s in, the opener marked from 10s to 200s. */
 function fresh(): Show {
@@ -148,7 +148,7 @@ describe("REVIEW tab", () => {
     const added = (first[0] as { addConditionalFormatRule: { rule: { booleanRule: { condition: { values: { userEnteredValue: string }[] } } } } }).addConditionalFormatRule.rule;
     const ours = { booleanRule: added.booleanRule };
     expect(formatRuleRequests(g, 9, [ours, theirs])[0]).toEqual({ deleteConditionalFormatRule: { sheetId: 9, index: 0 } });
-    expect(formatRuleRequests(showTab(show, {}), 9, [theirs])).toEqual([]);
+    expect(formatRuleRequests(showTab(show, {}), 9, [theirs]).filter((r) => "deleteConditionalFormatRule" in r)).toEqual([]); // only its colour fills are added
   });
   it("merges the header again only when its layout changed", () => {
     const show = fresh();
@@ -264,5 +264,22 @@ describe("REVIEW tab", () => {
     v.splice(FIRST + 1, 0, ["", "", "", "", "", "Under the first", "Ria", "", "", "", ""]);
     applyReviewEdits(show, diffReviewTab(show, published, v), new Map([[FIRST + 1, "rev_h"]]));
     expect(show.reviews!.find((c) => c.id === "rev_h")).toMatchObject({ song_id: a, from: "Ria" });
+  });
+});
+
+describe("pushing the REVIEW tab", () => {
+  it("leaves a reply or comment edit typed during the sync, and writes what the app changed", () => {
+    const show = fresh();
+    const id = addReview(show, { song_id: show.set_order[0], record_id: "rec1", t: 50, text: "Brighter", from: "Sam" });
+    const other = addReview(show, { song_id: show.set_order[0], record_id: "rec1", t: 60, text: "Slower", from: "Sam" });
+    const published = snapshot(show);
+    show.reviews!.find((c) => c.id === other)!.text = "Much slower";
+    const g = reviewTab(show, {});
+    const keep = keptCells(g, "review", snapshot(show), published, new Set(g.rowIds));
+    const row = (rid: string) => g.rowIds.indexOf(rid);
+    expect(keep(row(id), col(show, "reply"))).toBe(true);
+    expect(keep(row(id), col(show, "comment"))).toBe(true);
+    expect(keep(row(other), col(show, "comment"))).toBe(false);
+    expect(keep(row(`song|${show.set_order[0]}`), col(show, "reply"))).toBe(false); // a heading isn't a comment
   });
 });

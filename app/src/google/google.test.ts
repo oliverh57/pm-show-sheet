@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import sample from "../model/sample_show.json";
 import { addCustomField, imageColumnFor, migrate, sheetEditable } from "../model/ops";
 import type { Show } from "../model/types";
-import { contentRequests, diffShowTab, HEADER_ROWS, protectionUpdateRequests, reconcileRows, showTab, snapshot, structureRequests } from "./sheet";
+import { contentRequests, diffShowTab, formatRuleRequests, HEADER_ROWS, keptCells, protectionUpdateRequests, reconcileRows, showTab, snapshot, spareColumnRequests, structureRequests } from "./sheet";
 import { deckRequests } from "./slides";
 
 const fresh = () => migrate(structuredClone(sample) as Show);
@@ -31,7 +31,7 @@ describe("SHOW SHEET tab", () => {
     const g = showTab(fresh(), {});
     const vals = contentRequests(g, 1).flatMap((r) => ("setDataValidation" in r ? [r.setDataValidation as { range: Record<string, number>; rule?: unknown }] : []));
     expect(vals[0]).toEqual({ range: { sheetId: 1, startRowIndex: HEADER_ROWS } });
-    expect(vals.slice(1).length).toBe(g.tickCols.length + g.choiceCols.length);
+    expect(vals.slice(1).length).toBe(g.tickCols.length + g.choiceCols.length + g.colourPickCols!.length);
   });
   it("has an id column, rows in running order, and Cont. after a segue", () => {
     const show = fresh();
@@ -116,6 +116,57 @@ describe("row reconcile", () => {
   });
 });
 
+describe("colour cells", () => {
+  it("offer every library colour and the show's own names as a dropdown, other names allowed", () => {
+    const show = fresh();
+    show.songs.s_opener.colours = [{ hex: "#123456", label: "Laser green" }, { hex: "#FFC4DC", label: "Baby Pink" }];
+    const g = showTab(show, {});
+    const names = g.colours!.map((c) => c.label);
+    expect(names).toContain("Steel Blue");
+    expect(names.filter((n) => n === "Baby Pink")).toHaveLength(1);
+    expect(g.colours!.find((c) => c.label === "Laser green")).toEqual({ label: "Laser green", hex: "#123456" });
+    const c1 = g.colIds.indexOf("colour_1");
+    const rule = contentRequests(g, 1).flatMap((r) => ("setDataValidation" in r ? [r.setDataValidation as { range: { startColumnIndex?: number }; rule?: { strict: boolean; condition: { values: unknown[] } } }] : []))
+      .find((v) => v.range.startColumnIndex === c1)!.rule!;
+    expect(rule.strict).toBe(false);
+    expect(rule.condition.values).toHaveLength(names.length);
+  });
+  it("give colour fields the dropdown too, filled from a list's first colour, with a spare column so the last isn't cut off", () => {
+    const show = fresh();
+    const laser = addCustomField(show, "Laser colour", "palette");
+    const g = showTab(show, {});
+    const ci = g.colIds.indexOf(laser);
+    expect(g.colourPickCols).toContain(ci);
+    expect(contentRequests(g, 1).some((r) => "setDataValidation" in r && (r.setDataValidation as { range: { startColumnIndex?: number }; rule?: unknown }).range.startColumnIndex === ci
+      && (r.setDataValidation as { rule?: unknown }).rule)).toBe(true);
+    const formula = (formatRuleRequests(g, 1, []).find((r) => "addConditionalFormatRule" in r) as { addConditionalFormatRule: { rule: { booleanRule: { condition: { values: { userEnteredValue: string }[] } } } } })
+      .addConditionalFormatRule.rule.booleanRule.condition.values[0].userEnteredValue;
+    expect(formula).toMatch(/LEFT\((\w+),FIND\(",",\1&","\)-1\)/);
+    const add = structureRequests(g, 1)[0] as { addSheet: { properties: { gridProperties: { columnCount: number } } } };
+    expect(add.addSheet.properties.gridProperties.columnCount).toBe(g.colIds.length + 1);
+    expect(spareColumnRequests(g, 1, g.colIds.length)).toEqual([{ appendDimension: { sheetId: 1, dimension: "COLUMNS", length: 1 } }]);
+    expect(spareColumnRequests(g, 1, g.colIds.length + 1)).toEqual([]);
+    // Kept blank and white (an added column takes the format of the one before it).
+    expect(contentRequests(g, 1)).toContainEqual({ repeatCell: { range: { sheetId: 1, startRowIndex: 0, startColumnIndex: g.colIds.length, endColumnIndex: g.colIds.length + 1 },
+      cell: { userEnteredFormat: { backgroundColor: { red: 1, green: 1, blue: 1 } } }, fields: "userEnteredValue,userEnteredFormat" } });
+    expect(contentRequests(g, 1)).toContainEqual({ updateDimensionProperties: { range: { sheetId: 1, dimension: "COLUMNS", startIndex: g.colIds.length, endIndex: g.colIds.length + 1 },
+      properties: { pixelSize: 30 }, fields: "pixelSize" } });
+  });
+  it("fill when they name a colour, with rules made again only when the colours or columns change", () => {
+    const show = fresh();
+    const g = showTab(show, {});
+    const made = formatRuleRequests(g, 1, []).flatMap((r) => ("addConditionalFormatRule" in r ? [r.addConditionalFormatRule as { rule: { booleanRule: { condition: { values: { userEnteredValue: string }[] } } } }] : []));
+    expect(made).toHaveLength(g.colours!.length);
+    const asListed = [...made].reverse().map((a) => ({ booleanRule: { condition: { values: a.rule.booleanRule.condition.values } } }));
+    expect(asListed[0].booleanRule.condition.values[0].userEnteredValue).toContain(`"${g.colours![0].label.toLowerCase()}"`);
+    expect(formatRuleRequests(g, 1, asListed)).toEqual([]); // unchanged: nothing sent
+    show.songs.s_opener.colours = [{ hex: "#123456", label: "Laser green" }];
+    const again = formatRuleRequests(showTab(show, {}), 1, asListed);
+    expect(again.filter((r) => "deleteConditionalFormatRule" in r)).toHaveLength(asListed.length);
+    expect(again.filter((r) => "addConditionalFormatRule" in r)).toHaveLength(asListed.length + 1);
+  });
+});
+
 describe("pulling Sheet edits", () => {
   const editable = (show: Show) => show.columns.find((c) => sheetEditable(c) && c.type === "longtext")!.id;
   it("takes a ✎ edit the app didn't also make", () => {
@@ -142,6 +193,54 @@ describe("pulling Sheet edits", () => {
   it("finds nothing to do when the Sheet matches what was pushed", () => {
     const show = fresh();
     expect(diffShowTab(show, snapshot(show), sheetValues(show))).toEqual({ edits: [], conflicts: [] });
+  });
+});
+
+/** Write a push's cell values into `v`, the Sheet as plain values (formats and other requests ignored). */
+function applyValues(v: unknown[][], reqs: object[]) {
+  type Up = { start: { rowIndex: number; columnIndex: number }; rows: { values: { userEnteredValue?: Record<string, unknown> }[] }[]; fields: string };
+  for (const r of reqs) {
+    const up = (r as { updateCells?: Up }).updateCells;
+    if (!up?.fields.includes("userEnteredValue")) continue;
+    up.rows.forEach((row, i) => row.values.forEach((cell, j) => {
+      const val = cell.userEnteredValue;
+      (v[up.start.rowIndex + i] ??= [])[up.start.columnIndex + j] = val?.stringValue ?? val?.boolValue ?? "";
+    }));
+  }
+}
+
+describe("pushing over Sheet edits", () => {
+  const editable = (show: Show) => show.columns.find((c) => sheetEditable(c) && c.type === "longtext")!.id;
+  it("leaves a ✎ cell the app didn't change, so an edit typed there during the sync is pulled next time", () => {
+    const show = fresh();
+    const col = editable(show);
+    const published = snapshot(show);
+    const sheet = sheetValues(show);
+    const g0 = showTab(show, {});
+    const at = (rid: string) => sheet[HEADER_ROWS + g0.rowIds.indexOf(rid)];
+    const ci = g0.colIds.indexOf(col);
+    show.songs.s_lights.fields[col] = "app version";
+    show.songs.s_glass.fields.name = "Glass (edit)";
+    // The pull has read the Sheet; then someone types in it before the push writes.
+    at("s_glass")[ci] = "typed during the sync";
+    const g = showTab(show, {});
+    applyValues(sheet, contentRequests(g, 1, keptCells(g, "show", snapshot(show), published, new Set(g.rowIds))));
+    expect(at("s_lights")[ci]).toBe("app version");
+    expect(at("s_glass")[ci]).toBe("typed during the sync");
+    expect(at("s_glass")[g.colIds.indexOf("name")]).toBe("Glass (edit)");
+    expect(diffShowTab(show, snapshot(show), sheet).edits).toEqual([{ songId: "s_glass", colId: col, value: "typed during the sync" }]);
+  });
+  it("writes every cell of a row it's adding, and every cell when nothing's been pushed", () => {
+    const show = fresh();
+    const col = editable(show);
+    const g = showTab(show, {});
+    const ci = g.colIds.indexOf(col);
+    const keep = keptCells(g, "show", snapshot(show), snapshot(show), new Set(g.rowIds.filter((r) => r !== "s_glass")));
+    expect(keep(g.rowIds.indexOf("s_glass"), ci)).toBe(false);
+    expect(keep(g.rowIds.indexOf("s_lights"), ci)).toBe(true);
+    expect(keep(g.rowIds.indexOf("s_lights"), g.colIds.indexOf("name"))).toBe(false);
+    expect(keptCells(g, "show", snapshot(show), {}, new Set(g.rowIds))(g.rowIds.indexOf("s_lights"), ci)).toBe(false);
+    expect(contentRequests(g, 1, () => false).filter((r) => "updateCells" in r)).toHaveLength(2); // header and data, as before
   });
 });
 

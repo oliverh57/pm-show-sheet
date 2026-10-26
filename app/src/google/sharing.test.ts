@@ -3,7 +3,7 @@ import sample from "../model/sample_show.json";
 import type { Show } from "../model/types";
 import { backend } from "../backend";
 import { useStore } from "../store";
-import { isOutside, listPeople, share, unshare } from "./sharing";
+import { isOutside, LINK, listPeople, share, shareLink, unshare } from "./sharing";
 
 const inherited = [{ inherited: true }];
 // The show's files on Drive: its folder, the Sheet, the deck, and the two media folders.
@@ -70,6 +70,19 @@ describe("sharing a show", () => {
     await share(ed.email, "view", false, "", ed);
     expect(calls.filter(([m]) => m === "DELETE").map(([, url]) => url.match(/permissions\/([\w-]+)/)![1])).toEqual(["s-ed", "d-ed", "i-ed"]);
     expect(calls.filter(([m]) => m === "POST").map(([, , body]) => (body as { role: string }).role)).toEqual(["reader", "reader", "reader", "reader"]);
+  });
+  it("makes a link anyone can edit the Sheet with, without touching the show's folder or who uses it in the app", async () => {
+    const url = await shareLink("edit");
+    expect(url).toBe("https://docs.google.com/spreadsheets/d/SHEET/edit");
+    const posts = calls.filter(([m]) => m === "POST").map(([, url, body]) => [url.match(/files\/(\w+)/)![1], body, url.includes("sendNotificationEmail=true")]);
+    expect(posts).toEqual([
+      ["SHEET", { type: "anyone", allowFileDiscovery: false, role: "writer" }, false],
+      ["DECK", { type: "anyone", allowFileDiscovery: false, role: "commenter" }, false],
+      ["IMAGES", { type: "anyone", allowFileDiscovery: false, role: "reader" }, false],
+      ["CLIPS", { type: "anyone", allowFileDiscovery: false, role: "reader" }, false],
+    ]);
+    expect(useStore.getState().show!.google!.app_editors ?? []).toEqual([]);
+    await expect(share(LINK, "app", false, "")).rejects.toThrow(/whole show/);
   });
   it("knows who's outside the organisation", () => {
     expect(isOutside("ed@other.com")).toBe(true);

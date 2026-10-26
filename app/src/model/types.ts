@@ -58,6 +58,7 @@ export interface Clip {
   out: number;
   source: "auto_tc" | "manual";
   still?: string; // the still grabbed with it (bundle-relative), if any
+  burn_tc?: boolean; // cut with the record's TC drawn in the bottom-right corner
 }
 
 /** One continuous run of LTC in a file: a TC block, usually one song. */
@@ -161,6 +162,8 @@ export interface SourceRecord {
   added_at: string;
   ltc?: LtcResult;
   song_marks?: SongMark[];
+  /** Draw its TC into its clips' bottom-right corner, like the clock on a show record ("● [25] 09:01:42:19"). */
+  burn_tc?: boolean;
 }
 
 /** What scanning a file for LTC found. */

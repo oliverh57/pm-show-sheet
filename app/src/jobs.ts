@@ -3,7 +3,7 @@
 // import flow's last step). One song at a time. Progress shows on the import page and keeps going if the user moves on.
 // Results are added to the show only if it's still the open one.
 import { backend } from "./backend";
-import { addClip, addImages, addRecordStill, categoryFree, clipName, GENERAL, newId, recordClipName, recordStillOf, setHero, setSongImage } from "./model/ops";
+import { addClip, addImages, addRecordStill, burnsTc, categoryFree, clipName, GENERAL, newId, recordClipName, recordStillOf, setHero, setSongImage } from "./model/ops";
 import type { Show, SongMark, SourceRecord } from "./model/types";
 import { type StillPick, useStore } from "./store";
 
@@ -15,11 +15,19 @@ export async function runClipJobs(bundle: string, record: SourceRecord, marks: S
   if (!show) return;
   const queue = marks.map((m) => ({ mark: m, id: newId("job"), name: recordClipName(show, record, m.song_id) }));
   const kind = makeClips ? "clip" as const : "thumbnail" as const;
-  setJobs(() => queue.map((q) => ({ id: q.id, label: show.songs[q.mark.song_id]?.fields.name || "Song", kind, progress: 0, status: "queued" })));
+  setJobs(() => queue.map((q) => ({ id: q.id, label: show.songs[q.mark.song_id]?.fields.name || "Song", recordId: record.id, kind, progress: 0, status: "queued" })));
   const patch = (id: string, change: Partial<{ progress: number; status: "running" | "done" | "error"; error: string }>) =>
     setJobs((jobs) => jobs.map((j) => (j.id === id ? { ...j, ...change } : j)));
   const stillOpen = () => useStore.getState().bundle === bundle;
   const ltc = record.ltc?.channel ?? null; // clips keep the LTC, on one side, and say so in their name
+  const burn = burnsTc(record);
+  // The burned-in card names the song and its place in the running order ("03 GOOD LIES").
+  const burnIn = (songId: string) => {
+    const s = useStore.getState().show;
+    if (!burn || !record.ltc || !s) return null;
+    const at = s.set_order.indexOf(songId);
+    return { fps: record.ltc.fps ?? 25, blocks: record.ltc.blocks, song: s.songs[songId]?.fields.name ?? "", number: at >= 0 ? String(at + 1).padStart(2, "0") : null };
+  };
 
   for (const { mark, id, name } of queue) {
     if (!stillOpen()) return;
@@ -29,7 +37,7 @@ export async function runClipJobs(bundle: string, record: SourceRecord, marks: S
       const had = recordStillOf(useStore.getState().show!, record.id, mark.song_id);
       let clip: string | null = null;
       if (makeClips) {
-        const path = await backend.cutClip(id, bundle, record.path, mark.in, mark.out, name, ltc, (f) => patch(id, { progress: f * (grabStills ? 0.8 : 1) }));
+        const path = await backend.cutClip(id, bundle, record.path, mark.in, mark.out, name, ltc, burnIn(mark.song_id), (f) => patch(id, { progress: f * (grabStills ? 0.8 : 1) }));
         if (!stillOpen()) return;
         clip = path;
         // A clip cut before under another name (before clips kept their LTC) goes to the Trash.
@@ -37,7 +45,7 @@ export async function runClipJobs(bundle: string, record: SourceRecord, marks: S
         await backend.trashFiles(bundle, replaced.map((c) => c.path)).catch(() => {});
         useStore.getState().update((s) => {
           const kept = replaced.find((c) => c.still)?.still ?? had;
-          addClip(s, mark.song_id, { path, record_id: record.id, in: mark.in, out: mark.out, source: mark.source, ...(kept ? { still: kept } : {}) });
+          addClip(s, mark.song_id, { path, record_id: record.id, in: mark.in, out: mark.out, source: mark.source, ...(kept ? { still: kept } : {}), ...(burn ? { burn_tc: true } : {}) });
         });
       }
       if ((grabStills || !makeClips) && !had) await queuePick(bundle, record, mark.song_id, mark, clip, !makeClips);

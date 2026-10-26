@@ -11,11 +11,12 @@
 
 use serde_json::Value;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tauri::{AppHandle, Emitter};
 
+mod burnin;
 mod files;
 mod google;
 mod ltc;
@@ -25,6 +26,7 @@ mod thumbs;
 mod tools;
 
 const PROJECT: &str = "project.json";
+const CLIP_HEIGHT: u32 = 720;
 const MEDIA_KINDS: [&str; 5] = ["renders", "grabs", "clips", "layout", "inspo"];
 
 fn err<E: std::fmt::Display>(context: &str) -> impl Fn(E) -> String + '_ {
@@ -251,11 +253,12 @@ async fn ltc_scan(app: AppHandle, path: String) -> Result<ltc::LtcResult, String
 /// slides. Emits `clip-progress` events with `job` as the id. Returns the bundle-relative path.
 /// When the record carries LTC on `ltc_channel` the clip keeps it, on one side of a stereo track, and
 /// its name ends `_LTC-L` or `_LTC-R` to say which (that's how the app knows a file has timecode).
+/// With `burn_in` the record's TC is also drawn in the clip's bottom-right corner (see burnin.rs).
 /// A clip with the same name is replaced, so cutting a song again doesn't leave copies behind; the
 /// clip is written to a .part file first, so a cut that's cut short never looks like a finished clip.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-async fn clip_cut(app: AppHandle, job: String, bundle: String, source: String, start: f64, end: f64, name: String, ltc_channel: Option<usize>) -> Result<String, String> {
+async fn clip_cut(app: AppHandle, job: String, bundle: String, source: String, start: f64, end: f64, name: String, ltc_channel: Option<usize>, burn_in: Option<burnin::BurnIn>) -> Result<String, String> {
     let ffmpeg = ffmpeg_path()?;
     if end <= start {
         return Err("The clip's end is before its start".into());
@@ -271,35 +274,69 @@ async fn clip_cut(app: AppHandle, job: String, bundle: String, source: String, s
         let file = format!("{}{suffix}.mp4", safe_stem(&name));
         let part = dir.join(format!(".{file}.part"));
         let length = end - start;
-        let mut child = Command::new(ffmpeg)
-            .args(["-v", "error", "-nostdin", "-y", "-ss", &format!("{start:.3}"), "-i", &source, "-t", &format!("{length:.3}")])
-            .args(["-map", "0:v:0", "-map", "0:a:0?", "-vf", "scale=-2:720", "-c:v", "libx264", "-preset", "veryfast"])
-            .args(["-b:v", "2500k", "-maxrate", "3000k", "-bufsize", "6000k", "-pix_fmt", "yuv420p"])
-            .args(pan.iter().flat_map(|p| ["-af".to_string(), p.clone()]))
-            .args(["-c:a", "aac", "-b:a", "256k", "-ac", "2", "-movflags", "+faststart", "-progress", "pipe:1", "-f", "mp4"])
-            .arg(&part)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(err("run ffmpeg"))?;
-        if let Some(out) = child.stdout.take() {
-            for line in BufReader::new(out).lines().map_while(Result::ok) {
-                if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.parse::<f64>().ok()) {
-                    let _ = app.emit("clip-progress", Progress { id: job.clone(), fraction: (us / 1e6 / length).clamp(0.0, 0.99) });
-                }
-            }
-        }
-        let output = child.wait_with_output().map_err(err("wait for ffmpeg"))?;
-        if !output.status.success() {
-            let _ = fs::remove_file(&part);
-            let msg = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("ffmpeg couldn't cut the clip: {}", msg.lines().last().unwrap_or("unknown error")));
-        }
+        let clock = burn_in.map(|b| burnin::Clock::new(b, start, length, CLIP_HEIGHT)).transpose()?;
+        cut_with_ffmpeg(&ffmpeg, &source, start, length, pan.as_deref(), clock, &part, |fraction| {
+            let _ = app.emit("clip-progress", Progress { id: job.clone(), fraction });
+        })?;
         fs::rename(&part, dir.join(&file)).map_err(err("save clip"))?;
         Ok(format!("media/clips/{file}"))
     })
     .await
     .map_err(err("cut clip"))?
+}
+
+/// Cut `length` seconds of `source` from `start` into a 720p H.264 clip at `part`, with the audio filter
+/// `pan` and `clock` drawn over the picture. `progress` gets the fraction done.
+#[allow(clippy::too_many_arguments)]
+fn cut_with_ffmpeg(ffmpeg: &Path, source: &str, start: f64, length: f64, pan: Option<&str>, clock: Option<burnin::Clock>, part: &Path, mut progress: impl FnMut(f64)) -> Result<(), String> {
+    let scale = format!("scale=-2:{CLIP_HEIGHT}");
+    let mut cmd = Command::new(ffmpeg);
+    cmd.args(["-v", "error", "-nostdin", "-y", "-ss", &format!("{start:.3}"), "-i", source]);
+    match &clock {
+        Some(clock) => cmd
+            .args(clock.input_args())
+            .args(["-filter_complex", &format!("[0:v:0]{scale}[s];{}[v]", clock.overlay("[s]", "[1:v]")), "-map", "[v]"])
+            .stdin(Stdio::piped()),
+        None => cmd.args(["-map", "0:v:0", "-vf", &scale]),
+    };
+    let mut child = cmd
+        .args(["-map", "0:a:0?", "-t", &format!("{length:.3}"), "-c:v", "libx264", "-preset", "veryfast"])
+        .args(["-b:v", "2500k", "-maxrate", "3000k", "-bufsize", "6000k", "-pix_fmt", "yuv420p"])
+        .args(pan.iter().flat_map(|p| ["-af", p]))
+        .args(["-c:a", "aac", "-b:a", "256k", "-ac", "2", "-movflags", "+faststart", "-progress", "pipe:1", "-f", "mp4"])
+        .arg(part)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(err("run ffmpeg"))?;
+    // The clock's frames go in on stdin while the progress comes out on stdout. ffmpeg stops reading once
+    // the clip is long enough, so a failed write just ends the clock.
+    let drawing = clock.zip(child.stdin.take()).map(|(clock, mut stdin)| {
+        std::thread::spawn(move || {
+            for i in 0..clock.frames() {
+                if stdin.write_all(&clock.frame(i)).is_err() {
+                    break;
+                }
+            }
+        })
+    });
+    if let Some(out) = child.stdout.take() {
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.parse::<f64>().ok()) {
+                progress((us / 1e6 / length).clamp(0.0, 0.99));
+            }
+        }
+    }
+    let output = child.wait_with_output().map_err(err("wait for ffmpeg"))?;
+    if let Some(drawing) = drawing {
+        let _ = drawing.join();
+    }
+    if !output.status.success() {
+        let _ = fs::remove_file(part);
+        let msg = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("ffmpeg couldn't cut the clip: {}", msg.lines().last().unwrap_or("unknown error")));
+    }
+    Ok(())
 }
 
 /// The ffmpeg audio filter for a clip of a record with LTC on channel `ltc` of `channels`: the LTC on
@@ -715,6 +752,44 @@ mod tests {
         assert!(bundle.join(&rel).metadata().unwrap().len() > 0);
     }
 
+    /// A clip with burned-in TC: the card sits in the bottom-right corner, its dot lit green once the TC block starts.
+    #[test]
+    fn burns_the_timecode_into_a_clip() {
+        let Some(ffmpeg) = tool_path("ffmpeg") else { return };
+        let base = temp_dir("burn");
+        fs::create_dir_all(&base).unwrap();
+        let src = base.join("src.mp4");
+        let ok = Command::new(&ffmpeg)
+            .args(["-v", "error", "-f", "lavfi", "-i", "color=c=black:size=1920x1080:rate=24000/1001", "-f", "lavfi", "-i", "sine=frequency=440"])
+            .args(["-t", "6", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"])
+            .arg(&src)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        let block = ltc::TcBlock { file_start: 3.0, file_end: 6.0, tc_start: "09:01:42:19".into(), tc_end: "09:01:45:19".into() };
+        let Ok(clock) = burnin::Clock::new(burnin::BurnIn { fps: 25.0, blocks: vec![block], song: Some("Good Lies".into()), number: Some("03".into()) }, 1.0, 4.0, CLIP_HEIGHT) else { return };
+        let clip = base.join("clip.mp4");
+        cut_with_ffmpeg(&ffmpeg, &src.to_string_lossy(), 1.0, 4.0, None, Some(clock), &clip, |_| {}).unwrap();
+        let corner = |t: &str| {
+            let out = Command::new(&ffmpeg)
+                .args(["-v", "error", "-ss", t, "-i"])
+                .arg(&clip)
+                .args(["-frames:v", "1", "-vf", "crop=480:150:iw-480:ih-150", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            out.stdout
+        };
+        let green = |px: &[u8]| px.chunks(3).filter(|p| p[1] > 150 && p[0] < 100 && p[2] < 100).count();
+        let white = |px: &[u8]| px.chunks(3).filter(|p| p.iter().all(|&c| c > 200)).count();
+        let before = corner("1.0");
+        assert!(white(&before) > 50, "no card before the TC block");
+        assert_eq!(green(&before), 0, "a lit dot before the TC block");
+        let during = corner("3.0");
+        assert!(green(&during) > 20 && white(&during) > white(&before) + 200, "no TC: {} green, {} white", green(&during), white(&during));
+    }
+
     #[test]
     fn crops_a_tiled_heic() {
         let (Some(ffmpeg), Some(ffprobe)) = (tool_path("ffmpeg"), ffprobe_path()) else { return };
@@ -752,3 +827,4 @@ mod tests {
         assert!(info["audio_channels"].as_u64().is_some());
     }
 }
+
