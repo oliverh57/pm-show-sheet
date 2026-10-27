@@ -25,7 +25,12 @@ export interface FolderFile {
 export interface ToolsStatus {
   ffmpeg: boolean;
   ffprobe: boolean;
-  brew: boolean; // Homebrew, which installs them
+}
+
+export interface ToolsProgress {
+  phase: "download" | "install"; // install: unpacking and checking they run
+  received: number; // bytes
+  total: number;
 }
 
 export interface GoogleUser {
@@ -108,10 +113,9 @@ export interface Backend {
 
   // ffmpeg and ffprobe (see src-tauri/src/tools.rs)
   toolsStatus(): Promise<ToolsStatus>;
-  /** `brew install ffmpeg` in the background; `onLine` gets each line of brew's output. */
-  installTools(onLine?: (line: string) => void): Promise<void>;
-  /** Open a Terminal script that installs Homebrew (asking for the Mac password) and then ffmpeg. */
-  installToolsInTerminal(): Promise<void>;
+  /** Download and install ffmpeg and ffprobe in the background. Rejects with "cancelled" after `cancelInstallTools`. */
+  installTools(onProgress?: (p: ToolsProgress) => void): Promise<void>;
+  cancelInstallTools(): Promise<void>;
   reveal(path: string): Promise<void>;
   /** Move files the app made in a show (bundle-relative, under media/) to the Trash. */
   trashFiles(bundle: string, paths: string[]): Promise<void>;
@@ -170,6 +174,7 @@ async function withProgress<T>(event: string, id: string, onProgress: ((f: numbe
 }
 
 let previewToolsInstalled = false;
+let previewToolsCancel = false;
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -274,16 +279,16 @@ const desktop: Backend = {
   async toolsStatus() {
     return (await invoke("tools_status")) as ToolsStatus;
   },
-  async installTools(onLine) {
-    const unlisten = onLine ? await listen<string>("tools-install-log", (e) => onLine(e.payload)) : null;
+  async installTools(onProgress) {
+    const unlisten = onProgress ? await listen<ToolsProgress>("tools-install-progress", (e) => onProgress(e.payload)) : null;
     try {
       await invoke("tools_install");
     } finally {
       unlisten?.();
     }
   },
-  async installToolsInTerminal() {
-    await invoke("tools_install_in_terminal");
+  async cancelInstallTools() {
+    await invoke("tools_install_cancel");
   },
   async reveal(path) {
     await revealItemInDir(path);
@@ -444,19 +449,28 @@ const browser: Backend = {
     try { sessionStorage.removeItem("preview-user"); } catch { /* preview only */ }
   },
   async toolsStatus() {
-    // ?noffmpeg previews the ffmpeg setup guide; add ?nobrew for the Terminal route.
-    const q = new URLSearchParams(location.search);
-    const have = previewToolsInstalled || !q.has("noffmpeg");
-    return { ffmpeg: have, ffprobe: have, brew: !q.has("nobrew") };
+    // ?noffmpeg previews the ffmpeg setup guide; add ?ffmpegfail to see a failed download.
+    const have = previewToolsInstalled || !new URLSearchParams(location.search).has("noffmpeg");
+    return { ffmpeg: have, ffprobe: have };
   },
-  async installTools(onLine) {
-    for (const line of ["==> Fetching ffmpeg", "==> Pouring ffmpeg--7.1.arm64_sequoia.bottle.tar.gz", "🍺  /opt/homebrew/Cellar/ffmpeg/7.1"]) {
-      await new Promise((r) => setTimeout(r, 700));
-      onLine?.(line);
+  async installTools(onProgress) {
+    previewToolsCancel = false;
+    const total = 56_713_400;
+    for (let received = 0; received < total; received = Math.min(total, received + 1_400_000)) {
+      await new Promise((r) => setTimeout(r, 100));
+      if (previewToolsCancel) throw "cancelled";
+      if (received > total / 2 && new URLSearchParams(location.search).has("ffmpegfail")) {
+        throw "The download of ffprobe stopped. Check the internet connection and try again.";
+      }
+      onProgress?.({ phase: "download", received, total });
     }
+    onProgress?.({ phase: "install", received: total, total });
+    await new Promise((r) => setTimeout(r, 900));
     previewToolsInstalled = true;
   },
-  async installToolsInTerminal() {},
+  async cancelInstallTools() {
+    previewToolsCancel = true;
+  },
   async reveal() {},
   async trashFiles() {},
   async openWeb(url) {

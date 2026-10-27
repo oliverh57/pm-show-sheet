@@ -41,7 +41,7 @@ The refresh token is kept in the macOS keychain.
 - **Records and audio** stay where they are on each Mac's disks (they're linked, not uploaded). One added on another Mac shows **Locate…** on the Media page.
 - **Storage** (Settings): a show's clips and images can be removed from this Mac and download again when shown; clips of shows not opened for a chosen time are removed by themselves.
 
-**ffmpeg setup**: after sign-in, if ffmpeg or ffprobe is missing (`tools::tools_status`), a second guide installs them. With Homebrew on the Mac the app runs `brew install ffmpeg` itself and shows its progress; without it, **Open Terminal** runs a script that installs Homebrew (it asks for the Mac password, and needs an admin account) and then ffmpeg. Either way the guide carries on once ffmpeg appears, and can be skipped. Preview with `?noffmpeg` (add `&nobrew` for the Terminal route).
+**ffmpeg setup**: after sign-in, if ffmpeg or ffprobe is missing (`tools::tools_status`), a second guide installs them with one click. The app downloads pinned static builds (ffmpeg 9.0.2 from ffmpeg.martin-riedl.de, signed and notarised; the right one for Apple silicon or Intel), checks their SHA-256, and puts them in `~/Library/Application Support/com.pixelmappers.showsheet/bin`, which `tool_path` looks in before Homebrew's folders. A progress bar shows the download, which can be cancelled. The guide can't be skipped: the app carries on once ffmpeg is installed. No Homebrew, Terminal or password. Preview with `?noffmpeg` (add `&ffmpegfail` for a failed download).
 
 **All shows** (home): every `.showsheet` folder the signed-in account can reach in Google Drive: My Drive, every shared drive, and shows shared with you (`src/drive/list.ts`). A Drive search finds them; each show folder carries a short summary in its Drive `properties` (name, venue, date, songs) so the list doesn't download every show. The last list shows straight away. A show you can only view opens read only. **New show** and **Move** pick a Drive folder (`DriveFolderPicker`); new shows go to the last folder used, or My Drive › Pixelmappers Show Sheets. **Open in Drive** opens the show's folder on drive.google.com. Click the show name for **Show settings** (name, venue, date, location, Google files, columns).
 
@@ -54,7 +54,7 @@ The refresh token is kept in the macOS keychain.
 - **Share & publish**: the always-on Google Sheet and Slides deck (`src/google/`). While a show is open the app pulls edits from the Sheet's ✎ columns and pushes the show a few seconds after each change, redraws the deck when you pause, and checks the Sheet every minute. Clashing edits are listed here to resolve. Sync is always on. The Sheet, deck and a `Slides images` folder live inside the show's own `.showsheet` folder in Drive, so they move, share and delete with the show; shows from before that are moved in on their next sync. This needs the full `drive` scope (shows made by other people and older versions aren't the app's own files, which is all `drive.file` reaches).
 - **Sheet view**: the grid, with Columns.
 
-Needs ffmpeg and ffprobe (`brew install ffmpeg`) for file details, LTC and clips.
+Needs ffmpeg and ffprobe for file details, LTC and clips (the ffmpeg setup guide installs them).
 
 **Also:** undo/redo (⌘Z / ⇧⌘Z), autosave, ⌘S.
 

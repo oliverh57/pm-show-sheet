@@ -260,7 +260,14 @@ input[type="checkbox"] { width: 16px; height: 16px; padding: 0; accent-color: va
 .setup-steps li.done .step-n { background: var(--ok-bg); border-color: transparent; color: var(--ok); }
 .setup-steps .step-n svg { width: 14px; height: 14px; }
 .drive-setup .signin-wait svg { color: var(--ok); }
-.drive-setup .install-line { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 12px; }
+.tools-install { display: grid; gap: 10px; justify-items: start; }
+.tools-install button { height: 36px; padding: 0 16px; gap: 8px; }
+.tools-progress { display: grid; gap: 8px; padding: 14px 16px; border-radius: 10px; background: var(--side); border: 1px solid var(--line); }
+.tools-progress .tp-line { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: 13px; }
+.tools-progress .tp-line .n { color: var(--muted); font: 500 12px var(--font-mono); font-variant-numeric: tabular-nums; }
+.tools-progress .progress { height: 6px; }
+.tools-progress .progress.busy i { background: linear-gradient(90deg, var(--accent) 30%, color-mix(in srgb, var(--accent) 45%, transparent) 50%, var(--accent) 70%); background-size: 200% 100%; animation: tools-busy 1.1s linear infinite; }
+@keyframes tools-busy { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 .setup-foot { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); display: flex; gap: 10px; align-items: baseline; justify-content: space-between; }
 
 /* --- home (All shows) --------------------------------------------------------- */

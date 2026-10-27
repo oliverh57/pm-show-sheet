@@ -173,11 +173,13 @@ fn list_folder(folder: String, extensions: Vec<String>) -> Result<Vec<FolderFile
     Ok(out)
 }
 
-/// Apps opened from Finder don't inherit the shell PATH, so look in the usual Homebrew places too.
+/// The copy the setup guide installed (see tools.rs), else Homebrew's. Apps opened from Finder don't
+/// inherit the shell PATH, so look in the usual Homebrew places too.
 pub(crate) fn tool_path(name: &str) -> Option<PathBuf> {
-    ["/opt/homebrew/bin", "/usr/local/bin"]
-        .iter()
-        .map(|d| Path::new(d).join(name))
+    tools::tools_dir()
+        .into_iter()
+        .chain(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from))
+        .map(|d| d.join(name))
         .find(|p| p.exists())
         .or_else(|| {
             std::env::var_os("PATH").and_then(|paths| std::env::split_paths(&paths).map(|d| d.join(name)).find(|p| p.exists()))
@@ -189,7 +191,7 @@ fn ffprobe_path() -> Option<PathBuf> {
 }
 
 fn ffmpeg_path() -> Result<PathBuf, String> {
-    tool_path("ffmpeg").ok_or_else(|| "ffmpeg isn't installed. Install it with: brew install ffmpeg".to_string())
+    tool_path("ffmpeg").ok_or_else(|| "ffmpeg isn't installed. Quit and reopen the app to install it.".to_string())
 }
 
 /// Duration, picture and sound details of a media file, via ffprobe. `available: false` if ffprobe isn't installed.
@@ -565,7 +567,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             bundle_create, bundle_open, bundle_save, media_import, side_read, side_write, list_folder, probe_media,
             ltc_scan, clip_cut, frame_grab, image_crop, media_save,
-            tools::tools_status, tools::tools_install, tools::tools_install_in_terminal, shows::bundle_trash_files,
+            tools::tools_status, tools::tools_install, tools::tools_install_cancel, shows::bundle_trash_files,
             thumbs::thumb_candidates, stream::media_server,
             google::google_client_configured, google::google_set_client, google::google_sign_in,
             google::google_current_user, google::google_sign_out, google::google_api, google::google_upload,

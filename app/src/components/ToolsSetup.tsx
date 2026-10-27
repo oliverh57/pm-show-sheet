@@ -1,21 +1,10 @@
 // Shown at launch when ffmpeg or ffprobe is missing: they read media for file details, LTC, clips and
-// saved copies. With Homebrew here the app installs them itself; without it, a Terminal script
-// installs Homebrew (which needs the Mac password) and then ffmpeg.
-import { useEffect, useState } from "react";
+// saved copies. One click downloads them into the app's own folder (see src-tauri/src/tools.rs), with a
+// progress bar; no Homebrew, Terminal or password.
+import { useEffect, useRef, useState } from "react";
 import logo from "../assets/logo.png";
-import { backend, type ToolsStatus } from "../backend";
+import { backend, type ToolsProgress, type ToolsStatus } from "../backend";
 import { Icon } from "./icons";
-
-const CHECK_EVERY_MS = 3000;
-
-function Step({ n, done, title, children }: { n: number; done: boolean; title: string; children: React.ReactNode }) {
-  return (
-    <li className={done ? "done" : ""}>
-      <span className="step-n">{done ? <Icon name="check" /> : n}</span>
-      <div><strong>{title}</strong>{!done && children}</div>
-    </li>
-  );
-}
 
 function toolsReady(s: ToolsStatus): boolean {
   return s.ffmpeg && s.ffprobe;
@@ -31,52 +20,52 @@ export function useToolsCheck(signedIn: boolean): [boolean | null, () => void] {
   return [ready, () => setReady(true)];
 }
 
+const mb = (bytes: number) => (bytes / 1e6).toFixed(1);
+
+/** "About 20 seconds left", from the average speed so far (steadier than the latest chunk's). */
+function timeLeft(p: ToolsProgress, startedAt: number): string | null {
+  const secs = (Date.now() - startedAt) / 1000;
+  if (secs < 2 || p.received === 0) return null;
+  const left = (p.total - p.received) / (p.received / secs);
+  if (left < 5) return "A few seconds left";
+  if (left < 60) return `About ${Math.ceil(left / 5) * 5} seconds left`;
+  const mins = Math.round(left / 60);
+  return `About ${mins} minute${mins === 1 ? "" : "s"} left`;
+}
+
 export function ToolsSetup({ onDone }: { onDone: () => void }) {
-  const [status, setStatus] = useState<ToolsStatus | null>(null);
-  // Decided by the first check, so the steps don't change under the user once Homebrew arrives.
-  const [route, setRoute] = useState<"brew" | "terminal" | null>(null);
-  const [installing, setInstalling] = useState(false);
-  const [opened, setOpened] = useState(false);
-  const [line, setLine] = useState("");
+  const [state, setState] = useState<"idle" | "installing" | "done">("idle");
+  const [progress, setProgress] = useState<ToolsProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const ready = status !== null && toolsReady(status);
+  const startedAt = useRef(0);
 
   useEffect(() => {
-    if (ready) {
-      const t = window.setTimeout(onDone, 1200);
-      return () => window.clearTimeout(t);
-    }
-    const check = () => backend.toolsStatus().then((s) => {
-      setStatus(s);
-      setRoute((r) => r ?? (s.brew ? "brew" : "terminal"));
-    }).catch(() => {});
-    check();
-    const t = window.setInterval(check, CHECK_EVERY_MS);
-    return () => window.clearInterval(t);
-  }, [ready]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (state !== "done") return;
+    const t = window.setTimeout(onDone, 1200);
+    return () => window.clearTimeout(t);
+  }, [state]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function install() {
     setError(null);
-    setInstalling(true);
+    setProgress(null);
+    setState("installing");
+    startedAt.current = Date.now();
     try {
-      await backend.installTools(setLine);
-      setStatus(await backend.toolsStatus());
+      await backend.installTools(setProgress);
+      setState(toolsReady(await backend.toolsStatus()) ? "done" : "idle");
     } catch (e) {
-      setError(String(e));
-    } finally {
-      setInstalling(false);
+      setState("idle");
+      if (String(e) !== "cancelled") setError(String(e));
     }
   }
 
-  async function openTerminal() {
-    setError(null);
-    try {
-      await backend.installToolsInTerminal();
-      setOpened(true);
-    } catch (e) {
-      setError(String(e));
-    }
-  }
+  const fraction = progress ? (progress.phase === "install" ? 1 : progress.received / progress.total) : 0;
+  const status = !progress
+    ? "Connecting…"
+    : progress.phase === "install"
+      ? "Installing…"
+      : `Downloading… ${mb(progress.received)} of ${mb(progress.total)} MB`;
+  const eta = progress?.phase === "download" ? timeLeft(progress, startedAt.current) : null;
 
   return (
     <div className="signin">
@@ -85,40 +74,32 @@ export function ToolsSetup({ onDone }: { onDone: () => void }) {
         <h1><Icon name="film" /> Install ffmpeg</h1>
         <p className="sub">
           Show Sheet uses <b>ffmpeg</b>, a free media tool, to read your files: file details, timecode from show records, song clips and saved
-          copies. It's installed with Homebrew.
+          copies.
         </p>
-        {route === "brew" && (
-          <ol className="setup-steps">
-            <Step n={1} done={ready} title="Install ffmpeg">
-              <span>Homebrew is already on this Mac, so this needs no password. It takes a few minutes.</span>
-              {!installing && <div><button className="sm primary" onClick={install}><Icon name="download" /> Install ffmpeg</button></div>}
-            </Step>
-          </ol>
-        )}
-        {route === "terminal" && (
-          <ol className="setup-steps">
-            <Step n={1} done={Boolean(status?.brew) || ready} title="Open the installer in Terminal">
-              <span>It installs Homebrew, then ffmpeg.{opened && " Closed the window? Open it again."}</span>
-              <div><button className="sm primary" onClick={openTerminal}><Icon name="external" /> Open Terminal</button></div>
-            </Step>
-            <Step n={2} done={Boolean(status?.brew)} title="Enter your Mac password">
-              <span>Homebrew asks for the password you use to log in to this Mac (nothing shows as you type it), then for Return. Your Mac account needs to be an administrator.</span>
-            </Step>
-            <Step n={3} done={ready} title="Wait for it to finish">
-              <span>About 5 to 10 minutes. This page carries on by itself once ffmpeg is installed.</span>
-            </Step>
-          </ol>
-        )}
-        {error && <p className="error">{error}</p>}
-        {(ready || installing || opened) && (
-          <div className="signin-wait">
-            {ready ? <><Icon name="check" /> ffmpeg is installed</> : <><div className="spinner" />{installing ? <span className="install-line">{line || "Starting Homebrew…"}</span> : "Waiting for ffmpeg…"}</>}
+
+        {state === "idle" && (
+          <div className="tools-install">
+            <button className="primary" onClick={install}><Icon name="download" /> {error ? "Try again" : "Install ffmpeg"}</button>
+            <span className="muted small">About 60 MB. No password needed, and it only takes a minute.</span>
           </div>
         )}
-        <div className="setup-foot">
-          <button className="link" onClick={onDone}>Skip for now</button>
-          <span className="muted small">Media details, timecode and clips won't work without it.</span>
-        </div>
+        {state === "installing" && (
+          <div className="tools-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(fraction * 100)}>
+            <div className="tp-line">
+              <span>{status}</span>
+              <span className="n">{Math.round(fraction * 100)}%</span>
+            </div>
+            <div className={`progress${progress?.phase === "install" ? " busy" : ""}`}><i style={{ width: `${fraction * 100}%` }} /></div>
+            <div className="tp-line">
+              <span className="muted small">{eta ?? " "}</span>
+              {progress?.phase !== "install" && <button className="link small" onClick={() => backend.cancelInstallTools()}>Cancel</button>}
+            </div>
+          </div>
+        )}
+        {state === "done" && (
+          <div className="signin-wait"><Icon name="check" /> ffmpeg is installed</div>
+        )}
+        {error && <p className="error">{error}</p>}
       </div>
     </div>
   );
