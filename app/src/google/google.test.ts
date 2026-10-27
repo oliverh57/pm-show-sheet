@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import sample from "../model/sample_show.json";
-import { addCustomField, imageColumnFor, migrate, sheetEditable } from "../model/ops";
+import { addClip, addCustomField, deptCategory, GENERAL, imageColumnFor, migrate, sheetEditable } from "../model/ops";
 import type { Show } from "../model/types";
 import { contentRequests, diffShowTab, formatRuleRequests, HEADER_ROWS, keptCells, protectionUpdateRequests, reconcileRows, showTab, snapshot, spareColumnRequests, structureRequests } from "./sheet";
-import { deckRequests } from "./slides";
+import { deckRequests, textHeight } from "./slides";
 
 const fresh = () => migrate(structuredClone(sample) as Show);
 
@@ -252,7 +252,7 @@ describe("SHOW DECK", () => {
     const show = fresh();
     const reqs = deckRequests(show, 1, {}, { p: ["p_el"] }, "01 JAN 2027") as Record<string, { objectId?: string }>[];
     const ids = reqs.flatMap((r) => Object.values(r).map((b) => (b as { objectId?: string }).objectId).filter(Boolean)) as string[];
-    const created = reqs.filter((r) => r.createSlide || r.createShape || r.createImage).map((r) => (r.createSlide ?? r.createShape ?? r.createImage)!.objectId!);
+    const created = reqs.filter((r) => r.createSlide || r.createShape || r.createImage || r.createVideo).map((r) => (r.createSlide ?? r.createShape ?? r.createImage ?? r.createVideo)!.objectId!);
     expect(new Set(created).size).toBe(created.length);
     for (const id of created) expect(id).toMatch(/^[A-Za-z0-9_][A-Za-z0-9_\-:]{4,49}$/);
     expect(ids.length).toBeGreaterThan(created.length);
@@ -306,22 +306,56 @@ describe("SHOW DECK", () => {
     expect(texts).toEqual(expect.arrayContaining(["LASER COLOUR", "Green", "Blue"]));
     expect(texts.join("|")).not.toContain("Green, Blue");
   });
-  it("links each clip to where it plays, in the Sheet and on the slide", () => {
+  it("links each clip to where it plays, in its category's clip column in the Sheet and on the slide", () => {
     const show = fresh();
     const id = show.set_order[0];
-    show.records = [{ id: "r1", path: "/x/NYC T5.mov", name: "NYC T5.mov", label: "NYC T5", scope: "show", added_at: "" }];
-    show.songs[id].clips = [
-      { path: "media/clips/a.mp4", record_id: "r1", in: 0, out: 10, source: "auto_tc" },
-      { path: "media/clips/b.mp4", record_id: "gone", in: 0, out: 10, source: "manual" },
+    show.records = [
+      { id: "r1", path: "/x/NYC T5.mov", name: "NYC T5.mov", label: "NYC T5", scope: "show", added_at: "", image_col: deptCategory("LX") },
+      { id: "r2", path: "/x/LDN.mov", name: "LDN.mov", label: "LDN", scope: "show", added_at: "" }, // General's
     ];
+    addClip(show, id, { path: "media/clips/a.mp4", record_id: "r1", in: 0, out: 10, source: "auto_tc" });
+    addClip(show, id, { path: "media/clips/b.mp4", record_id: "r2", in: 0, out: 10, source: "manual" });
     const urls = { "media/clips/a.mp4": "https://drive.google.com/file/d/A/view" };
     const g = showTab(show, {}, urls);
-    const cell = g.dataRows[g.rowIds.indexOf(id)][g.colIds.indexOf("clip")];
-    expect(cell.links).toEqual([{ text: "▶ NYC T5", url: urls["media/clips/a.mp4"] }, { text: "▶ b", url: undefined }]);
-    const reqs = deckRequests(show, 1, {}, {}, "01 JAN 2027", urls) as Record<string, Record<string, unknown>>[];
-    const linked = reqs.map((r) => (r.updateTextStyle as { style?: { link?: { url: string } } })?.style?.link?.url).filter(Boolean);
-    expect(linked).toEqual([urls["media/clips/a.mp4"]]); // b isn't on Drive yet: no link
-  });  it("puts each image column's image in the Sheet and stacks them on the slide", () => {
+    const clipCol = (category: string) => show.columns.find((c) => c.type === "clip" && c.category === category)!;
+    const cell = (colId: string) => g.dataRows[g.rowIds.indexOf(id)][g.colIds.indexOf(colId)];
+    const lx = clipCol(deptCategory("LX")), general = clipCol(GENERAL);
+    expect([lx.label, general.label]).toEqual(["LX CLIP", "SONG CLIP"]);
+    expect(g.colIds.indexOf(lx.id)).toBe(g.colIds.indexOf(deptCategory("LX")) + 1);
+    expect(g.colIds.indexOf(general.id)).toBe(g.colIds.indexOf(GENERAL) + 1);
+    expect(cell(lx.id).links).toEqual([{ text: "▶ NYC T5", url: urls["media/clips/a.mp4"] }]);
+    expect(cell(general.id).links).toEqual([{ text: "▶ LDN", url: undefined }]);
+    expect(cell(clipCol(deptCategory("CONTENT")).id).links).toBeUndefined(); // no Content clips
+    const ids = { "media/clips/a.mp4": "A" };
+    const reqs = deckRequests(show, 1, {}, {}, "01 JAN 2027", ids) as Record<string, Record<string, unknown>>[];
+    expect(reqs.map((r) => r.createVideo).filter(Boolean)).toEqual([expect.objectContaining({ source: "DRIVE", id: "A" })]); // b isn't on Drive yet
+    const texts = reqs.map((r) => (r.insertText as { text?: string })?.text).filter(Boolean);
+    expect(texts).toContain("LX CLIP  NYC T5");
+    expect(texts.join("|")).not.toContain("SONG CLIP");
+    // Without videos, the clip is a link to where it plays on Drive.
+    const links = deckRequests(show, 1, {}, {}, "01 JAN 2027", ids, false) as Record<string, Record<string, unknown>>[];
+    expect(links.some((r) => r.createVideo)).toBe(false);
+    expect(links.map((r) => (r.updateTextStyle as { style?: { link?: { url: string } } })?.style?.link?.url).filter(Boolean)).toEqual([urls["media/clips/a.mp4"]]);
+  });
+  it("draws long notes smaller so they stay on the slide", () => {
+    const show = fresh();
+    const id = show.set_order[0];
+    const notes = show.columns.find((c) => c.id === "lx_notes")!;
+    notes.on_slide = true;
+    // The font sizes in the text box that holds the lighting notes.
+    const sizes = () => {
+      const reqs = deckRequests(show, 1, {}, {}, "01 JAN 2027") as Record<string, Record<string, unknown>>[];
+      const box = reqs.map((r) => r.insertText as { objectId: string; text: string } | undefined).find((t) => t?.text.includes("LIGHTING NOTES"))!.objectId;
+      return reqs.map((r) => r.updateTextStyle as { objectId: string; style: { fontSize: { magnitude: number } } } | undefined)
+        .filter((u) => u?.objectId === box).map((u) => u!.style.fontSize.magnitude);
+    };
+    show.songs[id].fields[notes.id] = "Short.";
+    expect(Math.max(...sizes())).toBe(9);
+    show.songs[id].fields[notes.id] = "We're going to open the show with laser and hold the synth line. ".repeat(30);
+    expect(Math.max(...sizes())).toBeLessThan(9);
+    expect(textHeight([["word ".repeat(40), { font: "Roboto", size: 10, colour: "#FFFFFF", bold: false }]], 100)).toBeGreaterThan(10 * 1.2 * 5);
+  });
+  it("puts each image column's image in the Sheet and stacks them on the slide", () => {
     const show = fresh();
     const id = show.set_order[0];
     const laser = imageColumnFor(show, "Lasers");

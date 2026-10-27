@@ -12,7 +12,7 @@ import {
   applyReviewEdits, colLetter, emailKey, REPLY_FROM, sheetAuthor, type SheetRevision, columnChangeRequests, formatRuleRequests, mergeUpdateRequests, spareColumnRequests, type SheetFormatRule, type SheetMerge, contentRequests, diffReviewTab, diffShowTab, HEADER_ROWS, keptCells, protectionUpdateRequests, reconcileRequests, reconcileRows,
   reviewTab, type SheetProtection, showTab, snapshot, structureRequests, ARCHIVE_TAB, REVIEW_TAB, SHOW_TAB, type Conflict, type TabGrid,
 } from "./sheet";
-import { deckFingerprint, deckRequests } from "./slides";
+import { deckFingerprint, deckRequests, playUrl } from "./slides";
 import { driveIdOf } from "../drive/media";
 import { readManifest } from "../drive/show";
 
@@ -45,7 +45,6 @@ const api = <T,>(method: string, url: string, body?: unknown) => backend.googleA
 const enc = encodeURIComponent;
 const a1 = (title: string) => `'${title.replace(/'/g, "''")}'`;
 const imageUrl = (fileId: string) => `https://lh3.googleusercontent.com/d/${fileId}`;
-const playUrl = (fileId: string) => `https://drive.google.com/file/d/${fileId}/view`;
 
 /** Write sync bookkeeping into the show without an undo step. */
 function meta(fn: (g: GoogleSync, show: Show) => void) {
@@ -398,6 +397,8 @@ async function lockTabs(ssid: string, grids: [TabGrid, number][], me: string, co
 
 // --- the deck ---------------------------------------------------------------------
 
+let videoRefused: string | null = null; // why Slides last refused to embed the clips, said once rather than every push
+
 async function pushDeck(): Promise<void> {
   const show = useStore.getState().show!;
   const pid = g().presentation_id!;
@@ -407,19 +408,32 @@ async function pushDeck(): Promise<void> {
   const existing = Object.fromEntries((pres.slides ?? []).map((s) => [s.objectId, (s.pageElements ?? []).map((e) => e.objectId)]));
   const rev = (g().slides_rev ?? 0) + 1;
   const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase();
-  const reqs = deckRequests(show, rev, Object.fromEntries(Object.entries(images).map(([k, v]) => [k, v.url])), existing, today, clipUrls());
+  const draw = (embed: boolean) => deckRequests(show, rev, Object.fromEntries(Object.entries(images).map(([k, v]) => [k, v.url])), existing, today, g().clips ?? {}, embed);
+  const reqs = draw(true);
   // Slides copies an image in from a URL Google can fetch, so each one is link-public only while it's inserted.
   const ids = Object.values(images).map((i) => i.id);
+  let linked = false;
   try {
     for (const id of ids) await api("POST", `${DRIVE}/${id}/permissions?${ALL}`, { type: "anyone", role: "reader", allowFileDiscovery: false });
     if (ids.length) await new Promise((r) => setTimeout(r, 2000));
-    await api("POST", `${SLIDES}/${pid}:batchUpdate`, { requests: reqs });
+    try {
+      await api("POST", `${SLIDES}/${pid}:batchUpdate`, { requests: reqs });
+      videoRefused = null;
+    } catch (e) {
+      // Slides refuses the whole batch if it can't embed one video (not finished processing on Drive, say): link the clips instead.
+      if (!reqs.some((r) => "createVideo" in r)) throw e;
+      await api("POST", `${SLIDES}/${pid}:batchUpdate`, { requests: draw(false) });
+      const why = String(e).replace(/^Error: /, "");
+      if (why !== videoRefused) useStore.getState().toast(`The deck links its clips for now: Google Slides couldn't embed them (${why})`);
+      videoRefused = why;
+      linked = true;
+    }
   } finally {
     for (const id of ids) await api("DELETE", `${DRIVE}/${id}/permissions/anyoneWithLink?${ALL}`).catch(() => {});
   }
   lastDeck = deckFingerprint(show);
   const hash = lastDeck;
-  meta((x) => { x.slides_rev = rev; x.deck_hash = hash; });
+  meta((x) => { x.slides_rev = rev; x.deck_hash = linked ? "" : hash; }); // linked clips: try the videos again next time the show opens
   status({ deck: "idle" });
 }
 
@@ -433,6 +447,7 @@ let generation = 0; // bumps when the open show changes, so stale jobs stop
 function sheetFingerprint(show: Show): string {
   return JSON.stringify([show.name, show.columns, show.set_order, show.archive,
     Object.values(show.songs).map((s) => [s.id, s.fields, s.statuses, s.colours, s.hero, s.images, s.segues_into_next, s.clips]), show.google?.clips, show.reviews,
+    (show.records ?? []).map((r) => [r.id, r.image_col, r.label]), // which clip column a record's clips are in, and what they're called
     show.google?.app_editors]); // someone new using the show in the app: push, so the lock lets them in
 }
 
