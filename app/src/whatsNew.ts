@@ -7,6 +7,13 @@ export interface ReleaseNotes {
 }
 
 export const WHATS_NEW: Record<string, ReleaseNotes> = {
+  "0.5.2": {
+    summary: "ffmpeg installs from inside the app, and macOS asks for your keychain password only once.",
+    items: [
+      "Installing ffmpeg takes one click: the app downloads it with a progress bar. No Terminal, Homebrew or Mac password.",
+      "macOS no longer asks for your keychain password several times in a row after the app opens.",
+    ],
+  },
   "0.5.1": {
     summary: "Fixes for shows shared with someone on another Google account.",
     items: [
