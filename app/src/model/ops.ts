@@ -21,7 +21,7 @@ export function cellValue(show: Show, col: ColumnDef, song: Song): string | bool
     case "image":
       return songImage(song, col.id) ?? "";
     case "clip":
-      return (song.clips ?? []).map((c) => clipLabel(show, c)).join(", ");
+      return columnClips(show, col, song).map((c) => clipLabel(show, c)).join(", ");
     case "palette":
       return fieldSwatches(song, col.id).map((sw) => sw.label || sw.hex).join(", ");
     case "tc": {
@@ -240,6 +240,14 @@ function insertInDept(show: Show, col: ColumnDef) {
  * its media goes in (General's in CORE); more are categories of their own, named by label.
  */
 export function addField(show: Show, label: string, dept: Dept, type: ColumnDef["type"]): string {
+  if (type === "clip") {
+    // A clip field shows its category's clips (General's in CORE), next to its picture.
+    const id = addColumn(show, label, dept, type);
+    const own = dept === "CORE" ? GENERAL : categoryDept(deptCategory(dept), show) ? deptCategory(dept) : null;
+    if (own) show.columns.find((c) => c.id === id)!.category = own;
+    pairClip(show);
+    return id;
+  }
   if (type !== "image") return addColumn(show, label, dept, type);
   const own = dept === "CORE" ? GENERAL : categoryDept(deptCategory(dept), show) ? deptCategory(dept) : null;
   if (own && !show.columns.some((c) => c.id === own)) {
@@ -390,11 +398,15 @@ export function groupColumns(show: Show) {
   show.columns = order.flatMap((d) => show.columns.filter((c) => c.dept === d));
 }
 
+// --- clip columns ---------------------------------------------------------------
+// Each category has its own clip column (SONG CLIP, CONTENT CLIP, LX CLIP…), right after its picture: a record's clips
+// show in the one for the category its stills are filed in. It's made the first time a clip goes in it.
+
 /**
- * The image column a show's clips come from: the category most of their records are filed in (General unless
- * named), else the one most records are. Undefined while there are none.
+ * The category (image column id) a show's clips came from when it had one clip column for all of them: the one most
+ * of their records are filed in (General unless named), else the one most records are. Undefined while there are none.
  */
-export function clipSource(show: Show): string | undefined {
+function clipSource(show: Show): string | undefined {
   const records = show.records ?? [];
   const category = (id: string) => { const r = records.find((x) => x.id === id); return r && (r.image_col ?? GENERAL); };
   let from = Object.values(show.songs).flatMap((s) => (s.clips ?? []).map((c) => category(c.record_id))).filter((c): c is string => Boolean(c));
@@ -404,16 +416,68 @@ export function clipSource(show: Show): string | undefined {
   return [...count].sort((a, b) => b[1] - a[1])[0]?.[0];
 }
 
-/** Keep the clip column right after the picture its clips come from, in that picture's category: they're a pair. */
+/** The category (image column id) a clip is in: its record's (General unless named, or once the record's gone). */
+export function clipCategory(show: Show, clip: Clip): string {
+  return (show.records ?? []).find((r) => r.id === clip.record_id)?.image_col ?? GENERAL;
+}
+
+/** The clips a clip column shows: those in its category (every clip, for one with none). */
+export function columnClips(show: Show, col: ColumnDef, song: Song): Clip[] {
+  return (song.clips ?? []).filter((c) => !col.category || clipCategory(show, c) === col.category);
+}
+
+/** Make sure a category has a clip column, after its picture (made first if it's General or a department's). Returns its id. */
+export function ensureClipColumn(show: Show, category: string): string | undefined {
+  const have = show.columns.find((c) => c.type === "clip" && c.category === category);
+  if (have) return have.id;
+  const srcId = ensureCategory(show, category);
+  const src = show.columns.find((c) => c.id === srcId && c.type === "image");
+  if (!src) return undefined;
+  let id = `clip_${category}`;
+  while (show.columns.some((c) => c.id === id)) id = newId("clip");
+  show.columns.push({ id, label: clipLabelFor(src), dept: src.dept, type: "clip", width: 130, category });
+  pairClip(show);
+  return id;
+}
+
+/**
+ * Shows from before each category had its own clip column (once): the clip column is the category's it was paired
+ * with, and each other category with clips gets one. A show whose clip column was deleted gets none until its next clip.
+ */
+function splitClipColumns(show: Show) {
+  const old = show.columns.filter((c) => c.type === "clip" && !c.category);
+  if (!old.length) return;
+  const isImage = (id: string | undefined) => Boolean(id && show.columns.some((c) => c.id === id && c.type === "image"));
+  const source = clipSource(show);
+  old.forEach((col, i) => {
+    const before = show.columns[show.columns.indexOf(col) - 1];
+    const own = col.dept === "CORE" ? GENERAL : deptCategory(col.dept);
+    // The first was kept after its clips' picture; any others take their category's.
+    const category = [i === 0 ? source : undefined, before?.type === "image" && before.dept === col.dept ? before.id : undefined, own].find(isImage);
+    if (!category) return;
+    col.category = category;
+    if (col.label === "CLIP") col.label = clipLabelFor(show.columns.find((c) => c.id === category)!);
+  });
+  const used = new Set(Object.values(show.songs).flatMap((s) => (s.clips ?? []).map((c) => clipCategory(show, c))));
+  for (const category of used) if (isImage(category)) ensureClipColumn(show, category);
+}
+
+/** A clip column's name, from its picture's: SONG IMAGE → SONG CLIP, LX → LX CLIP. */
+const clipLabelFor = (src: ColumnDef) => `${src.label.replace(/\s+IMAGES?$/, "") || src.label} CLIP`;
+
+/** Keep each clip column right after its category's picture (after the picture's other clip columns), in that picture's category: they're a pair. */
 export function pairClip(show: Show) {
-  const clip = show.columns.find((c) => c.type === "clip");
-  const src = show.columns.find((c) => c.id === clipSource(show));
-  if (!clip || !src) return;
-  const from = clip.dept;
-  show.columns = show.columns.filter((c) => c !== clip);
-  clip.dept = src.dept;
-  show.columns.splice(show.columns.indexOf(src) + 1, 0, clip);
-  keepDept(show, from);
+  for (const clip of show.columns.filter((c) => c.type === "clip" && c.category)) {
+    const src = show.columns.find((c) => c.id === clip.category && c.type === "image");
+    if (!src) continue;
+    const from = clip.dept;
+    show.columns = show.columns.filter((c) => c !== clip);
+    clip.dept = src.dept;
+    let at = show.columns.indexOf(src) + 1;
+    while (show.columns[at]?.type === "clip" && show.columns[at].category === clip.category) at++;
+    show.columns.splice(at, 0, clip);
+    keepDept(show, from);
+  }
 }
 
 /** The category a tag names ("Lasers" → a LASERS column, made if there isn't one; "Video" → the Video category). Returns its id. */
@@ -513,7 +577,11 @@ export function renameCategory(show: Show, id: string, name: string) {
 export function deleteCategory(show: Show, id: string) {
   if (id === GENERAL || categoryDept(id, show)) return;
   removeColumn(show, id);
-  for (const r of show.records ?? []) if (r.image_col === id) delete r.image_col;
+  for (const c of show.columns.filter((x) => x.type === "clip" && x.category === id)) removeColumn(show, c.id);
+  const filed = (show.records ?? []).filter((r) => r.image_col === id);
+  for (const r of filed) delete r.image_col;
+  // Their clips are General's now.
+  if (filed.some((r) => recordMedia(show, r.id).clips.length) && show.columns.some((c) => c.id === GENERAL)) ensureClipColumn(show, GENERAL);
 }
 
 /** Options trimmed, blanks and repeats (in any case) dropped. */
@@ -609,7 +677,7 @@ export function defaultColumns(): ColumnDef[] {
     ...[0, 1, 2, 3].map((i) => c(`colour_${i + 1}`, "COLOUR", "COLOUR", "colour", 52, { index: i })),
     c("colref", "COLOUR REF", "COLOUR", "text", 130),
     c("img_content", "CONTENT", "CONTENT", "image", 210),
-    c("clip", "CLIP", "CONTENT", "clip", 130),
+    c("clip", "CONTENT CLIP", "CONTENT", "clip", 130, { category: "img_content" }),
     c("content_notes", "CONTENT NOTES", "CONTENT", "longtext", 260, { editable: true, on_slide: true }),
     c("lx_notes", "LIGHTING NOTES", "LX", "longtext", 220, { on_slide: true, on_card: true }),
     c("video_notes", "VIDEO DESIGN NOTES", "VIDEO", "longtext", 240, { on_slide: true }),
@@ -624,7 +692,7 @@ export function newShow(name: string): Show {
     branding: {},
     columns: defaultColumns(),
     added_columns: ["clip"],
-    migrations: ["dept_categories", "general_in_core", "hero_default"],
+    migrations: ["dept_categories", "general_in_core", "hero_default", "clip_columns"],
     set_order: [],
     archive: [],
     songs: {},
@@ -728,6 +796,11 @@ export function migrate(show: Show): Show {
       if (!s.hero && first) setHero(show, s.id, first);
     }
     (show.migrations ??= []).push("hero_default");
+  }
+  // One clip column for all clips became one per category (once, so deleting one sticks).
+  if (!show.migrations?.includes("clip_columns")) {
+    splitClipColumns(show);
+    (show.migrations ??= []).push("clip_columns");
   }
   groupColumns(show); // each category's fields together, as the Fields dialog lists them
   pairClip(show);
@@ -918,7 +991,7 @@ export function retagRecord(show: Show, recordId: string, category: string) {
   const from = record.image_col ?? "hero";
   const to = ensureCategory(show, category);
   record.image_col = to;
-  pairClip(show);
+  if (recordMedia(show, recordId).clips.length) ensureClipColumn(show, to); // its clips go with it
   if (to === from) return;
   const stills = new Set(recordMedia(show, recordId).stills);
   for (const song of Object.values(show.songs)) {
@@ -1163,27 +1236,6 @@ export function addSongWith(show: Show, name: string, tc = "", version = "", bpm
 
 // --- timecode matching and clips --------------------------------------------------
 
-/**
- * Pair each TC block with the song whose TC start is within `slack` seconds of the block's start.
- * Each song is used once. Returns song ids (or null) in block order.
- */
-export function matchBlocks(show: Show, blocks: TcBlock[], fps = 25, slack = 2): (string | null)[] {
-  const used = new Set<string>();
-  const songs = [...show.set_order, ...show.archive].map((id) => ({ id, t: tcSeconds(show.songs[id].fields.tc ?? "", fps) }));
-  return blocks.map((b) => {
-    const t = tcSeconds(b.tc_start, fps);
-    if (t === null) return null;
-    let best: { id: string; d: number } | null = null;
-    for (const s of songs) {
-      if (s.t === null || used.has(s.id)) continue;
-      const d = Math.abs(s.t - t);
-      if (d <= slack && (!best || d < best.d)) best = { id: s.id, d };
-    }
-    if (best) used.add(best.id);
-    return best?.id ?? null;
-  });
-}
-
 /** Seconds → "HH:MM:SS:FF" at `fps` (wraps at 24 hours). */
 export function formatTc(seconds: number, fps = 25): string {
   const nominal = Math.round(fps);
@@ -1209,6 +1261,192 @@ export function timeAtTc(block: TcBlock, tc: string, fps = 25): number | null {
   return t > block.file_start && t < block.file_end ? t : null;
 }
 
+/** TC blocks joined across short pauses: one take, as rehearsals stop and carry on. */
+export interface TcRun extends TcBlock {
+  pieces: TcBlock[];
+}
+
+/** The longest stop (seconds) kept in a take's clip. Longer stops where TC carries on are cut out of it. */
+export const MAX_PAUSE = 15;
+/** The furthest back (seconds of TC) a rewind can go and still be the same take: what's played again is cut out. */
+export const MAX_REWIND = 30;
+/** Shorter stretches of a run aren't a part of their own: they go with the part before (or after). */
+const MIN_PART = 10;
+/** A take starting further than this (seconds) into a song's TC isn't that song. */
+const MAX_SONG = 20 * 60;
+/** Or, when a take plays the song from the top, further than this past where it got to. */
+const PAST_TOP = 60;
+
+/**
+ * Join TC blocks into runs, or takes: the next block's TC carries on from where the last stopped (a pause, however
+ * long), goes back up to MAX_REWIND seconds (a rewind to go again), or, within `maxPause` seconds, ran on through the
+ * gap (a dropout). A jump further back or ahead starts a new take.
+ */
+export function joinPauses(blocks: TcBlock[], fps = 25, maxPause = MAX_PAUSE): TcRun[] {
+  const runs: TcRun[] = [];
+  for (const b of blocks) {
+    const last = runs[runs.length - 1];
+    const prev = last?.pieces[last.pieces.length - 1];
+    const gap = prev ? b.file_start - prev.file_end : Infinity;
+    const jump = prev ? (tcSeconds(b.tc_start, fps) ?? NaN) - (tcSeconds(prev.tc_end, fps) ?? NaN) : NaN;
+    if (last && gap >= 0 && jump >= -MAX_REWIND && jump <= (gap <= maxPause ? gap + 1 : 1)) {
+      last.pieces.push(b);
+      last.file_end = b.file_end;
+      last.tc_end = b.tc_end;
+    } else runs.push({ ...b, pieces: [b] });
+  }
+  return runs;
+}
+
+/** The TC at file time `t` in a run. Through a pause it holds where it stopped. */
+export function tcInRun(run: TcRun, t: number, fps = 25): string {
+  const piece = [...run.pieces].reverse().find((p) => t >= p.file_start) ?? run.pieces[0];
+  return tcAt(piece, Math.min(t, piece.file_end), fps);
+}
+
+/** The file time in a run where TC `tc` plays, or null if it doesn't. */
+export function timeAtTcInRun(run: TcRun, tc: string, fps = 25): number | null {
+  for (const p of run.pieces) {
+    const t = timeAtTc(p, tc, fps);
+    if (t !== null) return t;
+  }
+  return null;
+}
+
+/** A stretch of a record made into a clip, less the pauses cut out of it. */
+export interface Cut { in: number; out: number; cuts?: [number, number][] }
+
+/**
+ * The stretch `from`–`to` of a run as a clip: pauses longer than `maxPause` seconds inside it are cut out, and one
+ * at either end is left off.
+ */
+export function cutPauses(run: TcRun, from: number, to: number, fps = 25, maxPause = MAX_PAUSE): Cut {
+  const kept = onceThrough(run, fps).flatMap((s) => (s.to > from && s.from < to ? [{ from: Math.max(s.from, from), to: Math.min(s.to, to) }] : []));
+  if (!kept.length) return { in: from, out: to };
+  // What plays between two stretches kept: more than a second means it's played again after a rewind.
+  const replayed = (a: number, b: number) => run.pieces.reduce((n, p) => n + Math.max(0, Math.min(p.file_end, b) - Math.max(p.file_start, a)), 0) > 1;
+  const cuts = kept.slice(1).flatMap((s, i): [number, number][] => {
+    const a = kept[i].to, b = s.from;
+    return b - a > maxPause || replayed(a, b) ? [[a, b]] : [];
+  });
+  const clip = { in: kept[0].from, out: kept[kept.length - 1].to };
+  return cuts.length ? { ...clip, cuts } : clip;
+}
+
+/**
+ * A take played once through: each stretch of it (file time) that takes the TC further than it's been, with the TC
+ * it starts at. After a rewind, what's played again is left out; a second or so played twice doesn't count.
+ */
+function onceThrough(run: TcRun, fps: number): { from: number; to: number; tc: number }[] {
+  const out: { from: number; to: number; tc: number }[] = [];
+  let reached = -Infinity;
+  for (const p of run.pieces) {
+    const ts = tcSeconds(p.tc_start, fps) ?? 0, len = p.file_end - p.file_start;
+    const again = Math.min(len, reached - ts);
+    if (again >= len) continue;
+    const skip = again > 1 ? again : 0;
+    out.push({ from: p.file_start + skip, to: p.file_end, tc: ts + skip });
+    reached = Math.max(reached, ts + len);
+  }
+  return out;
+}
+
+/** Seconds into a clip → seconds into its record. */
+export function recordTimeAt(clip: Cut, t: number): number {
+  let r = clip.in + t;
+  for (const [a, b] of clip.cuts ?? []) if (r >= a) r += b - a;
+  return r;
+}
+
+/** Seconds into a record → seconds into a clip of it. A time in a cut-out pause is where the clip jumps it. */
+export function clipTimeAt(clip: Cut, t: number): number {
+  let v = t - clip.in;
+  for (const [a, b] of clip.cuts ?? []) v -= Math.max(0, Math.min(t, b) - a);
+  return v;
+}
+
+export const clipLength = (clip: Cut) => clipTimeAt(clip, clip.out);
+
+/** One part of a run as the TC import first splits it. */
+export interface RunPart {
+  run: number;
+  start: number; // file time; a run's first part starts at the run start
+  song: string | null; // the song this is the longest take of
+  shorter_of?: string; // or a song whose longest take is elsewhere in the file
+}
+
+/**
+ * Split runs of TC into songs. A song's TC runs up to the next song's TC, and each song goes to the run that plays
+ * the most of it, so in a rehearsal the stops, rewinds and part-runs give way to the longest take. A run that plays
+ * on into another song is split at that song's TC. A run starting up to `slack` seconds before a song's TC counts as
+ * that song.
+ */
+export function splitRuns(show: Show, runs: TcRun[], fps = 25, slack = 2): RunPart[] {
+  const songs = [...show.set_order, ...show.archive]
+    .flatMap((id) => { const t = tcSeconds(show.songs[id]?.fields.tc ?? "", fps); return t === null ? [] : [{ id, t }]; })
+    .sort((a, b) => a.t - b.t)
+    .filter((s, i, all) => i === 0 || s.t !== all[i - 1].t); // two songs at one TC: the first in the set
+  const ranges = songs.map((s, i) => ({ id: s.id, from: s.t - slack, to: (songs[i + 1]?.t ?? Infinity) - slack, reach: s.t + MAX_SONG }));
+  const spans = (run: TcRun) => onceThrough(run, fps).map((s) => ({ start: s.from, ts: s.tc, te: s.tc + (s.to - s.from) }));
+  // How much of a song a run plays, the TC where it comes in and how far it gets.
+  const reach = (run: TcRun, r: (typeof ranges)[number]) => {
+    let secs = 0, entry: number | null = null, last = 0;
+    for (const { ts, te } of spans(run)) {
+      const lo = Math.max(ts, r.from), hi = Math.min(te, r.to);
+      if (hi > lo) { secs += hi - lo; entry ??= lo; last = hi; }
+    }
+    return entry === null ? null : { secs, entry, last };
+  };
+  // How far the song gets in takes that play it from the top.
+  const top = new Map<string, number>();
+  for (const run of runs) {
+    for (const r of ranges) {
+      const got = reach(run, r);
+      if (got && got.entry <= r.from + 2 * slack) top.set(r.id, Math.max(top.get(r.id) ?? 0, got.last));
+    }
+  }
+  // A take coming in partway through a song is that song only if it comes in where the song's been played to (a
+  // rehearsal going again from the middle), or, with no take from the top, not too far along.
+  const played = (run: TcRun, r: (typeof ranges)[number]) => {
+    const got = reach(run, r);
+    return got && got.entry < (top.has(r.id) ? top.get(r.id)! + PAST_TOP : r.reach) ? got : null;
+  };
+  const fileAt = (run: TcRun, tc: number) => {
+    for (const { start, ts, te } of spans(run)) {
+      if (tc <= ts) return start;
+      if (tc < te) return start + (tc - ts);
+    }
+    return run.file_end;
+  };
+
+  const best = new Map<string, { run: number; secs: number }>();
+  runs.forEach((run, i) => {
+    for (const r of ranges) {
+      const got = played(run, r);
+      if (got && got.secs >= Math.min(MIN_PART, r.to - r.from) && got.secs > (best.get(r.id)?.secs ?? 0)) best.set(r.id, { run: i, secs: got.secs });
+    }
+  });
+
+  return runs.flatMap((run, i) => {
+    let parts: RunPart[] = [{ run: i, start: run.file_start, song: null }];
+    for (const r of ranges) {
+      const got = played(run, r);
+      if (!got) continue;
+      const take = best.get(r.id);
+      const part: RunPart = take?.run === i ? { run: i, start: fileAt(run, got.entry), song: r.id }
+        : { run: i, start: fileAt(run, got.entry), song: null, ...(take ? { shorter_of: r.id } : {}) };
+      if (part.start <= parts[parts.length - 1].start + 0.01) parts[parts.length - 1] = { ...part, start: parts[parts.length - 1].start };
+      else parts.push(part);
+    }
+    const end = (k: number) => parts[k + 1]?.start ?? run.file_end;
+    const kept = parts.filter((p, k) => p.song || end(k) - p.start >= MIN_PART);
+    parts = kept.length ? kept : parts.slice(0, 1);
+    parts[0] = { ...parts[0], start: run.file_start };
+    // Next to each other, skipped parts (or unknown ones) are one part.
+    return parts.filter((p, k) => k === 0 || p.song || parts[k - 1].song || Boolean(p.shorter_of) !== Boolean(parts[k - 1].shorter_of));
+  });
+}
+
 export function setMarks(show: Show, recordId: string, marks: SongMark[]) {
   const rec = (show.records ?? []).find((r) => r.id === recordId);
   if (rec) rec.song_marks = marks;
@@ -1229,12 +1467,13 @@ export function burnsTc(record: SourceRecord | undefined): boolean {
 }
 
 /**
- * Whether a song has a clip cut from a record for this mark: the same in and out (a moved mark needs cutting again),
+ * Whether a song has a clip cut from a record for this mark: the same in, out and cut pauses (a moved mark needs cutting again),
  * and with burned-in TC or not as `burn` says (the record's choice unless given).
  */
 export function hasClipFor(show: Show, recordId: string, mark: SongMark, burn = burnsTc(show.records?.find((r) => r.id === recordId))): boolean {
   return (show.songs[mark.song_id]?.clips ?? []).some((c) =>
-    c.record_id === recordId && Math.abs(c.in - mark.in) < 0.5 && Math.abs(c.out - mark.out) < 0.5 && Boolean(c.burn_tc) === burn);
+    c.record_id === recordId && Math.abs(c.in - mark.in) < 0.5 && Math.abs(c.out - mark.out) < 0.5 && Boolean(c.burn_tc) === burn
+    && Math.abs(clipLength(c) - clipLength(mark)) < 0.5);
 }
 
 /**
@@ -1272,7 +1511,7 @@ export function addClip(show: Show, songId: string, clip: Clip) {
   const song = show.songs[songId];
   if (!song) return;
   song.clips = [...(song.clips ?? []).filter((c) => !(c.record_id === clip.record_id && c.in === clip.in)), clip];
-  pairClip(show);
+  ensureClipColumn(show, clipCategory(show, clip));
 }
 
 const RECORD_WORDS = /\b(full\s*show|show\s*record|record|l?tc|timecode|final|master|v\d+)\b|&/gi;

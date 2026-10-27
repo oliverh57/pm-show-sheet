@@ -258,28 +258,31 @@ async fn ltc_scan(app: AppHandle, path: String) -> Result<ltc::LtcResult, String
 /// When the record carries LTC on `ltc_channel` the clip keeps it, on one side of a stereo track, and
 /// its name ends `_LTC-L` or `_LTC-R` to say which (that's how the app knows a file has timecode).
 /// With `burn_in` the record's TC is also drawn in the clip's bottom-right corner (see burnin.rs).
+/// `cuts` are pauses (seconds into the record) left out: the clip jumps over each, with GAP CUT drawn on it.
 /// A clip with the same name is replaced, so cutting a song again doesn't leave copies behind; the
 /// clip is written to a .part file first, so a cut that's cut short never looks like a finished clip.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-async fn clip_cut(app: AppHandle, job: String, bundle: String, source: String, start: f64, end: f64, name: String, ltc_channel: Option<usize>, burn_in: Option<burnin::BurnIn>) -> Result<String, String> {
+async fn clip_cut(app: AppHandle, job: String, bundle: String, source: String, start: f64, end: f64, cuts: Option<Vec<(f64, f64)>>, name: String, ltc_channel: Option<usize>, burn_in: Option<burnin::BurnIn>) -> Result<String, String> {
     let ffmpeg = ffmpeg_path()?;
     if end <= start {
         return Err("The clip's end is before its start".into());
     }
+    let parts = clip_parts(start, end, &cuts.unwrap_or_default());
     tauri::async_runtime::spawn_blocking(move || {
         let dir = PathBuf::from(&bundle).join("media").join("clips");
         fs::create_dir_all(&dir).map_err(err("create clips folder"))?;
-        let channels = probe_media(source.clone()).ok().and_then(|i| i["audio_channels"].as_u64()).unwrap_or(2) as usize;
+        let audio = probe_media(source.clone()).map(|i| i["audio_channels"].as_u64()).unwrap_or(Some(2));
+        let channels = audio.unwrap_or(2) as usize;
         let (pan, suffix) = match ltc_channel.map(|ltc| clip_pan(ltc, channels)) {
             Some((pan, side)) => (Some(pan), format!("_LTC-{side}")),
             None => (None, String::new()),
         };
         let file = format!("{}{suffix}.mp4", safe_stem(&name));
         let part = dir.join(format!(".{file}.part"));
-        let length = end - start;
-        let clock = burn_in.map(|b| burnin::Clock::new(b, start, length, CLIP_HEIGHT)).transpose()?;
-        cut_with_ffmpeg(&ffmpeg, &source, start, length, pan.as_deref(), clock, &part, |fraction| {
+        let burn_in = burn_in.filter(|b| b.tc || parts.len() > 1);
+        let clock = burn_in.map(|b| burnin::Clock::new(b, parts.clone(), CLIP_HEIGHT)).transpose()?;
+        cut_with_ffmpeg(&ffmpeg, &source, &parts, audio.is_some(), pan.as_deref(), clock, &part, |fraction| {
             let _ = app.emit("clip-progress", Progress { id: job.clone(), fraction });
         })?;
         fs::rename(&part, dir.join(&file)).map_err(err("save clip"))?;
@@ -289,24 +292,67 @@ async fn clip_cut(app: AppHandle, job: String, bundle: String, source: String, s
     .map_err(err("cut clip"))?
 }
 
-/// Cut `length` seconds of `source` from `start` into a 720p H.264 clip at `part`, with the audio filter
-/// `pan` and `clock` drawn over the picture. `progress` gets the fraction done.
+/// The stretches (start, length) of `start`–`end` that are left once the `cuts` (pauses, in seconds) are taken out.
+fn clip_parts(start: f64, end: f64, cuts: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut parts = Vec::new();
+    let mut from = start;
+    for &(a, b) in cuts {
+        if a > from && b < end {
+            parts.push((from, a - from));
+            from = b;
+        }
+    }
+    parts.push((from, end - from));
+    parts
+}
+
+/// Cut `parts` of `source` (start and length in seconds) into one 720p H.264 clip at `part`, with the audio
+/// filter `pan` and `clock` drawn over the picture. `progress` gets the fraction done.
 #[allow(clippy::too_many_arguments)]
-fn cut_with_ffmpeg(ffmpeg: &Path, source: &str, start: f64, length: f64, pan: Option<&str>, clock: Option<burnin::Clock>, part: &Path, mut progress: impl FnMut(f64)) -> Result<(), String> {
+fn cut_with_ffmpeg(ffmpeg: &Path, source: &str, parts: &[(f64, f64)], audio: bool, pan: Option<&str>, clock: Option<burnin::Clock>, part: &Path, mut progress: impl FnMut(f64)) -> Result<(), String> {
     let scale = format!("scale=-2:{CLIP_HEIGHT}");
+    let length: f64 = parts.iter().map(|(_, len)| len).sum();
     let mut cmd = Command::new(ffmpeg);
-    cmd.args(["-v", "error", "-nostdin", "-y", "-ss", &format!("{start:.3}"), "-i", source]);
-    match &clock {
-        Some(clock) => cmd
-            .args(clock.input_args())
-            .args(["-filter_complex", &format!("[0:v:0]{scale}[s];{}[v]", clock.overlay("[s]", "[1:v]")), "-map", "[v]"])
-            .stdin(Stdio::piped()),
-        None => cmd.args(["-map", "0:v:0", "-vf", &scale]),
-    };
+    cmd.args(["-v", "error", "-nostdin", "-y"]);
+    if let [(start, _)] = parts {
+        cmd.args(["-ss", &format!("{start:.3}"), "-i", source]);
+        match &clock {
+            Some(clock) => cmd
+                .args(clock.input_args())
+                .args(["-filter_complex", &format!("[0:v:0]{scale}[s];{}[v]", clock.overlay("[s]", "[1:v]")), "-map", "[v]"])
+                .stdin(Stdio::piped()),
+            None => cmd.args(["-map", "0:v:0", "-vf", &scale]),
+        };
+        cmd.args(["-map", "0:a:0?"]).args(pan.iter().flat_map(|p| ["-af", p]));
+    } else {
+        // Each stretch is its own input, joined end to end.
+        for (start, len) in parts {
+            cmd.args(["-ss", &format!("{start:.3}"), "-t", &format!("{len:.3}"), "-i", source]);
+        }
+        let n = parts.len();
+        let mut graph: String = (0..n).map(|i| format!("[{i}:v:0]{scale},setsar=1[v{i}];")).collect();
+        graph += &(0..n).map(|i| if audio { format!("[v{i}][{i}:a:0]") } else { format!("[v{i}]") }).collect::<String>();
+        graph += &format!("concat=n={n}:v=1:a={}[cv]{}", audio as u8, if audio { "[ca]" } else { "" });
+        let video = match &clock {
+            Some(clock) => {
+                cmd.args(clock.input_args()).stdin(Stdio::piped());
+                graph += &format!(";{}[v]", clock.overlay("[cv]", &format!("[{n}:v]")));
+                "[v]"
+            }
+            None => "[cv]",
+        };
+        let sound = match pan.filter(|_| audio) {
+            Some(pan) => {
+                graph += &format!(";[ca]{pan}[a]");
+                Some("[a]")
+            }
+            None => audio.then_some("[ca]"),
+        };
+        cmd.args(["-filter_complex", &graph, "-map", video]).args(sound.iter().flat_map(|s| ["-map", s]));
+    }
     let mut child = cmd
-        .args(["-map", "0:a:0?", "-t", &format!("{length:.3}"), "-c:v", "libx264", "-preset", "veryfast"])
+        .args(["-t", &format!("{length:.3}"), "-c:v", "libx264", "-preset", "veryfast"])
         .args(["-b:v", "2500k", "-maxrate", "3000k", "-bufsize", "6000k", "-pix_fmt", "yuv420p"])
-        .args(pan.iter().flat_map(|p| ["-af", p]))
         .args(["-c:a", "aac", "-b:a", "256k", "-ac", "2", "-movflags", "+faststart", "-progress", "pipe:1", "-f", "mp4"])
         .arg(part)
         .stdout(Stdio::piped())
@@ -760,6 +806,52 @@ mod tests {
         assert!(bundle.join(&rel).metadata().unwrap().len() > 0);
     }
 
+    #[test]
+    fn leaves_the_cuts_out_of_a_clip() {
+        assert_eq!(clip_parts(10.0, 100.0, &[(30.0, 50.0), (70.0, 80.0)]), vec![(10.0, 20.0), (50.0, 20.0), (80.0, 20.0)]);
+        assert_eq!(clip_parts(10.0, 100.0, &[(0.0, 5.0), (95.0, 120.0)]), vec![(10.0, 90.0)]);
+    }
+
+    /// A clip with a pause cut out: as long as what's left, with GAP CUT drawn just after the jump, even with no TC card.
+    #[test]
+    fn cuts_a_pause_out_of_a_clip() {
+        let Some(ffmpeg) = tool_path("ffmpeg") else { return };
+        let base = temp_dir("gap");
+        fs::create_dir_all(&base).unwrap();
+        let src = base.join("src.mp4");
+        let ok = Command::new(&ffmpeg)
+            .args(["-v", "error", "-f", "lavfi", "-i", "color=c=black:size=1280x720:rate=25", "-f", "lavfi", "-i", "sine=frequency=440"])
+            .args(["-t", "10", "-ac", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"])
+            .arg(&src)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        let blocks = vec![ltc::TcBlock { file_start: 0.0, file_end: 3.0, tc_start: "01:00:00:00".into(), tc_end: String::new() },
+            ltc::TcBlock { file_start: 6.0, file_end: 10.0, tc_start: "01:00:03:00".into(), tc_end: String::new() }];
+        let parts = clip_parts(1.0, 8.0, &[(3.0, 6.0)]);
+        let Ok(clock) = burnin::Clock::new(burnin::BurnIn { fps: 25.0, blocks, song: None, number: None, tc: false }, parts.clone(), CLIP_HEIGHT) else { return };
+        let clip = base.join("clip.mp4");
+        let (pan, _) = clip_pan(1, 2);
+        cut_with_ffmpeg(&ffmpeg, &src.to_string_lossy(), &parts, true, Some(&pan), Some(clock), &clip, |_| {}).unwrap();
+        let info = probe_media(clip.to_string_lossy().to_string()).unwrap();
+        assert!((info["duration"].as_f64().unwrap() - 4.0).abs() < 0.15, "{info}");
+        assert_eq!(info["audio_channels"], 2);
+        let corner = |t: &str| {
+            let out = Command::new(&ffmpeg)
+                .args(["-v", "error", "-ss", t, "-i"])
+                .arg(&clip)
+                .args(["-frames:v", "1", "-vf", "crop=480:150:iw-480:ih-150", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            out.stdout
+        };
+        let amber = |px: &[u8]| px.chunks(3).filter(|p| p[0] > 220 && p[1] > 150 && p[2] < 100).count();
+        assert_eq!(amber(&corner("1.0")), 0, "GAP CUT before the jump");
+        assert!(amber(&corner("2.5")) > 200, "no GAP CUT after the jump");
+    }
+
     /// A clip with burned-in TC: the card sits in the bottom-right corner, its dot lit green once the TC block starts.
     #[test]
     fn burns_the_timecode_into_a_clip() {
@@ -776,9 +868,9 @@ mod tests {
             .success();
         assert!(ok);
         let block = ltc::TcBlock { file_start: 3.0, file_end: 6.0, tc_start: "09:01:42:19".into(), tc_end: "09:01:45:19".into() };
-        let Ok(clock) = burnin::Clock::new(burnin::BurnIn { fps: 25.0, blocks: vec![block], song: Some("Good Lies".into()), number: Some("03".into()) }, 1.0, 4.0, CLIP_HEIGHT) else { return };
+        let Ok(clock) = burnin::Clock::new(burnin::BurnIn { fps: 25.0, blocks: vec![block], song: Some("Good Lies".into()), number: Some("03".into()), tc: true }, vec![(1.0, 4.0)], CLIP_HEIGHT) else { return };
         let clip = base.join("clip.mp4");
-        cut_with_ffmpeg(&ffmpeg, &src.to_string_lossy(), 1.0, 4.0, None, Some(clock), &clip, |_| {}).unwrap();
+        cut_with_ffmpeg(&ffmpeg, &src.to_string_lossy(), &[(1.0, 4.0)], true, None, Some(clock), &clip, |_| {}).unwrap();
         let corner = |t: &str| {
             let out = Command::new(&ffmpeg)
                 .args(["-v", "error", "-ss", t, "-i"])

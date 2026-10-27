@@ -11,7 +11,7 @@ export interface DeptDef {
   label?: string; // its name, if it's been renamed: the id stays, so its fields, media and colour stay with it
 }
 // "colour" is one of the song's lighting swatches; "palette" is a custom field with swatches of its own, picked the same way
-// (Song.swatches); "choice" is one of `options`; "clip" links to the song's clips (in the Sheet and on the slide).
+// (Song.swatches); "choice" is one of `options`; "clip" links to the song's clips from one category's records (in the Sheet and on the slide).
 export type ColumnType = "text" | "longtext" | "tc" | "tick" | "colour" | "image" | "palette" | "choice" | "clip";
 
 export interface ColumnDef {
@@ -25,6 +25,7 @@ export interface ColumnDef {
   on_slide?: boolean;
   on_card?: boolean; // long-text note fields shown on every song card
   options?: string[]; // choice columns: the only values allowed
+  category?: string; // clip columns: the category (image column id) whose records' clips it shows, next to that picture; unset shows every clip
 }
 
 export interface ColourSwatch {
@@ -59,6 +60,7 @@ export interface Clip {
   source: "auto_tc" | "manual";
   still?: string; // the still grabbed with it (bundle-relative), if any
   burn_tc?: boolean; // cut with the record's TC drawn in the bottom-right corner
+  cuts?: [number, number][]; // long pauses cut out of it, in seconds into the record (see SongMark)
 }
 
 /** One continuous run of LTC in a file: a TC block, usually one song. */
@@ -75,6 +77,8 @@ export interface SongMark {
   in: number;
   out: number;
   source: "auto_tc" | "manual";
+  /** Long pauses inside it (seconds into the record, in order), cut out of its clip with a GAP CUT card. */
+  cuts?: [number, number][];
 }
 
 export interface Note {

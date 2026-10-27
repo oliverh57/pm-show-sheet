@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { backend } from "../backend";
-import { categories, imageCategory, imageReviews, isHeroImage, reviewsOn, songRecords } from "../model/ops";
+import { categories, clipLength, imageCategory, imageReviews, isHeroImage, reviewsOn, songRecords } from "../model/ops";
 import type { ReviewComment, Show, Song } from "../model/types";
 import { useStore } from "../store";
 import { Icon } from "./icons";
@@ -23,8 +23,8 @@ export function mediaOf(show: Show, bundle: string, song: Song): Item[] {
   return [
     ...(song.hero ? [{ key: song.hero, kind: "image" as const, src: song.hero, label: "Main image" }] : []),
     ...gallery.map((p) => ({ key: p, kind: "image" as const, src: p, label: names.get(imageCategory(show, song, p)) ?? "Image" })),
-    ...(song.clips ?? []).map((c) => ({ key: c.path, kind: "video" as const, path: `${bundle}/${c.path}`, thumb: c.still, label: `Clip ${formatTime(c.in)} – ${formatTime(c.out)}`,
-      review: { record_id: c.record_id, offset: c.in, from: c.in, to: c.out } })),
+    ...(song.clips ?? []).map((c) => ({ key: c.path, kind: "video" as const, path: `${bundle}/${c.path}`, thumb: c.still, label: `Clip ${formatTime(c.in)} – ${formatTime(c.out)}${c.cuts ? ` (${formatTime(clipLength(c))} with pauses cut)` : ""}`,
+      review: { record_id: c.record_id, offset: c.in, from: c.in, to: c.out, cuts: c.cuts } })),
     ...songRecords(show, song.id).map((r) => ({ key: r.id, kind: "video" as const, path: r.path, label: r.label || r.name, ltc: r.ltc?.channel, channels: r.info?.audio_channels,
       review: { record_id: r.id, offset: 0, from: 0, to: Infinity } })),
   ];

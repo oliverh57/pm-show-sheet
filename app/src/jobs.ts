@@ -4,7 +4,7 @@
 // Results are added to the show only if it's still the open one.
 import { backend } from "./backend";
 import { trashMedia } from "./drive/media";
-import { addClip, addImages, addRecordStill, burnsTc, categoryFree, clipName, GENERAL, newId, recordClipName, recordStillOf, setHero, setSongImage } from "./model/ops";
+import { addClip, addImages, addRecordStill, burnsTc, categoryFree, clipLength, clipName, GENERAL, newId, recordClipName, recordStillOf, recordTimeAt, setHero, setSongImage, type Cut } from "./model/ops";
 import type { Show, SongMark, SourceRecord } from "./model/types";
 import { type StillPick, useStore } from "./store";
 
@@ -22,12 +22,13 @@ export async function runClipJobs(bundle: string, record: SourceRecord, marks: S
   const stillOpen = () => useStore.getState().bundle === bundle;
   const ltc = record.ltc?.channel ?? null; // clips keep the LTC, on one side, and say so in their name
   const burn = burnsTc(record);
-  // The burned-in card names the song and its place in the running order ("03 GOOD LIES").
-  const burnIn = (songId: string) => {
+  // The burned-in card names the song and its place in the running order ("03 GOOD LIES"). A clip with pauses cut
+  // out of it says GAP CUT where it jumps, with the card or without.
+  const burnIn = (songId: string, cut: boolean) => {
     const s = useStore.getState().show;
-    if (!burn || !record.ltc || !s) return null;
+    if (!(burn || cut) || !record.ltc || !s) return null;
     const at = s.set_order.indexOf(songId);
-    return { fps: record.ltc.fps ?? 25, blocks: record.ltc.blocks, song: s.songs[songId]?.fields.name ?? "", number: at >= 0 ? String(at + 1).padStart(2, "0") : null };
+    return { fps: record.ltc.fps ?? 25, blocks: record.ltc.blocks, song: s.songs[songId]?.fields.name ?? "", number: at >= 0 ? String(at + 1).padStart(2, "0") : null, tc: burn };
   };
 
   for (const { mark, id, name } of queue) {
@@ -38,7 +39,8 @@ export async function runClipJobs(bundle: string, record: SourceRecord, marks: S
       const had = recordStillOf(useStore.getState().show!, record.id, mark.song_id);
       let clip: string | null = null;
       if (makeClips) {
-        const path = await backend.cutClip(id, bundle, record.path, mark.in, mark.out, name, ltc, burnIn(mark.song_id), (f) => patch(id, { progress: f * (grabStills ? 0.8 : 1) }));
+        const path = await backend.cutClip(id, bundle, record.path, mark.in, mark.out, mark.cuts ?? [], name, ltc, burnIn(mark.song_id, Boolean(mark.cuts?.length)),
+          (f) => patch(id, { progress: f * (grabStills ? 0.8 : 1) }));
         if (!stillOpen()) return;
         clip = path;
         // A clip cut before under another name (before clips kept their LTC) goes to the Trash.
@@ -46,7 +48,8 @@ export async function runClipJobs(bundle: string, record: SourceRecord, marks: S
         await trashMedia(bundle, replaced.map((c) => c.path)).catch(() => {});
         useStore.getState().update((s) => {
           const kept = replaced.find((c) => c.still)?.still ?? had;
-          addClip(s, mark.song_id, { path, record_id: record.id, in: mark.in, out: mark.out, source: mark.source, ...(kept ? { still: kept } : {}), ...(burn ? { burn_tc: true } : {}) });
+          addClip(s, mark.song_id, { path, record_id: record.id, in: mark.in, out: mark.out, source: mark.source, ...(mark.cuts?.length ? { cuts: mark.cuts } : {}),
+            ...(kept ? { still: kept } : {}), ...(burn ? { burn_tc: true } : {}) });
         });
       }
       if ((grabStills || !makeClips) && !had) await queuePick(bundle, record, mark.song_id, mark, clip, !makeClips);
@@ -63,7 +66,7 @@ export async function runClipJobs(bundle: string, record: SourceRecord, marks: S
  * the song's still from, and a song with no still yet uses the top frame until someone picks; otherwise the top frame
  * is simply used.
  */
-async function queuePick(bundle: string, record: SourceRecord, songId: string, mark: { in: number; out: number }, clip: string | null, ask: boolean, replaces?: string) {
+async function queuePick(bundle: string, record: SourceRecord, songId: string, mark: Cut, clip: string | null, ask: boolean, replaces?: string) {
   const found = await findFrames(bundle, record, mark, clip);
   if (useStore.getState().bundle !== bundle) return;
   const candidates = found.length ? found : [{ time: mark.in + Math.min(5, (mark.out - mark.in) / 2), path: "", score: 0 }];
@@ -81,9 +84,9 @@ async function queuePick(bundle: string, record: SourceRecord, songId: string, m
 }
 
 /** A song's best few frames, with times into the record. */
-async function findFrames(bundle: string, record: SourceRecord, mark: { in: number; out: number }, clip: string | null) {
+async function findFrames(bundle: string, record: SourceRecord, mark: Cut, clip: string | null) {
   return clip
-    ? (await backend.thumbCandidates(`${bundle}/${clip}`, 0, mark.out - mark.in, CHOICES).catch(() => [])).map((c) => ({ ...c, time: mark.in + c.time }))
+    ? (await backend.thumbCandidates(`${bundle}/${clip}`, 0, clipLength(mark), CHOICES).catch(() => [])).map((c) => ({ ...c, time: recordTimeAt(mark, c.time) }))
     : await backend.thumbCandidates(record.path, mark.in, mark.out, CHOICES).catch(() => []);
 }
 
@@ -99,7 +102,7 @@ export async function repickStill(bundle: string, record: SourceRecord, songId: 
   if (!mark) return false;
   const id = newId("pick");
   setStillPicks((picks) => [...picks.filter((p) => !(p.songId === songId && p.recordId === record.id)),
-    { id, songId, recordId: record.id, mark: { in: mark.in, out: mark.out }, candidates: [], replaces: still, finding: true }]);
+    { id, songId, recordId: record.id, mark: { in: mark.in, out: mark.out, ...(mark.cuts ? { cuts: mark.cuts } : {}) }, candidates: [], replaces: still, finding: true }]);
   openPicks(id);
   const found = await findFrames(bundle, record, mark, clip?.path ?? null);
   if (useStore.getState().bundle !== bundle) return true;

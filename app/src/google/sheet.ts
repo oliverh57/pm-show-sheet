@@ -2,7 +2,7 @@
 // reading collaborator edits back. Both tabs have the same columns. The REVIEW tab lists the comments on videos.
 // Ported from prototypes/google-sheets (layout.py, sync_logic.py, model.py). Pure: no network here.
 import {
-  addReview, cellValue, clipLabel, deptColour, deptLabel, deptList, deptName, findReview, parseTc, placeTc, recordTc, replyToReview, setReviewDone, sheetEditable,
+  addReview, cellValue, clipLabel, clipTimeAt, columnClips, deptColour, deptLabel, deptList, deptName, findReview, parseTc, placeTc, recordTc, replyToReview, setReviewDone, sheetEditable,
   songByLabel, songImage, songNumber,
 } from "../model/ops";
 import { GELS } from "../model/gels";
@@ -181,7 +181,7 @@ export function showTab(show: Show, imageUrls: Record<string, string>, clipUrls:
         return url ? { formula: `=IMAGE("${url}")`, bg } : { value: "", bg };
       }
       case "clip": {
-        const links = (song.clips ?? []).map((cl) => ({ text: `▶ ${clipLabel(show, cl)}`, url: clipUrls[cl.path] }));
+        const links = columnClips(show, c, song).map((cl) => ({ text: `▶ ${clipLabel(show, cl)}`, url: clipUrls[cl.path] }));
         return links.length ? { links, bg, size: 9, wrap: true } : { value: "", bg };
       }
       case "tc": return { value: v, bg, font: FONT_MONO, size: 9, halign: "CENTER", wrap: true }; // "(Cont.)" wraps rather than clipping
@@ -729,7 +729,7 @@ export function reviewTab(show: Show, imageUrls: Record<string, string>, clipUrl
       at: { value: written((row.reply ?? c).at), fg: GREY, size: 9 },
       reply: ed({ value: "" }),
       done: ed({ value: c.done, halign: "CENTER" }),
-      clip: clip ? { links: [{ text: `▶ ${clipLabel(show, clip)} @ ${mmss(c.t - clip.in)}`, url: clipUrls[clip.path] }], size: 9, wrap: true } : { value: "" },
+      clip: clip ? { links: [{ text: `▶ ${clipLabel(show, clip)} @ ${mmss(clipTimeAt(clip, c.t))}`, url: clipUrls[clip.path] }], size: 9, wrap: true } : { value: "" },
     };
     return [idCell(row.id), ...REVIEW_COLS.map((col) => cells[col.id])];
   }

@@ -1,14 +1,17 @@
 import { describe, expect, it } from "vitest";
 import sample from "./sample_show.json";
 import {
-  addColumn, addImages, addNote, addSong, archiveSong, cellValue, deleteSong, imageLabel, ltcFromName, moveColumn, moveSong,
-  newShow, removeColumn, removeImage, restoreSong, setHero, setHeroCrop,
+  addColumn, addImages, addNote, addSong, archiveSong, cellValue, deleteSong, formatTc, imageLabel, ltcFromName, moveColumn, moveSong,
+  newShow, removeColumn, removeImage, restoreSong, setHero, setHeroCrop, tcSeconds,
 } from "./ops";
 import type { Show } from "./types";
 import { useStore } from "../store";
 
 const fresh = () => structuredClone(sample) as Show;
 const col = (show: Show, id: string) => show.columns.find((c) => c.id === id)!;
+/** A TC block `secs` long, `at` seconds into the file. */
+const block = (at: number, secs: number, tc: string) =>
+  ({ file_start: at, file_end: at + secs, tc_start: tc, tc_end: formatTc(tcSeconds(tc)! + secs - 1 / 25) });
 
 describe("cell values", () => {
   it("shows Cont. in the TC column after a segue, keeping any TC start", () => {
@@ -170,15 +173,105 @@ describe("set lists and timecode", () => {
     expect(parseSetList("7 Words")[0].name).toBe("7 Words");
     expect(parseSetList("3. 7 Words 20:00")[0]).toMatchObject({ name: "7 Words", tc: "20:00:00:00" });
   });
-  it("matches TC blocks to songs by TC start, each song once", async () => {
-    const { addSongWith, matchBlocks } = await import("./ops");
+  it("matches TC runs to songs by TC, each song once", async () => {
+    const { addSongWith, joinPauses, splitRuns } = await import("./ops");
     const show = newShow("T");
     const a = addSongWith(show, "A", "02:00:00:00");
     const b = addSongWith(show, "B", "01:30:00:00");
+    addSongWith(show, "Also A", "02:00:00:00");
     addSongWith(show, "No TC");
-    const block = (tc: string) => ({ file_start: 0, file_end: 1, tc_start: tc, tc_end: tc });
-    expect(matchBlocks(show, [block("01:30:00:01"), block("02:00:00:00"), block("02:00:00:00"), block("09:00:00:00")]))
-      .toEqual([b, a, null, null]);
+    const runs = joinPauses([block(0, 200, "01:30:00:01"), block(300, 200, "02:00:00:00"), block(600, 100, "02:00:00:00"), block(800, 60, "09:00:00:00")]);
+    expect(splitRuns(show, runs)).toEqual([
+      { run: 0, start: 0, song: b },
+      { run: 1, start: 300, song: a },
+      { run: 2, start: 600, song: null, shorter_of: a },
+      { run: 3, start: 800, song: null },
+    ]);
+  });
+  it("joins TC across pauses, but not across rewinds or a jump after a long stop", async () => {
+    const { joinPauses, tcInRun, timeAtTcInRun } = await import("./ops");
+    const runs = joinPauses([
+      block(0, 90, "01:00:00:00"), block(95, 30, "01:01:30:00"), // a 5 s pause
+      block(140, 60, "01:01:00:00"), // a rewind
+      block(230, 30, "01:02:00:00"), // a 30 s pause, then on from where it stopped
+      block(280, 30, "01:02:50:00"), // 20 s later, TC 20 s on: it ran on through a long gap, so not the same take
+    ]);
+    expect(runs.map((r) => [r.file_start, r.file_end, r.pieces.length])).toEqual([[0, 125, 2], [140, 260, 2], [280, 310, 1]]);
+    expect(tcInRun(runs[0], 92)).toBe("01:01:30:00"); // paused
+    expect(tcInRun(runs[0], 105)).toBe("01:01:40:00");
+    expect(timeAtTcInRun(runs[0], "01:01:40:00")).toBeCloseTo(105);
+  });
+  it("cuts long pauses out of a take's clip, and maps clip time to record time across them", async () => {
+    const { clipLength, clipTimeAt, cutPauses, joinPauses, recordTimeAt } = await import("./ops");
+    const [run] = joinPauses([block(0, 60, "01:00:00:00"), block(65, 60, "01:01:00:00"), block(200, 60, "01:02:00:00"), block(400, 60, "01:03:00:00")]);
+    const clip = cutPauses(run, 0, 460);
+    expect(clip).toEqual({ in: 0, out: 460, cuts: [[125, 200], [260, 400]] }); // the 5 s pause stays in
+    expect(clipLength(clip)).toBe(245);
+    expect(recordTimeAt(clip, 130)).toBe(205);
+    expect(recordTimeAt(clip, 186)).toBe(401);
+    expect(clipTimeAt(clip, 401)).toBe(186);
+    expect(clipTimeAt(clip, 150)).toBe(125); // in a cut pause: where the clip jumps it
+    // A long pause at either end is left off rather than cut.
+    expect(cutPauses(run, 65, 200)).toEqual({ in: 65, out: 125 });
+    expect(cutPauses(run, 0, 125)).toEqual({ in: 0, out: 125 });
+  });
+  it("keeps a short rewind in the take, cutting out what's played again", async () => {
+    // Mialon in the DEPENE RENDER record: from the top, back 15 s, a 22 s stop, then on to the end.
+    const { addSongWith, clipLength, cutPauses, joinPauses, recordTimeAt, splitRuns } = await import("./ops");
+    const show = newShow("T");
+    const geist = addSongWith(show, "GEIST", "11:00:00:00");
+    const mialon = addSongWith(show, "MIALON", "11:30:00:00");
+    const blocks = [
+      { file_start: 0.02, file_end: 10.82, tc_start: "11:03:44:12", tc_end: "11:03:55:06" },
+      { file_start: 10.92, file_end: 125.21, tc_start: "11:30:00:04", tc_end: "11:31:54:08" },
+      { file_start: 125.92, file_end: 134.24, tc_start: "11:31:39:20", tc_end: "11:31:48:02" },
+      { file_start: 156.46, file_end: 247.42, tc_start: "11:31:48:04", tc_end: "11:33:19:02" },
+    ];
+    const runs = joinPauses(blocks);
+    expect(runs.map((r) => r.pieces.length)).toEqual([1, 3]);
+    expect(splitRuns(show, runs)).toEqual([{ run: 0, start: 0.02, song: geist }, { run: 1, start: 10.92, song: mialon }]);
+    const clip = cutPauses(runs[1], 10.92, 247.42);
+    expect(clip.in).toBe(10.92);
+    expect(clip.out).toBe(247.42);
+    expect(clip.cuts).toHaveLength(1);
+    const [[a, b]] = clip.cuts!;
+    expect(a).toBe(125.21);
+    expect(b).toBeCloseTo(162.75, 2); // where the TC passes 11:31:54.45 again
+    expect(clipLength(clip)).toBeCloseTo(199.2, 0); // 11:30:00 to 11:33:19, once through
+    expect(recordTimeAt(clip, 120)).toBeCloseTo(b + 5.71, 1);
+  });
+  it("gives a rehearsed song its longest take, and skips the stops and rewinds", async () => {
+    const { addSongWith, joinPauses, splitRuns } = await import("./ops");
+    const show = newShow("T");
+    const a = addSongWith(show, "A", "01:00:00:00");
+    const b = addSongWith(show, "B", "01:05:00:00");
+    const runs = joinPauses([
+      block(0, 90, "01:00:00:00"), block(95, 30, "01:01:30:00"), // A from the top, a pause, then stopped: 2 min
+      block(140, 300, "01:01:00:00"), // back to 1 min in, through the end of A and on into B: 4 min of A
+      block(500, 240, "01:05:00:00"), // B in full
+    ]);
+    expect(splitRuns(show, runs)).toEqual([
+      { run: 0, start: 0, song: null, shorter_of: a },
+      { run: 1, start: 140, song: a },
+      { run: 1, start: 378, song: null, shorter_of: b },
+      { run: 2, start: 500, song: b },
+    ]);
+  });
+  it("doesn't take a block far past where a song was played from the top as part of it", async () => {
+    // A full show record: GUNK at 00:20 runs 3.5 minutes; a song whose TC isn't in the sheet plays at 00:30.
+    const { addSongWith, joinPauses, splitRuns } = await import("./ops");
+    const show = newShow("T");
+    const gunk = addSongWith(show, "GUNK", "00:20:00:00");
+    addSongWith(show, "BROMLEY", "03:00:00:00");
+    const runs = joinPauses([block(663, 213, "00:20:00:00"), block(2922, 420, "00:30:00:00")]);
+    expect(splitRuns(show, runs)).toEqual([{ run: 0, start: 663, song: gunk }, { run: 1, start: 2922, song: null }]);
+  });
+  it("splits a run where it plays on into the next song", async () => {
+    const { addSongWith, joinPauses, splitRuns } = await import("./ops");
+    const show = newShow("T");
+    const a = addSongWith(show, "A", "02:00:00:00");
+    const b = addSongWith(show, "B", "02:03:00:00");
+    expect(splitRuns(show, joinPauses([block(20, 365, "01:59:55:00")]))).toEqual([{ run: 0, start: 20, song: a }, { run: 0, start: 203, song: b }]);
   });
   it("turns start marks into in/out marks", async () => {
     const { marksFromStarts } = await import("./ops");
@@ -295,19 +388,102 @@ describe("BPM", () => {
     removeColumn(made, "clip");
     expect(migrate(made).columns.some((c) => c.type === "clip")).toBe(false);
   });
-  it("the clip column sits right after the picture its clips come from, in its category, and stays with it", async () => {
-    const { addClip, deptCategory, GENERAL, migrate, placeColumn, retagRecord } = await import("./ops");
+  it("each category's clips go in its own clip column, made after its picture the first time", async () => {
+    const { addClip, addCategory, cellValue, deptCategory, GENERAL, migrate, placeColumn } = await import("./ops");
     const show = migrate(fresh());
     const ids = () => show.columns.map((c) => c.id);
-    show.records = [{ id: "r1", path: "/x/NYC.mov", name: "NYC.mov", scope: "show", added_at: "" }]; // General's
-    addClip(show, show.set_order[0], { path: "media/clips/a.mp4", record_id: "r1", in: 0, out: 10, source: "auto_tc" });
-    expect(ids().indexOf("clip")).toBe(ids().indexOf(GENERAL) + 1);
-    expect(col(show, "clip").dept).toBe("CORE");
-    placeColumn(show, "clip", "LX", null); // dragged away: it goes back
-    expect(ids().indexOf("clip")).toBe(ids().indexOf(GENERAL) + 1);
-    retagRecord(show, "r1", deptCategory("CONTENT"));
-    expect(ids().indexOf("clip")).toBe(ids().indexOf(deptCategory("CONTENT")) + 1);
-    expect(col(show, "clip").dept).toBe("CONTENT");
+    const clipCol = (category: string) => show.columns.find((c) => c.type === "clip" && c.category === category);
+    const lasers = addCategory(show, "Lasers");
+    const rec = (id: string, image_col?: string) => ({ id, path: `/x/${id}.mov`, name: `${id}.mov`, label: id.toUpperCase(), scope: "show" as const, added_at: "", image_col });
+    show.records = [rec("gen"), rec("con", deptCategory("CONTENT")), rec("lx", deptCategory("LX")), rec("vid", deptCategory("VIDEO")), rec("cam", deptCategory("CAMERAS")), rec("las", lasers)];
+    const song = show.set_order[0];
+    expect(clipCol(deptCategory("LX"))).toBeUndefined();
+    for (const r of show.records) addClip(show, song, { path: `media/clips/${r.id}.mp4`, record_id: r.id, in: 0, out: 10, source: "auto_tc" });
+    const expected: [string, string, string][] = [
+      [GENERAL, "SONG CLIP", "CORE"], [deptCategory("CONTENT"), "CONTENT CLIP", "CONTENT"], [deptCategory("LX"), "LX CLIP", "LX"],
+      [deptCategory("VIDEO"), "VIDEO CLIP", "VIDEO"], [deptCategory("CAMERAS"), "CAMERAS CLIP", "CAMERAS"], [lasers, "LASERS CLIP", "LASERS"],
+    ];
+    for (const [category, label, dept] of expected) {
+      const c = clipCol(category)!;
+      expect([c.label, c.dept]).toEqual([label, dept]);
+      expect(ids().indexOf(c.id)).toBe(ids().indexOf(category) + 1); // the image column was made too, where it wasn't there yet
+    }
+    expect(clipCol(deptCategory("CONTENT"))!.id).toBe("clip"); // the show's own clip column is Content's
+    expect(cellValue(show, clipCol(deptCategory("LX"))!, show.songs[song])).toBe("LX");
+    expect(cellValue(show, clipCol(GENERAL)!, show.songs[song])).toBe("GEN");
+    // A second LX clip goes in the same column; no new one is made.
+    const n = show.columns.length;
+    addClip(show, show.set_order[1], { path: "media/clips/lx2.mp4", record_id: "lx", in: 20, out: 30, source: "auto_tc" });
+    expect(show.columns.length).toBe(n);
+    // Dragged away, a clip column goes back next to its picture.
+    const lxClip = clipCol(deptCategory("LX"))!.id;
+    placeColumn(show, lxClip, "COLOUR", null);
+    expect(ids().indexOf(lxClip)).toBe(ids().indexOf(deptCategory("LX")) + 1);
+    expect(clipCol(deptCategory("LX"))!.dept).toBe("LX");
+  });
+  it("refiling a record moves its clips to the new category's clip column", async () => {
+    const { addClip, cellValue, deptCategory, GENERAL, migrate, retagRecord } = await import("./ops");
+    const show = migrate(fresh());
+    const clipCol = (category: string) => show.columns.find((c) => c.type === "clip" && c.category === category);
+    show.records = [{ id: "r1", path: "/x/NYC.mov", name: "NYC.mov", label: "NYC", scope: "show", added_at: "" }];
+    const song = show.songs[show.set_order[0]];
+    addClip(show, song.id, { path: "media/clips/a.mp4", record_id: "r1", in: 0, out: 10, source: "auto_tc" });
+    expect(cellValue(show, clipCol(GENERAL)!, song)).toBe("NYC");
+    retagRecord(show, "r1", deptCategory("LX"));
+    expect(cellValue(show, clipCol(deptCategory("LX"))!, song)).toBe("NYC");
+    expect(cellValue(show, clipCol(GENERAL)!, song)).toBe("");
+  });
+  it("deleting a category takes its clip column; its records' clips are General's", async () => {
+    const { addClip, cellValue, deleteCategory, GENERAL, imageColumnFor, migrate } = await import("./ops");
+    const show = migrate(fresh());
+    const lasers = imageColumnFor(show, "Lasers"); // a category of its own, by name
+    show.records = [{ id: "r1", path: "/x/NYC.mov", name: "NYC.mov", label: "NYC", scope: "show", added_at: "", image_col: lasers }];
+    const song = show.songs[show.set_order[0]];
+    addClip(show, song.id, { path: "media/clips/a.mp4", record_id: "r1", in: 0, out: 10, source: "auto_tc" });
+    expect(show.columns.find((c) => c.type === "clip" && c.category === lasers)?.label).toBe("LASERS CLIP");
+    deleteCategory(show, lasers);
+    expect(show.columns.some((c) => c.category === lasers)).toBe(false);
+    expect(cellValue(show, show.columns.find((c) => c.type === "clip" && c.category === GENERAL)!, song)).toBe("NYC");
+  });
+  it("a clip field added to a category shows that category's clips", async () => {
+    const { addField, deptCategory, GENERAL, migrate } = await import("./ops");
+    const show = migrate(fresh());
+    const id = addField(show, "Clip 2", "CONTENT", "clip");
+    expect(col(show, id).category).toBe(deptCategory("CONTENT"));
+    expect(col(show, addField(show, "Main clip", "CORE", "clip")).category).toBe(GENERAL);
+    expect(col(show, addField(show, "Any clip", "STATUS", "clip")).category).toBeUndefined(); // STATUS has no picture: every clip
+  });
+  it("older shows' one clip column becomes the category's it was next to, and each other category with clips gets its own, once", async () => {
+    const { deptCategory, GENERAL, migrate, removeColumn } = await import("./ops");
+    const old = migrate(fresh());
+    // As an older version left it: CLIP after SONG IMAGE (most clips were General's), with no category.
+    old.columns = old.columns.filter((c) => c.type !== "clip");
+    old.columns.splice(old.columns.findIndex((c) => c.id === GENERAL) + 1, 0, { id: "clip", label: "CLIP", dept: "CORE", type: "clip", width: 130 });
+    old.migrations = old.migrations!.filter((m) => m !== "clip_columns");
+    old.columns.splice(old.columns.findIndex((c) => c.id === "lx_notes"), 0, { id: deptCategory("LX"), label: "LX", dept: "LX", type: "image", width: 210 });
+    old.records = [
+      { id: "g", path: "/x/g.mov", name: "g.mov", scope: "show", added_at: "" },
+      { id: "lx", path: "/x/lx.mov", name: "lx.mov", scope: "show", added_at: "", image_col: deptCategory("LX") },
+      { id: "con", path: "/x/c.mov", name: "c.mov", scope: "show", added_at: "", image_col: deptCategory("CONTENT") }, // stills only
+    ];
+    const [a, b] = old.set_order;
+    old.songs[a].clips = [{ path: "media/clips/a.mp4", record_id: "g", in: 0, out: 10, source: "auto_tc" }, { path: "media/clips/a2.mp4", record_id: "lx", in: 0, out: 10, source: "auto_tc" }];
+    old.songs[b].clips = [{ path: "media/clips/b.mp4", record_id: "g", in: 0, out: 10, source: "auto_tc" }];
+    migrate(old);
+    const clips = old.columns.filter((c) => c.type === "clip").map((c) => [c.id, c.label, c.category]);
+    expect(clips).toEqual([["clip", "SONG CLIP", GENERAL], [`clip_${deptCategory("LX")}`, "LX CLIP", deptCategory("LX")]]); // no clips from Content: no column
+    const ids = old.columns.map((c) => c.id);
+    expect(ids.indexOf(`clip_${deptCategory("LX")}`)).toBe(ids.indexOf(deptCategory("LX")) + 1);
+    // Once: a deleted clip column stays deleted.
+    removeColumn(old, `clip_${deptCategory("LX")}`);
+    expect(migrate(old).columns.filter((c) => c.type === "clip")).toHaveLength(1);
+    // A show whose clip column was deleted gets none.
+    const none = migrate(fresh());
+    none.columns = none.columns.filter((c) => c.type !== "clip");
+    none.migrations = none.migrations!.filter((m) => m !== "clip_columns");
+    none.records = old.records;
+    none.songs[a].clips = old.songs[a].clips;
+    expect(migrate(none).columns.some((c) => c.type === "clip")).toBe(false);
   });
   it("new shows don't get Notch layer or Camera FX", () => {
     const ids = newShow("T").columns.map((c) => c.id);

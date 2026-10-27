@@ -2,7 +2,7 @@
 // renders in the Render inbox tab.
 import { useState, type ReactNode } from "react";
 import { backend } from "../backend";
-import { categories, categoryName, clipName, fileName, guessRecordLabel, ltcFromName, recordMedia, removeAudio, retagRecord, syncAudioField } from "../model/ops";
+import { categories, categoryName, clipLength, clipName, fileName, guessRecordLabel, ltcFromName, recordMedia, removeAudio, retagRecord, syncAudioField } from "../model/ops";
 import { CategoriesDialog } from "./Categories";
 import { useStore } from "../store";
 import { Icon, type IconName } from "./icons";
@@ -167,7 +167,7 @@ function Library() {
     if (r.ltc?.channel === null || r.ltc?.channel === undefined || !old.length || cutting) return null;
     return (
       <button className="sm" title="Cut these clips again with the record's timecode on one side, so anyone can download them with LTC"
-              onClick={() => runClipJobs(bundle, r, old.map((c) => ({ song_id: c.songId, in: c.in, out: c.out, source: c.source })), false)}>
+              onClick={() => runClipJobs(bundle, r, old.map((c) => ({ song_id: c.songId, in: c.in, out: c.out, source: c.source, ...(c.cuts ? { cuts: c.cuts } : {}) })), false)}>
         <Icon name="radio" size="sm" /> Re-cut {old.length} clip{old.length === 1 ? "" : "s"} with timecode
       </button>
     );
@@ -239,7 +239,7 @@ function Library() {
                     <div key={c.path}>
                       <div className="clip-item">
                         <Icon name="film" size="sm" />
-                        <span className="nm" title={c.path.split("/").pop()}>{clipName(show, c.songId)}<span className="muted small"> · {formatTime(c.out - c.in)}</span></span>
+                        <span className="nm" title={c.path.split("/").pop()}>{clipName(show, c.songId)}<span className="muted small"> · {formatTime(clipLength(c))}</span></span>
                         <CloudButton compact paths={[`${bundle}/${c.path}`]} states={states} refresh={refreshStates} />
                         <SaveCopy path={`${bundle}/${c.path}`} video compact />
                         <button className="icon" title="Play full screen, with its comments" onClick={() => setWatching({ songId: c.songId, path: c.path })}><Icon name="play" size="sm" /></button>

@@ -8,7 +8,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { backend } from "../backend";
 import {
-  addReview, clipName, deleteReply, deleteReview, deptList, deptName, imageReviews, recordTc, replyToReview, reviewsOn, setReviewDone, unplacedReviews,
+  addReview, clipName, clipTimeAt, deleteReply, deleteReview, deptList, deptName, imageReviews, recordTc, recordTimeAt, replyToReview, reviewsOn, setReviewDone, unplacedReviews,
 } from "../model/ops";
 import type { ReviewComment, Show } from "../model/types";
 import { useStore } from "../store";
@@ -24,12 +24,16 @@ export function CommentBadge({ count, onClick }: { count: number; onClick?: () =
     : <span className="cbadge" title={title}><Icon name="comment" size="sm" />{count}</span>;
 }
 
-/** Where a video sits in its record: record time = offset + video time; its comments are those from `from` to `to`. */
+/**
+ * Where a video sits in its record: record time = offset + video time, plus any pauses cut out of it before then;
+ * its comments are those from `from` to `to`.
+ */
 export interface ReviewAnchor {
   record_id: string;
   offset: number;
   from: number;
   to: number;
+  cuts?: [number, number][];
 }
 
 /** What's being commented on: a video (where it sits in its record, the file playing) or an image (bundle-relative). */
@@ -134,15 +138,17 @@ export function Review({ show, songId, target, stage, itemKey, trackHost, light,
   const composer = useRef<HTMLTextAreaElement>(null);
   const list = useRef<HTMLDivElement>(null);
 
-  const at = anchor.offset + now; // record time on screen
-  const label = (t: number) => (isVideo ? recordTc(record, t) ?? formatTime(t - anchor.offset) : ""); // images have no time
+  const inRecord = (v: number) => recordTimeAt({ in: anchor.offset, out: anchor.to, cuts: anchor.cuts }, v);
+  const inVideo = (t: number) => clipTimeAt({ in: anchor.offset, out: anchor.to, cuts: anchor.cuts }, t);
+  const at = inRecord(now); // record time on screen
+  const label = (t: number) => (isVideo ? recordTc(record, t) ?? formatTime(inVideo(t)) : ""); // images have no time
   const video = () => videoRef.current;
   const pause = () => video()?.pause();
   const seek = (t: number) => {
     const el = video();
     if (!el) return;
     el.pause();
-    el.currentTime = Math.max(0, t - anchor.offset);
+    el.currentTime = Math.max(0, inVideo(t));
   };
   const toggle = () => {
     const el = video();
@@ -162,7 +168,7 @@ export function Review({ show, songId, target, stage, itemKey, trackHost, light,
       if (k === "c") composer.current?.focus();
       else if (!isVideo) return;
       else if (k === " " && !(e.target instanceof HTMLButtonElement)) toggle();
-      else if (k === "i") setRangeIn(anchor.offset + (video()?.currentTime ?? 0));
+      else if (k === "i") setRangeIn(inRecord(video()?.currentTime ?? 0));
       else if (k === "o" && rangeIn !== null) composer.current?.focus();
       else return;
       e.preventDefault();
@@ -212,7 +218,7 @@ export function Review({ show, songId, target, stage, itemKey, trackHost, light,
     // The frame, for the Sheet's FRAME column.
     if (target.kind === "video" && backend.isDesktop) {
       const name = `review ${clipName(show, songId)} ${label(t).replace(/:/g, "-")}`;
-      backend.grabFrame(bundle, target.source, Math.max(0, t - anchor.offset), name)
+      backend.grabFrame(bundle, target.source, Math.max(0, inVideo(t)), name)
         .then((still) => useStore.getState().updateQuiet((s) => { const c = s.reviews?.find((x) => x.id === id); if (c) c.still = still; }))
         .catch(() => {}); // no ffmpeg, or the file is offline: the Sheet row just has no picture
     }
@@ -222,11 +228,11 @@ export function Review({ show, songId, target, stage, itemKey, trackHost, light,
   const number = new Map(comments.map((c, i) => [c.id, i + 1]));
   const onScreen = comments.find((c) => c.id === selected && c.draw && (!isVideo || (paused && Math.abs(c.t - at) < FRAME * 2)));
   const span = duration || Math.max(1, (anchor.to === Infinity ? at : anchor.to) - anchor.from);
-  const pos = (t: number) => `${Math.min(100, Math.max(0, ((t - anchor.offset) / span) * 100))}%`;
+  const pos = (t: number) => `${Math.min(100, Math.max(0, (inVideo(t) / span) * 100))}%`;
 
   const scrub = (e: React.PointerEvent<HTMLDivElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
-    seek(anchor.offset + Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * span);
+    seek(inRecord(Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * span));
   };
   const track = (
     <div className="review-track">

@@ -4,7 +4,7 @@
 // itself, not on any frame or image.
 import { useState } from "react";
 import { backend } from "../backend";
-import { addReview, clipLabel, deptList, deptName, keepResolvedDays, setReviewDone, songNumber } from "../model/ops";
+import { addReview, clipLabel, clipTimeAt, deptList, deptName, keepResolvedDays, setReviewDone, songNumber } from "../model/ops";
 import type { ReviewComment, Show, Song } from "../model/types";
 import { useStore } from "../store";
 import { Icon, type IconName } from "./icons";
@@ -24,7 +24,7 @@ export function commentMedia(show: Show, bundle: string, c: ReviewComment): { ic
   const record = (show.records ?? []).find((r) => r.id === c.record_id);
   if (!record) return c.tc ? { icon: "sheet", label: "Not in a video: TC typed in the Sheet" } : { icon: "music", label: "On the song" };
   const clip = (song?.clips ?? []).find((cl) => cl.record_id === record.id && c.t >= cl.in && c.t <= cl.out);
-  if (clip) return { icon: "film", label: `Clip of ${clipLabel(show, clip)} · ${formatTime(c.t - clip.in)} in` };
+  if (clip) return { icon: "film", label: `Clip of ${clipLabel(show, clip)} · ${formatTime(clipTimeAt(clip, c.t))} in` };
   return { icon: "film", label: `${record.label || record.name} · ${formatTime(c.t)} in` };
 }
 

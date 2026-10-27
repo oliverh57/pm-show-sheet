@@ -5,7 +5,7 @@ import { backend } from "../backend";
 import { pickTopStills, runClipJobs } from "../jobs";
 import {
   addAudio, addImages, addRecord, addSong, categories, deptCategory, ensureCategory, GENERAL, addSongWith, AUDIO_EXTENSIONS, cleanLabel, guessRecordLabel, recordClipName, extension, fileName, guessSong, guessVersion,
-  marksToMake, matchBlocks, parseTc, setHero, setMarks, syncAudioField, tcAt, timeAtTc, VIDEO_EXTENSIONS,
+  clipLength, cutPauses, joinPauses, marksToMake, MAX_PAUSE, MAX_REWIND, parseTc, type RunPart, setHero, setMarks, splitRuns, syncAudioField, tcInRun, timeAtTcInRun, VIDEO_EXTENSIONS,
 } from "../model/ops";
 import type { AudioFile, LtcResult, MediaInfo, Show, SongMark, SourceRecord } from "../model/types";
 import { useStore } from "../store";
@@ -367,29 +367,46 @@ function ScanStep({ file, source, onDone }: { file: SourceRecord | AudioFile; so
 
 type Assignment = string; // a song id, "" (unassigned), "__new" or "__skip"
 
-/** One part of a TC block. Usually a block is one song, but TC can run on through two sections (Intro → song). */
+/**
+ * One part of a run of TC (blocks joined across pauses and short rewinds). Usually a run is one song, but TC can run on through
+ * two sections (Intro → song), and in a rehearsal a run can be a shorter take of a song played in full elsewhere.
+ */
 interface Segment {
-  block: number;
-  start: number; // file time; the first segment of a block starts at the block start
+  block: number; // the run
+  start: number; // file time; the first segment of a run starts at the run start
   song: Assignment;
 }
+
+const segmentOf = (p: RunPart): Segment => ({ block: p.run, start: p.start, song: p.song ?? (p.shorter_of ? "__skip" : "") });
 
 function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file: SourceRecord | AudioFile; source: Source; initialMake: Make; asked: boolean; onManual: () => void; onDone: () => void }) {
   const show = useStore((s) => s.show)!;
   const bundle = useStore((s) => s.bundle)!;
   const { update, toast, setView, focusSong } = useStore.getState();
   const ltc = file.ltc!;
-  const blocks = ltc.blocks;
   const fps = ltc.fps ?? 25;
+  const blocks = useMemo(() => joinPauses(ltc.blocks, fps), [ltc.blocks, fps]);
   const isRecord = source.kind === "record";
-  const byTc = useMemo(() => matchBlocks(show, blocks, fps), [show, blocks, fps]);
+  const auto = useMemo(() => splitRuns(show, blocks, fps), [show, blocks, fps]);
   const [segs, setSegs] = useState<Segment[]>(() => {
     const existing = isRecord ? (file as SourceRecord).song_marks ?? [] : [];
-    const matched = matchBlocks(show, blocks, fps);
+    const marked = new Set(existing.map((m) => m.song_id));
     return blocks.flatMap((b, i) => {
       const inBlock = existing.filter((m) => m.in >= b.file_start - 1 && m.in < b.file_end - 1).sort((x, y) => x.in - y.in);
-      if (inBlock.length) return inBlock.map((m, j) => ({ block: i, start: j === 0 ? b.file_start : m.in, song: m.song_id }));
-      return [{ block: i, start: b.file_start, song: matched[i] ?? "" }];
+      // Marked before: the marks as they were, with what's between them skipped. A mark that stopped where an
+      // earlier scan's block did, in a take that now carries on (after a stop or a rewind), carries on with it.
+      const parts = auto.filter((p) => p.run === i);
+      const carriesOn = (m: SongMark) => b.pieces.some((p) => Math.abs(p.file_end - m.out) < 0.5) && parts.some((p, k) =>
+        p.song === m.song_id && p.start < m.out && (parts[k + 1]?.start ?? b.file_end) > m.out + 1);
+      if (inBlock.length) return inBlock.flatMap((m, j): Segment[] => {
+        const next = inBlock[j + 1]?.in ?? b.file_end;
+        return [
+          ...(j === 0 && m.in > b.file_start + 1 ? [{ block: i, start: b.file_start, song: "__skip" }] : []),
+          { block: i, start: j === 0 && m.in <= b.file_start + 1 ? b.file_start : m.in, song: m.song_id },
+          ...(m.out < next - 1 && !carriesOn(m) ? [{ block: i, start: m.out, song: "__skip" }] : []),
+        ];
+      });
+      return auto.filter((p) => p.run === i).map((p) => (p.song && marked.has(p.song) ? { ...segmentOf(p), song: "__skip" } : segmentOf(p)));
     });
   });
   const [make, setMake] = useState<Make>(isRecord ? initialMake : "none");
@@ -418,7 +435,9 @@ function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file:
   const dur = ltc.duration || blocks[blocks.length - 1]?.file_end || 1;
   const name = (id: string) => show.songs[id]?.fields.name || "Untitled";
   const endOf = (k: number) => (segs[k + 1]?.block === segs[k].block ? segs[k + 1].start : blocks[segs[k].block].file_end);
-  const tcOf = (k: number) => tcAt(blocks[segs[k].block], segs[k].start, fps);
+  const tcOf = (k: number) => tcInRun(blocks[segs[k].block], segs[k].start, fps);
+  /** Part `k` as a clip, with its long pauses cut out. */
+  const clipOf = (k: number) => cutPauses(blocks[segs[k].block], segs[k].start, endOf(k), fps);
 
   /** Move the player to `t` seconds into the file (showing it if it's hidden), optionally starting playback. */
   function seekTo(t: number, play = false) {
@@ -461,7 +480,7 @@ function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file:
     const k = segs.findIndex((g, j) => t > g.start + 1 && t < endOf(j) - 1);
     if (k < 0) return toast("Move the player inside a block, at least a second from its edges");
     insertSplit(k, t, song);
-    if (song) toast(`Split at ${tcAt(blocks[segs[k].block], t, fps)} for ${song === "__new" ? "a new song" : name(song)}`);
+    if (song) toast(`Split at ${tcInRun(blocks[segs[k].block], t, fps)} for ${song === "__new" ? "a new song" : name(song)}`);
   }
 
   /** Drag split `k` along the timeline, between the parts either side of it. */
@@ -504,9 +523,9 @@ function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file:
   }
 
   function createAll() {
-    update((s) => { for (const b of blocks) { const id = addSongWith(s, `Song ${b.tc_start.slice(0, 5)}`, b.tc_start); s.songs[id].segues_into_next = true; } });
-    const matched = matchBlocks(useStore.getState().show!, blocks, fps);
-    setSegs(blocks.map((b, i) => ({ block: i, start: b.file_start, song: matched[i] ?? "" })));
+    const ids: string[] = [];
+    update((s) => { for (const b of blocks) { const id = addSongWith(s, `Song ${b.tc_start.slice(0, 5)}`, b.tc_start); s.songs[id].segues_into_next = true; ids.push(id); } });
+    setSegs(blocks.map((b, i) => ({ block: i, start: b.file_start, song: ids[i] })));
     toast(`Created ${blocks.length} songs. Rename them on the Songs page.`);
   }
 
@@ -519,7 +538,7 @@ function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file:
         if (id === "__new") id = addSongWith(s, `New song ${tc.slice(0, 5)}`, tc);
         if (!id || id === "__skip" || !s.songs[id]) return;
         if (!s.songs[id].fields.tc) s.songs[id].fields.tc = tc;
-        marks.push({ song_id: id, in: g.start, out: endOf(k), source: "auto_tc" });
+        marks.push({ song_id: id, ...clipOf(k), source: "auto_tc" });
       });
       if (isRecord) {
         setMarks(s, file.id, marks);
@@ -553,25 +572,33 @@ function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file:
   const first = (k: number) => k === 0 || segs[k - 1].block !== segs[k].block;
   const status = (k: number) => {
     const a = segs[k].song;
+    const suggested = auto.find((p) => p.run === segs[k].block && Math.abs(p.start - segs[k].start) < 0.5);
+    if (a === "__skip" && suggested?.shorter_of) return <span className="chip" title={`${name(suggested.shorter_of)} plays for longer elsewhere in the record`}>Shorter take</span>;
     if (a === "__skip") return <span className="chip">Skipped</span>;
     if (a === "__new") return <span className="chip accent">New song</span>;
     if (!a) return <span className="chip warn"><Icon name="alert" size="sm" />Unassigned</span>;
     if (!first(k)) return <span className="chip accent"><Icon name="scissors" size="sm" />Split</span>;
-    return a === byTc[segs[k].block] ? <span className="chip ok"><Icon name="check" size="sm" />TC match</span> : <span className="chip accent">You picked</span>;
+    return a === suggested?.song ? <span className="chip ok"><Icon name="check" size="sm" />TC match</span> : <span className="chip accent">You picked</span>;
   };
+  const found = auto.filter((p) => p.song).length;
+  const shorter = auto.filter((p) => p.shorter_of).length;
+  const gaps = blocks.flatMap((r) => (cutPauses(r, r.file_start, r.file_end, fps).cuts ?? []).map(([from, to]) => ({ from, to })));
+  const joined = ltc.blocks.length - blocks.length;
   const colour = (i: number) => `hsl(${(i * 47 + 210) % 360} 70% 82%)`;
   const assignedCount = segs.filter((g) => isSong(g.song)).length;
   const toMake = isRecord
-    ? marksToMake(show, file.id, segs.flatMap((g, k) => (isSong(g.song) ? [{ song_id: g.song, in: g.start, out: endOf(k), source: "auto_tc" as const }] : [])), makeClips, burn).length
+    ? marksToMake(show, file.id, segs.flatMap((g, k) => (isSong(g.song) ? [{ song_id: g.song, ...clipOf(k), source: "auto_tc" as const }] : [])), makeClips, burn).length
     : 0;
 
   return (
     <>
       <div className="result-banner">
         <div className="ic"><Icon name="radio" size="lg" /></div>
-        <div style={{ flex: 1 }}><div className="t">Timecode found: {blocks.length} blocks</div><div className="d">{noSongs ? "No songs yet. Create them from the blocks." : `${byTc.filter(Boolean).length} matched by TC start. Check the rest.`}</div></div>
+        <div style={{ flex: 1 }}><div className="t">Timecode found: {blocks.length} blocks</div><div className="d">{noSongs ? "No songs yet. Create them from the blocks." : `${found} matched by TC.${shorter ? ` ${shorter} shorter take${shorter === 1 ? "" : "s"} skipped.` : ""} Check the rest.`}</div></div>
         <div className="chips">
           <span className="chip tc">LTC · ch {(ltc.channel ?? 0) + 1}</span><span className="chip">{fps} fps</span>
+          {joined > 0 && <span className="chip" title={`Where the TC carries on after a stop, or goes back up to ${MAX_REWIND} s, it's the same take`}>{joined} stop{joined === 1 ? "" : "s"} joined</span>}
+          {gaps.length > 0 && <span className="chip" title={`Stops over ${MAX_PAUSE} s, and what's played again after a rewind, are cut out of the clip, which shows GAP CUT there`}>{gaps.length} gap{gaps.length === 1 ? "" : "s"} cut</span>}
           {!noSongs && unmatched > 0 && <span className="chip warn">{unmatched} to check</span>}
           {!noSongs && missing.length > 0 && <span className="chip bad">{missing.length} not found</span>}
           <button className="sm" onClick={() => setShowPlayer(!showPlayer)}>{showPlayer ? "Hide player" : <><Icon name="play" size="sm" /> Play</>}</button>
@@ -588,7 +615,7 @@ function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file:
           <MediaPlayer path={file.path} video={isRecord} ltc={ltc.channel} channels={file.info?.audio_channels} mediaRef={player} />
           <div className="split-bar">
             {current >= 0
-              ? <span className="small"><span className="mono" style={{ color: "var(--tc)" }}>{tcAt(blocks[segs[current].block], now, fps)}</span>
+              ? <span className="small"><span className="mono" style={{ color: "var(--tc)" }}>{tcInRun(blocks[segs[current].block], now, fps)}</span>
                   <span className="muted"> · in {isSong(segs[current].song) && segs[current].song !== "__new" ? name(segs[current].song) : `block ${segs[current].block + 1}`}</span></span>
               : <span className="muted small">Outside the timecode</span>}
             <span className="spacer" />
@@ -614,6 +641,7 @@ function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file:
               <span className="l">{g.song === "__new" ? "New song" : isSong(g.song) ? name(g.song) : g.song === "__skip" ? "Skipped" : "Unassigned"}</span>
             </div>
           ))}
+          {gaps.map((g) => <div key={`gap-${g.from}`} className="tl-gap" style={{ left: `${(g.from / dur) * 100}%`, width: `${((g.to - g.from) / dur) * 100}%` }} title={`Pause of ${formatTime(g.to - g.from)}: cut out of the clip`} />)}
           {segs.map((g, k) => !first(k) && (
             <div key={`split-${k}`} className="tl-split" style={{ left: `${(g.start / dur) * 100}%` }} title={`Drag to move this split (${tcOf(k)})`}
                  onPointerDown={(e) => dragSplit(k, e)} onClick={(e) => e.stopPropagation()} />
@@ -634,9 +662,9 @@ function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file:
                 <span style={{ display: "flex", alignItems: "center", gap: 8 }}><span className="sw" style={{ background: colour(g.block) }} /><span className="faint small">{first(k) ? g.block + 1 : "↳"}</span></span>
                 {first(k)
                   ? <button className="link mono" style={{ color: "var(--tc)", fontSize: 12.5, justifyContent: "flex-start" }} title="Play from here" onClick={() => playAt(g.start)}><Icon name="play" size="sm" />{tcOf(k)}</button>
-                  : <DraftInput mono className="tc-input" value={tcOf(k)} onCommit={(v) => moveSplit(k, timeAtTc(blocks[g.block], parseTc(v) ?? v, fps))} />}
+                  : <DraftInput mono className="tc-input" value={tcOf(k)} onCommit={(v) => moveSplit(k, timeAtTcInRun(blocks[g.block], parseTc(v) ?? v, fps))} />}
                 <span className="mono muted small">{formatTime(g.start)} – {formatTime(endOf(k))}</span>
-                <span className="mono muted small">{formatTime(endOf(k) - g.start)}</span>
+                <span className="mono muted small">{formatTime(clipLength(clipOf(k)))}{clipOf(k).cuts && <span title="Long pauses cut out of the clip"> · {clipOf(k).cuts!.length} cut</span>}</span>
                 <select value={g.song} onChange={(e) => pick(k, e.target.value)}>
                   <option value="">Choose a song…</option>
                   <option value="__new">+ New song</option>
@@ -662,7 +690,7 @@ function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file:
         })}
       </div>
       {!noSongs && missing.length > 0 && (
-        <div className="missing-box"><Icon name="alert" /><div><strong style={{ fontWeight: 500 }}>Not found:</strong> {missing.map(name).join(", ")}<div className="muted small">No block starts at their TC. Pick them for a block, or play to where they start and use “Split here for…”.</div></div></div>
+        <div className="missing-box"><Icon name="alert" /><div><strong style={{ fontWeight: 500 }}>Not found:</strong> {missing.map(name).join(", ")}<div className="muted small">The record doesn’t play their TC. Pick them for a block, or play to where they start and use “Split here for…”.</div></div></div>
       )}
       {isRecord && (
         <>

@@ -107,7 +107,8 @@ function Swatches({ swatches, edit, autoFocus }: { swatches: ColourSwatch[]; edi
   );
 }
 
-export function Media({ song }: { song: Song }) {
+/** A song's images. Clicking one opens it full screen (onOpen, with its path). */
+export function Media({ song, onOpen }: { song: Song; onOpen: (path: string) => void }) {
   const bundle = useStore((s) => s.bundle)!;
   const show = useStore((s) => s.show)!;
   // Each image can be the song's main image (General), and can have a category (an image column: Content, LX…), picked on the image.
@@ -130,7 +131,7 @@ export function Media({ song }: { song: Song }) {
 
   return (
     <div className="stack">
-      {song.hero && <div className="hero-box"><img src={backend.mediaUrl(bundle, song.hero)} alt="" /></div>}
+      {song.hero && <div className="hero-box"><img src={backend.mediaUrl(bundle, song.hero)} alt="" title="Open full screen" onClick={() => onOpen(song.hero!)} /></div>}
       <div className="dropzone-sm">
         {backend.isDesktop ? (song.hero ? "Drop more images on the song's card" : "No images yet. Drop some on the song's card") : "Adding images needs the desktop app"}
         {backend.isDesktop && <button onClick={choose}>Choose images…</button>}
@@ -140,7 +141,7 @@ export function Media({ song }: { song: Song }) {
         <div className="gallery">
           {gallery.map((p) => (
             <figure key={p} className={isHeroImage(song, p) ? "is-hero" : ""}>
-              <img src={backend.mediaUrl(bundle, p)} alt="" />
+              <img src={backend.mediaUrl(bundle, p)} alt="" title="Open full screen" onClick={() => onOpen(p)} />
               <SaveCopy path={`${bundle}/${p}`} compact />
               <figcaption>
                 <span className="name" title={p.split("/").pop()}>{imageLabel(show, p)}</span>

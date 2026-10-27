@@ -26,7 +26,7 @@ export interface StillPick {
   id: string;
   songId: string;
   recordId: string;
-  mark: { in: number; out: number };
+  mark: { in: number; out: number; cuts?: [number, number][] };
   candidates: ThumbCandidate[]; // times are seconds into the record
   replaces?: string; // the still it takes the place of ("Pick best stills" again)
   current?: number; // the candidate the song uses meanwhile (its top frame, filed when lined up)

@@ -20,7 +20,7 @@ import { SaveCopy } from "./SaveCopy";
 import { Colours, FieldSwatches, Media } from "./SongSections";
 import { HeroCrop } from "./HeroCrop";
 import { isGrab, thumbSource, ThumbPicker } from "./ThumbPicker";
-import type { ColumnDef } from "../model/types";
+import type { Clip, ColumnDef } from "../model/types";
 
 type Tab = "overview" | "media" | "comments";
 const SECTION_TABS: Record<string, Tab> = { media: "media", renders: "media", records: "media", audio: "media", comments: "comments" };
@@ -35,7 +35,7 @@ export function SongDrawer() {
   const [tab, setTab] = useState<Tab>(focus && SECTION_TABS[focus] ? SECTION_TABS[focus] : "overview");
   const [optionsFor, setOptionsFor] = useState<string | null>(null); // the list field whose options are open
   const [renaming, setRenaming] = useState<string | null>(null);
-  const [watching, setWatching] = useState<string | null>(null); // the clip or record playing in the viewer, with its comments
+  const [watching, setWatching] = useState<string | null>(null); // the image, clip or record open full screen, with its comments
   const bodyRef = useRef<HTMLDivElement>(null);
   const song = show.songs[songId];
   const openComments = openReviews(show, songId);
@@ -59,11 +59,11 @@ export function SongDrawer() {
     .map((dept) => ({ dept, cols: text.filter((c) => c.dept === dept) }))
     .filter((g) => g.cols.length || g.dept === "COLOUR");
   const source = thumbSource(show, bundle, song);
-  const [picking, setPicking] = useState<string | null>(null);
+  const [picking, setPicking] = useState<{ replace: string | null; clip?: Clip } | null>(null); // the thumbnail being picked from video
   const [cropping, setCropping] = useState(false);
   // A photo that was added (not a frame grabbed from video) is cropped rather than re-picked.
   const photo = song.hero_crop?.src ?? (song.hero && !isGrab(song.hero) ? song.hero : null);
-  const editHero = photo ? () => setCropping(true) : source ? () => setPicking(song.hero!) : null;
+  const editHero = photo ? () => setCropping(true) : source ? () => setPicking({ replace: song.hero! }) : null;
   const set = (colId: string, v: string) => update((s) => setField(s, song.id, colId, v));
   const fieldRow = (c: ColumnDef) => (
     <Fragment key={c.id}>
@@ -159,13 +159,17 @@ export function SongDrawer() {
             <>
               {song.hero && (
                 <div className="preview">
-                  <div className={`im ${editHero ? "pickable" : ""}`} onClick={() => editHero?.()} title={photo ? "Crop the image" : source ? "Choose a different frame" : undefined}>
+                  <div className="im pickable" onClick={() => setWatching(song.hero!)} title="Open full screen">
                     <img src={backend.mediaUrl(bundle, song.hero)} alt="" />
-                    {editHero && <span className="change sm-pill"><Icon name={photo ? "crop" : "image"} size="sm" /> {photo ? "Crop" : "Change"}</span>}
+                    {editHero && (
+                      <button className="change sm-pill" title={photo ? "Crop the image" : "Choose a different frame from the video"} onClick={(e) => { e.stopPropagation(); editHero(); }}>
+                        <Icon name={photo ? "crop" : "image"} size="sm" /> {photo ? "Crop" : "Change thumbnail"}
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
-              {!song.hero && source && <button className="sm" style={{ marginBottom: 12 }} onClick={() => setPicking("")}><Icon name="image" size="sm" /> Pick a thumbnail from the video</button>}
+              {!song.hero && source && <button className="sm" style={{ marginBottom: 12 }} onClick={() => setPicking({ replace: null })}><Icon name="image" size="sm" /> Pick a thumbnail from the video</button>}
               <div className="panel">
                 <div className="label">Song</div>
                 <div className="frow" data-col="tc"><span>TC start</span><DraftInput mono value={song.fields.tc ?? ""} onCommit={(v) => set("tc", v)} /></div>
@@ -208,12 +212,13 @@ export function SongDrawer() {
           {tab === "comments" && <SongComments song={song} />}
           {tab === "media" && (
             <>
-              <div className="panel"><div className="label">Renders &amp; stills</div><Media song={song} /></div>
+              <div className="panel"><div className="label">Renders &amp; stills</div><Media song={song} onOpen={setWatching} /></div>
               <div className="panel">
                 <div className="label">Clips</div>
                 {(song.clips ?? []).length === 0 && songRecords(show, song.id).length === 0 && <p className="muted" style={{ margin: 0 }}>No clips yet. Add a show record on the Media page.</p>}
-                {(song.clips ?? []).map((c) => <ClipRow key={c.path} bundle={bundle} path={c.path} label={`${formatTime(c.in)} – ${formatTime(c.out)} · ${c.source === "auto_tc" ? "from timecode" : "marked by hand"}`}
-                                                        open={reviewsOn(show, c.record_id, c.in, c.out).filter((r) => !r.done).length} onPlay={() => setWatching(c.path)} />)}
+                {(song.clips ?? []).map((c) => <ClipRow key={c.path} bundle={bundle} path={c.path} still={c.still} label={`${formatTime(c.in)} – ${formatTime(c.out)} · ${c.source === "auto_tc" ? "from timecode" : "marked by hand"}`}
+                                                        open={reviewsOn(show, c.record_id, c.in, c.out).filter((r) => !r.done).length} onPlay={() => setWatching(c.path)}
+                                                        onPickThumb={() => setPicking({ replace: c.still ?? null, clip: c })} />)}
                 <RecordList records={songRecords(show, song.id)} empty="" onWatch={setWatching} onRemove={(id) => removeRecordAndMedia(id)} />
                 <div style={{ marginTop: 10 }}><button className="sm" onClick={() => addFiles("video")}><Icon name="plus" size="sm" /> Add a song clip</button></div>
               </div>
@@ -237,19 +242,27 @@ export function SongDrawer() {
         </div>
       </aside>
       {watching && <MediaViewer song={song} start={watching} play onClose={() => setWatching(null)} />}
-      {picking !== null && source && <ThumbPicker song={song} replace={picking || null} onClose={() => setPicking(null)} />}
+      {picking && (picking.clip || source) && <ThumbPicker song={song} replace={picking.replace} clip={picking.clip} onClose={() => setPicking(null)} />}
       {cropping && photo && <HeroCrop song={song} src={photo} onClose={() => setCropping(false)}
-                                      onPickFrame={source ? () => { setCropping(false); setPicking(song.hero!); } : undefined} />}
+                                      onPickFrame={source ? () => { setCropping(false); setPicking({ replace: song.hero! }); } : undefined} />}
     </>
   );
 }
 
-function ClipRow({ bundle, path, label, open: comments, onPlay }: { bundle: string; path: string; label: string; open: number; onPlay: () => void }) {
+function ClipRow({ bundle, path, still, label, open: comments, onPlay, onPickThumb }:
+                 { bundle: string; path: string; still?: string; label: string; open: number; onPlay: () => void; onPickThumb: () => void }) {
   return (
-    <div className="media-row clip-row" style={{ marginBottom: 6, flexWrap: "wrap" }}>
-      <div className="media-main"><strong>{path.split("/").pop()}</strong><span className="muted small">{label}</span></div>
-      <SaveCopy path={`${bundle}/${path}`} video />
-      <button className="sm" title="Play it full screen, with its comments beside it" onClick={onPlay}><Icon name="play" size="sm" /> Play{comments ? <span className="muted"> · {comments} open</span> : null}</button>
+    <div className="media-row clip-row">
+      {still && <img className="clip-thumb" src={backend.mediaUrl(bundle, still)} alt="" title="Play it full screen" onClick={onPlay} />}
+      <div className="media-main">
+        <strong title={path.split("/").pop()}>{path.split("/").pop()}</strong>
+        <span className="muted small">{label}</span>
+        <div className="clip-acts">
+          <button className="sm" title="Play it full screen, with its comments beside it" onClick={onPlay}><Icon name="play" size="sm" /> Play{comments ? <span className="muted"> · {comments} open</span> : null}</button>
+          <button className="sm" title="Pick the frame used as its thumbnail" onClick={onPickThumb}><Icon name="image" size="sm" /> Thumbnail</button>
+          <SaveCopy path={`${bundle}/${path}`} video />
+        </div>
+      </div>
     </div>
   );
 }

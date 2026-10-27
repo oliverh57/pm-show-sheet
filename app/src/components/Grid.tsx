@@ -7,7 +7,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { backend } from "../backend";
-import { cellValue, clipLabel, deptColour, deptLabel, songImage, songImagePaths, continuesFromPrev, fieldSwatches, fieldValue, isFieldColumn, moveSong, setField, toggleStatus, addSong } from "../model/ops";
+import { cellValue, clipLabel, columnClips, deptColour, deptLabel, songImage, songImagePaths, continuesFromPrev, fieldSwatches, fieldValue, isFieldColumn, moveSong, setField, toggleStatus, addSong } from "../model/ops";
 import { swatchFill, swatchText } from "../model/gels";
 import type { ColumnDef, ListName, Show, Song } from "../model/types";
 import { useStore } from "../store";
@@ -43,10 +43,10 @@ interface Drag {
 
 const GRIP_WIDTH = 26;
 
-/** What an image or clip cell shows full screen: its image, or the song's first clip. */
-function mediaIn(song: Song, col: ColumnDef): string | undefined {
+/** What an image or clip cell shows full screen: its image, or the first of its clips. */
+function mediaIn(show: Show, song: Song, col: ColumnDef): string | undefined {
   if (col.type === "image") return songImage(song, col.id);
-  if (col.type === "clip") return song.clips?.[0]?.path;
+  if (col.type === "clip") return columnClips(show, col, song)[0]?.path;
 }
 
 /** The lighting colour columns and colour fields: edited in the colour picker. */
@@ -139,7 +139,7 @@ export function Grid() {
     if (col.type === "tick") update((s) => toggleStatus(s, songId, col.id));
     else if (isColourColumn(col)) { select(songId, col.id); setPicking(`${songId}|${col.id}`); }
     else if (col.type === "image" || col.type === "clip") {
-      const start = mediaIn(show.songs[songId], col);
+      const start = mediaIn(show, show.songs[songId], col);
       if (start) { select(songId, col.id); setViewing({ songId, start }); }
       else focusSong(songId, col.type === "image" ? "renders" : "records");
     } else startEdit(songId, col);
@@ -257,7 +257,7 @@ export function Grid() {
     const cellKey = `${songId}|${col.id}`;
     const isPicking = picking === cellKey;
     const busy = isEditing || isPicking; // clicking the cell again closes it rather than reopening
-    const hasMedia = mediaIn(song, col) !== undefined;
+    const hasMedia = mediaIn(show, song, col) !== undefined;
     const classes = ["cell", `t-${col.type}`, (editable || isColourColumn(col)) && "editable", hasMedia && "viewable", selected && "selected", sticky && "sticky", archived && "archived"]
       .filter(Boolean).join(" ");
     let content: React.ReactNode = null;
@@ -304,7 +304,8 @@ export function Grid() {
         </span>
       ) : null;
     } else if (col.type === "clip") {
-      content = (song.clips ?? []).length ? <span className="clamp" style={{ whiteSpace: "pre-line" }}>{(song.clips ?? []).map((c) => `▶ ${clipLabel(show, c)}`).join("\n")}</span> : null;
+      const clips = columnClips(show, col, song);
+      content = clips.length ? <span className="clamp" style={{ whiteSpace: "pre-line" }}>{clips.map((c) => `▶ ${clipLabel(show, c)}`).join("\n")}</span> : null;
     } else if (col.type === "image") {
       const img = songImage(song, col.id);
       content = img ? <img className="thumb" src={backend.mediaUrl(bundle, img)} alt="" draggable={false} /> : null;

@@ -3,8 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { backend, type ThumbCandidate } from "../backend";
 import { replaceStill } from "../jobs";
-import { clipName } from "../model/ops";
-import type { Show, Song } from "../model/types";
+import { clipLength, clipName } from "../model/ops";
+import type { Clip, Show, Song } from "../model/types";
 import { useStore } from "../store";
 import { Icon } from "./icons";
 import { formatTime } from "./SongDrawer";
@@ -12,10 +12,12 @@ import { useVideoHelpers } from "./videoGestures";
 
 interface Source { path: string; start: number; end: number }
 
+const clipSource = (bundle: string, clip: Clip): Source => ({ path: `${bundle}/${clip.path}`, start: 0, end: clipLength(clip) });
+
 /** The video to take a song's frames from: its clip in the show if it has one, else its stretch of a show record. */
 export function thumbSource(show: Show, bundle: string, song: Song): Source | null {
   const clip = song.clips?.[song.clips.length - 1];
-  if (clip) return { path: `${bundle}/${clip.path}`, start: 0, end: clip.out - clip.in };
+  if (clip) return clipSource(bundle, clip);
   for (const r of show.records ?? []) {
     const m = r.song_marks?.find((x) => x.song_id === song.id);
     if (m) return { path: r.path, start: m.in, end: m.out };
@@ -27,11 +29,12 @@ export function thumbSource(show: Show, bundle: string, song: Song): Source | nu
 /** Is this one of the stills the app grabbed from video (so a better frame can be picked)? */
 export const isGrab = (path: string) => path.startsWith("media/grabs/");
 
-export function ThumbPicker({ song, replace, onClose }: { song: Song; replace: string | null; onClose: () => void }) {
+/** `clip` picks that clip's still (from its own video); without one, the song's from its latest clip or record. */
+export function ThumbPicker({ song, replace, clip, onClose }: { song: Song; replace: string | null; clip?: Clip; onClose: () => void }) {
   const show = useStore((s) => s.show)!;
   const bundle = useStore((s) => s.bundle)!;
   const { update, toast } = useStore.getState();
-  const source = thumbSource(show, bundle, song)!;
+  const source = clip ? clipSource(bundle, clip) : thumbSource(show, bundle, song)!;
   const [suggestions, setSuggestions] = useState<ThumbCandidate[] | null>(null);
   const [t, setT] = useState(source.start + Math.min(5, (source.end - source.start) / 2));
   const [saving, setSaving] = useState(false);
@@ -53,7 +56,11 @@ export function ThumbPicker({ song, replace, onClose }: { song: Song; replace: s
     setSaving(true);
     try {
       const still = await backend.grabFrame(bundle, source.path, time, clipName(show, song.id));
-      update((s) => replaceStill(s, song.id, replace, still));
+      update((s) => {
+        replaceStill(s, song.id, replace, still);
+        const c = clip && s.songs[song.id].clips?.find((x) => x.path === clip.path);
+        if (c) c.still = still;
+      });
       toast("Thumbnail updated");
       onClose();
     } catch (e) {

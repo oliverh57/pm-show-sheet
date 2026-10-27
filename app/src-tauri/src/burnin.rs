@@ -2,6 +2,9 @@
 //! record's TC and rate ("● 09:01:42:19   25 fps"). The green dot is lit while the clip has TC; outside
 //! the record's TC blocks (pre-show, gaps between songs) the TC shows as dashes rather than made up.
 //!
+//! A clip with long pauses cut out of it shows "GAP CUT  2:14" above the card for a few seconds after each jump
+//! (with no card when the TC isn't burned in).
+//!
 //! Homebrew's ffmpeg is built without freetype, so it has no drawtext. Instead every frame of the card is
 //! drawn here, at the TC rate, and piped into ffmpeg as raw RGBA to overlay on the clip.
 
@@ -20,6 +23,13 @@ pub struct BurnIn {
     pub song: Option<String>,
     #[serde(default)]
     pub number: Option<String>,
+    /// Draw the TC card. Without it only the GAP CUT notices are drawn.
+    #[serde(default = "yes")]
+    pub tc: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl BurnIn {
@@ -59,6 +69,14 @@ const CARD: [f32; 3] = [0.055, 0.055, 0.063];
 const CARD_ALPHA: f32 = 0.78;
 const WHITE: [f32; 3] = [1.0, 1.0, 1.0];
 const GREEN: [f32; 3] = [0.18, 0.88, 0.29];
+const AMBER: [f32; 3] = [1.0, 0.76, 0.18];
+
+// The GAP CUT notice: a pill above the card, shown from each jump for NOTICE_SECS, fading out over the last NOTICE_FADE.
+const NOTICE_SIZE: f32 = 15.0;
+const NOTICE_PAD: (f32, f32) = (14.0, 9.0); // sides, top and bottom
+const NOTICE_GAP: f32 = 10.0; // between the notice and the card
+const NOTICE_SECS: f64 = 3.0;
+const NOTICE_FADE: f64 = 0.5;
 
 const SANS: &str = "/System/Library/Fonts/HelveticaNeue.ttc";
 const SANS_REGULAR: u32 = 0; // faces in HelveticaNeue.ttc
@@ -168,6 +186,18 @@ impl Canvas {
         self.round_rect(cx - r, cy - r, r * 2.0, r * 2.0, r, colour, alpha);
     }
 
+    /// Lay `other` over this canvas with its top-left corner at (x, y), at `alpha`.
+    fn paste(&mut self, other: &Canvas, x: usize, y: usize, alpha: f32) {
+        for oy in 0..other.h {
+            for ox in 0..other.w {
+                let i = (oy * other.w + ox) * 4;
+                let a = other.px[i + 3] as f32 / 255.0 * alpha;
+                let colour = [0, 1, 2].map(|k| other.px[i + k] as f32 / 255.0);
+                self.blend(x + ox, y + oy, colour, a);
+            }
+        }
+    }
+
     /// Draw a rasterised glyph with its pen position at `x` on `baseline`.
     fn glyph(&mut self, m: &Metrics, bitmap: &[u8], x: f32, baseline: f32, colour: [f32; 3], alpha: f32) {
         let left = (x + m.xmin as f32).round() as i64;
@@ -194,8 +224,14 @@ impl Canvas {
 pub struct Clock {
     blocks: Vec<TcBlock>,
     fps: f64,
-    start: f64,
+    /// The stretches of the record the clip is made of, in order: start and length in seconds.
+    parts: Vec<(f64, f64)>,
     frames: usize,
+    tc: bool,
+    /// A GAP CUT notice for each jump in the clip, with the clip time it's shown from.
+    notices: Vec<(f64, Canvas)>,
+    card_w: usize,
+    card_h: usize,
     /// The card with everything but the dot and the TC, which change from frame to frame.
     base: Canvas,
     digits: HashMap<char, (Metrics, Vec<u8>)>,
@@ -210,8 +246,9 @@ pub struct Clock {
 }
 
 impl Clock {
-    /// The card for a clip `length` seconds long, cut from `start` seconds into the record, `clip_height` pixels tall.
-    pub fn new(burn: BurnIn, start: f64, length: f64, clip_height: u32) -> Result<Clock, String> {
+    /// The card for a clip made of `parts` of the record (start and length in seconds; a jump between each, where a
+    /// pause was cut out), `clip_height` pixels tall.
+    pub fn new(burn: BurnIn, parts: Vec<(f64, f64)>, clip_height: u32) -> Result<Clock, String> {
         let s = clip_height as f32 / 720.0;
         let fps = burn.rate();
         let label = Face::load(SANS, SANS_MEDIUM, LABEL_SIZE * s)?;
@@ -234,6 +271,26 @@ impl Clock {
         let width = (top_w.max(bottom_w) + PAD.0 * 2.0 * s).ceil() as usize;
         let height = ((PAD.1 + TC_LINE + PAD.2) * s + top_h).ceil() as usize;
 
+        // A notice for each jump, saying how long a pause was cut there.
+        let notice = Face::load(SANS, SANS_MEDIUM, NOTICE_SIZE * s)?;
+        let mut at = 0.0;
+        let mut notices = Vec::new();
+        for pair in parts.windows(2) {
+            let ((a, len), (b, _)) = (pair[0], pair[1]);
+            at += len;
+            let gap = (b - a - len).max(0.0).round() as u64;
+            let text = format!("GAP CUT  {}:{:02}", gap / 60, gap % 60);
+            let (w, h) = ((notice.width(&text, tracking) + NOTICE_PAD.0 * 2.0 * s).ceil(), ((NOTICE_SIZE + NOTICE_PAD.1 * 2.0) * s).ceil());
+            let mut pill = Canvas::new(w as usize, h as usize);
+            pill.round_rect(0.0, 0.0, w, h, h / 2.0, AMBER, 1.0);
+            pill.text(&notice, &text, NOTICE_PAD.0 * s, (h / 2.0 + notice.cap() / 2.0).round(), tracking, CARD, 1.0);
+            notices.push((at, pill));
+        }
+        let (card_w, card_h) = if burn.tc { (width, height) } else { (0, 0) };
+        let notice_h = notices.first().map_or(0, |(_, p)| p.h + if burn.tc { (NOTICE_GAP * s).round() as usize } else { 0 });
+        let canvas_w = notices.iter().map(|(_, p)| p.w).fold(card_w, usize::max);
+        let length: f64 = parts.iter().map(|(_, len)| len).sum();
+
         let mut base = Canvas::new(width, height);
         base.round_rect(0.0, 0.0, width as f32, height as f32, RADIUS * s, CARD, CARD_ALPHA);
         let left = PAD.0 * s;
@@ -255,16 +312,20 @@ impl Clock {
         Ok(Clock {
             blocks: burn.blocks,
             fps,
-            start,
+            parts,
             frames: (length * real_rate(fps)).ceil() as usize + 1,
+            tc: burn.tc,
+            notices,
+            card_w,
+            card_h,
             base,
             digits: "0123456789:;-".chars().map(|c| (c, mono.font.rasterize(c, mono.px))).collect(),
             tc_at: tc_layout.iter().map(|(_, x)| *x).collect(),
             tc_x: left + (DOT + GAP) * s,
             tc_baseline: (row + mono.cap() / 2.0).round(),
             dot: (left + DOT * s / 2.0, row, DOT * s / 2.0),
-            width,
-            height,
+            width: canvas_w,
+            height: card_h + notice_h,
             margin: ((MARGIN.0 * s).round() as usize, (MARGIN.1 * s).round() as usize),
         })
     }
@@ -288,10 +349,40 @@ impl Clock {
         self.frames
     }
 
-    /// Frame `i` of the card, as RGBA.
+    /// Seconds into the record at `t` seconds into the clip.
+    fn record_time(&self, t: f64) -> f64 {
+        let mut left = t;
+        for &(start, len) in &self.parts {
+            if left < len {
+                return start + left;
+            }
+            left -= len;
+        }
+        self.parts.last().map_or(t, |(start, len)| start + len + left)
+    }
+
+    /// Frame `i` of the overlay, as RGBA: the card, with a GAP CUT notice above it just after a jump.
     pub fn frame(&self, i: usize) -> Vec<u8> {
+        let t = i as f64 / real_rate(self.fps);
+        let notice = self.notices.iter().find(|(at, _)| t >= *at && t < at + NOTICE_SECS);
+        if self.notices.is_empty() && self.tc {
+            return self.card(t).px;
+        }
+        let mut out = Canvas::new(self.width, self.height);
+        if self.tc {
+            out.paste(&self.card(t), self.width - self.card_w, self.height - self.card_h, 1.0);
+        }
+        if let Some((at, pill)) = notice {
+            let fade = ((at + NOTICE_SECS - t) / NOTICE_FADE).min(1.0) as f32;
+            out.paste(pill, self.width - pill.w, 0, fade);
+        }
+        out.px
+    }
+
+    /// The TC card at `t` seconds into the clip.
+    fn card(&self, t: f64) -> Canvas {
         let mut card = self.base.clone();
-        let tc = tc_at(&self.blocks, self.fps, self.start + i as f64 / real_rate(self.fps));
+        let tc = tc_at(&self.blocks, self.fps, self.record_time(t));
         let (text, alpha, dot, dot_alpha) = match &tc {
             Some(tc) => (tc.as_str(), 1.0, GREEN, 1.0),
             None => (NO_TC, 0.35, WHITE, 0.3),
@@ -303,7 +394,7 @@ impl Clock {
                 card.glyph(m, bitmap, self.tc_x + x, self.tc_baseline, WHITE, alpha);
             }
         }
-        card.px
+        card
     }
 }
 
@@ -375,15 +466,15 @@ mod tests {
 
     #[test]
     fn a_misread_drop_frame_rate_is_worked_out_from_the_blocks() {
-        let burn = |tc_end: &str| BurnIn { fps: 29.97, blocks: vec![TcBlock { file_start: 10.0, file_end: 70.04, tc_start: "09:00:00:00".into(), tc_end: tc_end.into() }], song: None, number: None };
+        let burn = |tc_end: &str| BurnIn { fps: 29.97, blocks: vec![TcBlock { file_start: 10.0, file_end: 70.04, tc_start: "09:00:00:00".into(), tc_end: tc_end.into() }], song: None, number: None, tc: true };
         assert_eq!(burn("09:01:00:00").rate(), 25.0);
         assert_eq!(burn("09:00:59;29").rate(), 29.97);
     }
 
     #[test]
     fn draws_the_card_with_tc_only_inside_a_block() {
-        let burn = BurnIn { fps: 25.0, blocks: vec![block(10.0, 20.0, "01:00:00:00")], song: Some("Good Lies".into()), number: Some("03".into()) };
-        let Ok(clock) = Clock::new(burn, 5.0, 10.0, 720) else { return };
+        let burn = BurnIn { fps: 25.0, blocks: vec![block(10.0, 20.0, "01:00:00:00")], song: Some("Good Lies".into()), number: Some("03".into()), tc: true };
+        let Ok(clock) = Clock::new(burn, vec![(5.0, 10.0)], 720) else { return };
         assert_eq!(clock.frames(), 251);
         let green = |px: &[u8]| px.chunks(4).filter(|p| p[3] > 200 && p[1] > 180 && p[0] < 120).count();
         let before = clock.frame(0);
@@ -393,6 +484,28 @@ mod tests {
         let during = clock.frame(5 * 25);
         assert!(green(&during) > 30, "no green dot");
         assert_ne!(before, during);
+    }
+
+    #[test]
+    fn says_gap_cut_after_each_jump() {
+        let amber = |px: &[u8]| px.chunks(4).filter(|p| p[3] > 200 && p[0] > 230 && p[1] > 160 && p[2] < 90).count();
+        let blocks = vec![block(0.0, 60.0, "01:00:00:00"), block(200.0, 260.0, "01:01:00:00")];
+        // 40 s, a 160 s pause cut, then 30 s more.
+        let burn = |tc| BurnIn { fps: 25.0, blocks: blocks.clone(), song: Some("Good Lies".into()), number: None, tc };
+        let Ok(clock) = Clock::new(burn(true), vec![(20.0, 40.0), (200.0, 30.0)], 720) else { return };
+        assert_eq!(clock.frames(), 70 * 25 + 1);
+        assert_eq!(clock.frame(0).len(), clock.width * clock.height * 4);
+        assert_eq!(amber(&clock.frame(39 * 25)), 0, "a notice before the jump");
+        assert!(amber(&clock.frame(41 * 25)) > 100, "no notice after the jump");
+        assert_eq!(amber(&clock.frame(45 * 25)), 0, "the notice stays up");
+        assert_eq!(clock.record_time(41.0), 201.0);
+        // TC carries on across the jump, from where it stopped.
+        assert_eq!(tc_at(&clock.blocks, 25.0, clock.record_time(40.0)).as_deref(), Some("01:01:00:00"));
+
+        let Ok(bare) = Clock::new(burn(false), vec![(20.0, 40.0), (200.0, 30.0)], 720) else { return };
+        assert!(bare.width < clock.width || bare.height < clock.height);
+        assert!(bare.frame(0).iter().all(|&b| b == 0), "a card with the TC off");
+        assert!(amber(&bare.frame(41 * 25)) > 100);
     }
 
     #[test]
