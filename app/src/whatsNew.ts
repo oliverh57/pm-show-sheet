@@ -7,6 +7,16 @@ export interface ReleaseNotes {
 }
 
 export const WHATS_NEW: Record<string, ReleaseNotes> = {
+  "0.5.3": {
+    summary: "Clips play inside the show deck, and rehearsal stops are cut out of clips.",
+    items: [
+      "Song slides in the show deck play their clips right on the slide, next to the pictures, instead of linking to Drive.",
+      "Long notes on a slide no longer run off the bottom: colours sit side by side, and the notes get smaller to fit.",
+      "When a rehearsal stops and carries on, or rewinds to go again, it's still one take. Pauses over 15 seconds are cut out of the clip, which shows GAP CUT where it jumps.",
+      "Each picture column has its own clip column in the Sheet and on the slide, like SONG CLIP and LX CLIP.",
+      "Click a picture in a song to see it full screen.",
+    ],
+  },
   "0.5.2": {
     summary: "ffmpeg installs from inside the app, and macOS asks for your keychain password only once.",
     items: [
