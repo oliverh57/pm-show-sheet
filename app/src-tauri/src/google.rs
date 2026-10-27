@@ -314,8 +314,10 @@ pub async fn google_sign_out(app: AppHandle) -> Result<(), String> {
 // --- API access for the sync engine ---------------------------------------------
 
 /// The current access token and when it stops working, plus the refresh token once it's been read.
+/// The third lock lets only one call refresh at a time: the frontend fires Google calls in parallel, and
+/// each one reading the keychain on its own meant one password prompt per call.
 #[derive(Default)]
-pub struct TokenCache(Mutex<Option<(String, Instant)>>, Mutex<Option<String>>);
+pub struct TokenCache(Mutex<Option<(String, Instant)>>, Mutex<Option<String>>, tauri::async_runtime::Mutex<()>);
 
 #[derive(Deserialize)]
 struct Refreshed {
@@ -329,12 +331,20 @@ fn has_drive_scope(scope: &str) -> bool {
     scope.split_whitespace().any(|s| s == DRIVE_SCOPE)
 }
 
+fn cached_access(cache: &TokenCache) -> Option<String> {
+    let (token, until) = cache.0.lock().unwrap().clone()?;
+    (until > Instant::now() + Duration::from_secs(60)).then_some(token)
+}
+
 pub(crate) async fn access_token(app: &AppHandle) -> Result<String, String> {
     let cache = app.state::<TokenCache>();
-    if let Some((token, until)) = cache.0.lock().unwrap().clone() {
-        if until > Instant::now() + Duration::from_secs(60) {
-            return Ok(token);
-        }
+    if let Some(token) = cached_access(&cache) {
+        return Ok(token);
+    }
+    let _refreshing = cache.2.lock().await;
+    // Another call may have refreshed while this one waited.
+    if let Some(token) = cached_access(&cache) {
+        return Ok(token);
     }
     let client = client(app).ok_or("Google sign-in isn't set up on this Mac")?;
     let refresh = load_refresh(app).ok_or_else(|| "Sign in to Google again".to_string())?;
