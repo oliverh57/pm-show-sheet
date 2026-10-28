@@ -7,6 +7,17 @@ export interface ReleaseNotes {
 }
 
 export const WHATS_NEW: Record<string, ReleaseNotes> = {
+  "0.5.4": {
+    summary: "Control how much show media this Mac keeps, and change a song's thumbnail from the song.",
+    items: [
+      "Settings shows how much space show media takes up on this Mac. You can set a maximum: when it's full, the media used longest ago is deleted to make room. It stays in Google Drive.",
+      "Each show in All shows can download all its media to this Mac, or make it online only.",
+      "Change a song's thumbnail from its Media tab: pick another frame from the video, or choose an image file instead.",
+      "Picking another frame works on a Mac without the show record too: the frames come from the song's clip.",
+      "In the import timeline, a song can be dragged out past where the timecode starts or stops, to keep more of the record.",
+      "Stills that no song uses any more can be deleted from the Media page.",
+    ],
+  },
   "0.5.3": {
     summary: "Clips play inside the show deck, and rehearsal stops are cut out of clips.",
     items: [
