@@ -2,8 +2,10 @@
 import { useEffect, useRef, useState } from "react";
 import { backend } from "../backend";
 import { type Gel, searchGels, swatchFill } from "../model/gels";
-import { addImages, categories, deptCategory, ensureCategory, fieldSwatches, GENERAL, imageCategory, imageLabel, isHeroImage, MAX_SWATCHES, setHero, setImageCategory } from "../model/ops";
+import { addImages, categories, deptCategory, ensureCategory, fieldSwatches, GENERAL, imageCategory, imageLabel, isHeroImage, MAX_SWATCHES, replaceImage, setHero, setImageCategory } from "../model/ops";
 import { CategoriesDialog } from "./Categories";
+import { useFileStates } from "./CloudFiles";
+import { repickStill } from "../jobs";
 import type { ColourSwatch, Song } from "../model/types";
 import { deleteSongImage } from "../library";
 import { useStore } from "../store";
@@ -117,6 +119,32 @@ export function Media({ song, onOpen }: { song: Song; onOpen: (path: string) => 
   const update = useStore((s) => s.update);
   const [error, setError] = useState<string | null>(null);
   const gallery = song.gallery ?? (song.hero ? [song.hero] : []);
+  const recordOf = (p: string) => (show.records ?? []).find((r) => r.stills?.includes(p));
+  const [states] = useFileStates([...new Set(gallery.flatMap((p) => recordOf(p)?.path ?? []))]);
+  // A still from a record: another frame can be picked from the record when it's on this Mac and the song's marked in
+  // it, else from the song's clip of it.
+  const frameSource = (p: string) => {
+    const r = recordOf(p);
+    return r && ((states[r.path] !== "missing" && (r.song_marks ?? []).some((m) => m.song_id === song.id)) || (song.clips ?? []).some((c) => c.record_id === r.id)) ? r : undefined;
+  };
+
+  // Once another frame's picked, back to this song's Media tab, over the page it was opened from.
+  const backHere = () => {
+    const { view, setView, focusSong } = useStore.getState();
+    return () => { setView(view); focusSong(song.id, "media"); };
+  };
+  /** Put an image file someone chooses in this image's place. */
+  async function replaceFromFile(old: string) {
+    setError(null);
+    try {
+      const [path] = await backend.chooseFiles("image", false);
+      if (!path) return;
+      const rel = await backend.importMedia(bundle, path, "renders");
+      update((s) => replaceImage(s, song.id, old, rel));
+    } catch (e) {
+      setError(String(e));
+    }
+  }
 
   async function choose() {
     setError(null);
@@ -143,6 +171,12 @@ export function Media({ song, onOpen }: { song: Song; onOpen: (path: string) => 
             <figure key={p} className={isHeroImage(song, p) ? "is-hero" : ""}>
               <img src={backend.mediaUrl(bundle, p)} alt="" title="Open full screen" onClick={() => onOpen(p)} />
               <SaveCopy path={`${bundle}/${p}`} compact />
+              {backend.isDesktop && (() => {
+                // A still from a video picks another frame (the thumbnail picker); any other image is swapped for an image file.
+                const r = frameSource(p);
+                return r ? <button className="icon change-thumb" title={`Change the thumbnail: pick another frame from ${r.name}`} onClick={() => repickStill(bundle, r, song.id, p, backHere())}><Icon name="camera" size="sm" /></button>
+                  : <button className="icon change-thumb" title="Change the picture: choose an image file to use instead" onClick={() => replaceFromFile(p)}><Icon name="image" size="sm" /></button>;
+              })()}
               <figcaption>
                 <span className="name" title={p.split("/").pop()}>{imageLabel(show, p)}</span>
                 {isHeroImage(song, p) ? <span className="pill" title="The song's main image: General (the SONG IMAGE column), its card and slide">MAIN</span>

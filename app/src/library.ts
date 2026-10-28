@@ -7,7 +7,7 @@ import { findShows, SHOW_EXT, summaryProps } from "./drive/list";
 import { openFromDrive } from "./drive/live";
 import { refreshManifest, trashMedia } from "./drive/media";
 import { readManifest, showDir, syncShow, updateManifest } from "./drive/show";
-import { bundleName, clipName, fileName, migrate, newShow, orphanRecordIds, recordMedia, removeImage, removeRecord, removeRecordStills } from "./model/ops";
+import { bundleName, clipName, fileName, migrate, newShow, orphanRecordIds, recordMedia, removeImage, removeRecord, removeRecordStill, removeRecordStills } from "./model/ops";
 import type { Show } from "./model/types";
 import { sweepShowsDaily } from "./storage";
 import { useStore } from "./store";
@@ -144,6 +144,19 @@ export async function deleteRecordStills(id: string): Promise<void> {
   update((s) => { removeRecordStills(s, id); });
   try {
     await trashMedia(bundle, stills);
+  } catch (e) {
+    toast(message(e));
+  }
+}
+
+/** Delete a still made from a record that no song uses any more (after asking): off the record, and to the bin. */
+export async function deleteRecordStill(id: string, path: string): Promise<void> {
+  const { show, bundle, update, toast } = useStore.getState();
+  if (!show || !bundle || !(await backend.confirm(`Delete “${fileName(path)}”? No song uses it. The file moves to the bin.`))) return;
+  update((s) => removeRecordStill(s, id, path));
+  if (usedPaths(useStore.getState().show!).has(path)) return;
+  try {
+    await trashMedia(bundle, [path]);
   } catch (e) {
     toast(message(e));
   }

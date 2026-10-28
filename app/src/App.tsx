@@ -21,6 +21,7 @@ import { addImages, deptCategory, ensureCategory, extension, keepResolvedDays, r
 import { useAdoptWatchFolders } from "./watchFolders";
 import { useStore, type View } from "./store";
 import { useAutoUpdate } from "./updates";
+import { applyCacheLimit } from "./storage";
 import { useGoogleSync } from "./google/sync";
 import { isOffline, pushShow, useDriveLive } from "./drive/live";
 
@@ -44,6 +45,7 @@ export default function App() {
   useDriveLive();
   useAdoptWatchFolders();
   useTidyResolved();
+  useEffect(() => { applyCacheLimit().catch(() => {}); }, []);
 
   if (!authChecked) return null;
   if (!user) return <div className="app"><UpdateBar /><WhatsNew /><SignIn /></div>;

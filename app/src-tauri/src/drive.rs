@@ -12,8 +12,9 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tauri::{AppHandle, Manager};
 use tokio::sync::Semaphore;
 
@@ -29,6 +30,10 @@ const FETCH_WAIT: Duration = Duration::from_secs(300);
 static APP: OnceLock<AppHandle> = OnceLock::new();
 static DOWNLOADS: Semaphore = Semaphore::const_new(6);
 static FETCHING: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
+/// The most the shows folder may take up, in bytes (0: no limit), from the app's settings (drive_set_cache_limit).
+static CACHE_LIMIT: AtomicU64 = AtomicU64::new(0);
+/// One trim at a time.
+static TRIMMING: Mutex<()> = Mutex::new(());
 
 fn err<E: std::fmt::Display>(context: &str) -> impl Fn(E) -> String + '_ {
     move |e| format!("{context}: {e}")
@@ -177,6 +182,128 @@ pub fn drive_forget(app: AppHandle, bundle: String) -> Result<(), String> {
         return Err("That isn't one of the app's show copies".into());
     }
     if show.exists() { fs::remove_dir_all(&show).map_err(err("remove the show's copy")) } else { Ok(()) }
+}
+
+/// Every show copied to this Mac (its folder in the shows folder), opened lately or not.
+#[tauri::command]
+pub fn drive_cached_shows(app: AppHandle) -> Vec<String> {
+    let Some(root) = cache_root(&app) else { return vec![] };
+    let Ok(entries) = fs::read_dir(&root) else { return vec![] };
+    entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()).map(|p| p.to_string_lossy().to_string()).collect()
+}
+
+/// Bytes the shows folder takes up on this Mac.
+#[tauri::command]
+pub async fn drive_cache_size(app: AppHandle) -> u64 {
+    let Some(root) = cache_root(&app) else { return 0 };
+    tauri::async_runtime::spawn_blocking(move || dir_size(&root)).await.unwrap_or(0)
+}
+
+fn dir_size(dir: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(dir) else { return 0 };
+    entries.flatten().map(|e| match e.file_type() {
+        Ok(t) if t.is_dir() => dir_size(&e.path()),
+        Ok(t) if t.is_file() => e.metadata().map(|m| m.len()).unwrap_or(0),
+        _ => 0,
+    }).sum()
+}
+
+/// Space on this Mac: what the shows folder takes up, and the size of the disk it's on and what's free there, in bytes.
+#[derive(serde::Serialize)]
+pub struct Storage {
+    cache: u64,
+    total: u64,
+    free: u64,
+}
+
+#[tauri::command]
+pub async fn drive_storage(app: AppHandle) -> Result<Storage, String> {
+    let root = cache_root(&app).ok_or("no app data folder")?;
+    fs::create_dir_all(&root).map_err(err("create the shows folder"))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let (total, free) = disk_space(&root);
+        Storage { cache: dir_size(&root), total, free }
+    })
+    .await
+    .map_err(err("measure storage"))
+}
+
+/// The size of the disk holding `path`, and the space free on it (to apps), in bytes. Zeros if it can't be read.
+fn disk_space(path: &Path) -> (u64, u64) {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) else { return (0, 0) };
+    let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut s) } != 0 {
+        return (0, 0);
+    }
+    let block = s.f_frsize as u64;
+    (s.f_blocks as u64 * block, s.f_bavail as u64 * block)
+}
+
+/// Set the most the shows folder may take up (0: no limit), and trim it to that now. Returns the bytes freed.
+#[tauri::command]
+pub async fn drive_set_cache_limit(app: AppHandle, bytes: u64) -> u64 {
+    CACHE_LIMIT.store(bytes, Ordering::Relaxed);
+    let Some(root) = cache_root(&app) else { return 0 };
+    tauri::async_runtime::spawn_blocking(move || trim_cache(&root, bytes, None)).await.unwrap_or(0)
+}
+
+/// Over `limit` bytes, delete the shows folder's least recently used media until it's under: only files that are in
+/// Google Drive (in their show's manifest), so they download again when they're shown. Never `keep` (a file just
+/// downloaded) or one downloading. Returns the bytes freed.
+fn trim_cache(root: &Path, limit: u64, keep: Option<&Path>) -> u64 {
+    if limit == 0 {
+        return 0;
+    }
+    let _one = TRIMMING.lock().unwrap_or_else(|e| e.into_inner());
+    let total = dir_size(root);
+    if total <= limit {
+        return 0;
+    }
+    let busy = FETCHING.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default();
+    let mut files: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
+    for show in fs::read_dir(root).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+        let manifest: Value = fs::read_to_string(show.join(MANIFEST)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
+        let Some(listed) = manifest["files"].as_object() else { continue };
+        for rel in listed.keys() {
+            let p = Path::new(rel);
+            if !rel.starts_with("media/") || p.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+                continue;
+            }
+            let path = show.join(p);
+            if keep == Some(path.as_path()) || busy.contains(&path) {
+                continue;
+            }
+            let Ok(m) = fs::metadata(&path) else { continue };
+            if !m.is_file() {
+                continue;
+            }
+            // Last used: last read, or downloaded if that's later.
+            let used = [m.accessed(), m.modified()].into_iter().flatten().max().unwrap_or(SystemTime::UNIX_EPOCH);
+            files.push((used, m.len(), path));
+        }
+    }
+    files.sort_by_key(|f| f.0);
+    let over = total - limit;
+    let mut freed = 0;
+    for (_, len, path) in files {
+        if freed >= over {
+            break;
+        }
+        if fs::remove_file(&path).is_ok() {
+            freed += len;
+        }
+    }
+    freed
+}
+
+/// Open the shows folder in Finder.
+#[tauri::command]
+pub fn drive_open_cache(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let root = cache_root(&app).ok_or("no app data folder")?;
+    fs::create_dir_all(&root).map_err(err("create the shows folder"))?;
+    app.opener().open_path(root.to_string_lossy(), None::<&str>).map_err(err("open the shows folder"))
 }
 
 /// Upload a file to Drive: a new file in `parent`, or new content for `file_id`. `properties` are set on it too.
@@ -344,6 +471,12 @@ async fn fetch(app: &AppHandle, path: &Path) -> Result<(), String> {
     }
     .await;
     FETCHING.lock().unwrap().get_or_insert_with(HashSet::new).remove(path);
+    // Make room: the least recently used media goes once the shows folder is over its limit.
+    let limit = CACHE_LIMIT.load(Ordering::Relaxed);
+    if result.is_ok() && limit > 0 {
+        let keep = path.to_path_buf();
+        tauri::async_runtime::spawn_blocking(move || trim_cache(&root, limit, Some(&keep)));
+    }
     result
 }
 
@@ -387,6 +520,36 @@ pub async fn drive_fetch(app: AppHandle, bundle: String, paths: Vec<String>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trims_the_least_recently_used_media_in_drive() {
+        let root = std::env::temp_dir().join(format!("pm-trim-{}", std::process::id()));
+        let media = root.join("show1/media/clips");
+        fs::create_dir_all(&media).unwrap();
+        let listed = serde_json::json!({ "files": { "media/clips/old.mp4": {}, "media/clips/mid.mp4": {}, "media/clips/new.mp4": {}, "media/../x": {} } });
+        fs::write(root.join("show1").join(MANIFEST), listed.to_string()).unwrap();
+        let now = SystemTime::now();
+        for (name, age) in [("old.mp4", 300), ("mid.mp4", 200), ("new.mp4", 100), ("uploading.mp4", 400)] {
+            let f = fs::File::create(media.join(name)).unwrap();
+            f.set_len(1000).unwrap();
+            let at = now - Duration::from_secs(age);
+            f.set_times(fs::FileTimes::new().set_accessed(at).set_modified(at)).unwrap();
+        }
+        // 4000 bytes of media (plus the manifest) under a 2500-byte limit: the two oldest files in Drive go.
+        assert_eq!(trim_cache(&root, 2500, None), 2000);
+        assert!(!media.join("old.mp4").exists() && !media.join("mid.mp4").exists());
+        assert!(media.join("new.mp4").exists() && media.join("uploading.mp4").exists());
+        assert_eq!(trim_cache(&root, 0, None), 0);
+        // A file just downloaded stays, however old.
+        assert_eq!(trim_cache(&root, 1500, Some(&media.join("new.mp4"))), 0);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn measures_the_disk() {
+        let (total, free) = disk_space(&std::env::temp_dir());
+        assert!(total > 0 && free > 0 && free <= total);
+    }
 
     #[test]
     fn drive_ids_are_checked() {

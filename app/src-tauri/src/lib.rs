@@ -546,7 +546,10 @@ async fn frame_grab(bundle: String, source: String, time: f64, name: String) -> 
             .output()
             .map_err(err("run ffmpeg"))?;
         if !output.status.success() || !dir.join(&file).exists() {
-            return Err("ffmpeg couldn't grab that frame".into());
+            // Say why: ffmpeg's last line, or (no picture written) that the time is past the end of the video.
+            let why = String::from_utf8_lossy(&output.stderr).lines().last().unwrap_or("").trim().to_string();
+            let why = if why.is_empty() { format!("nothing at {time:.2}s") } else { why };
+            return Err(format!("ffmpeg couldn't grab that frame ({why})"));
         }
         Ok(format!("media/grabs/{file}"))
     })
@@ -617,7 +620,8 @@ pub fn run() {
             thumbs::thumb_candidates, stream::media_server,
             google::google_client_configured, google::google_set_client, google::google_sign_in,
             google::google_current_user, google::google_sign_out, google::google_api, google::google_upload,
-            drive::drive_cache_root, drive::drive_download, drive::drive_upload, drive::drive_fetch, drive::paths_exist, drive::drive_evict, drive::drive_forget
+            drive::drive_cache_root, drive::drive_download, drive::drive_upload, drive::drive_fetch, drive::paths_exist, drive::drive_evict, drive::drive_forget,
+            drive::drive_cached_shows, drive::drive_cache_size, drive::drive_open_cache, drive::drive_storage, drive::drive_set_cache_limit
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

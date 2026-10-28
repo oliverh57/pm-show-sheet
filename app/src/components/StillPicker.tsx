@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import { backend } from "../backend";
 import { pickStill } from "../jobs";
-import { categoryName, guessRecordLabel } from "../model/ops";
+import { categoryName, clipTimeAt, guessRecordLabel } from "../model/ops";
 import type { SourceRecord } from "../model/types";
 import { type StillPick, useStore } from "../store";
 import { Icon } from "./icons";
@@ -24,7 +24,8 @@ export function StillPicker() {
   function choose(time: number) {
     if (!p || p.saving) return;
     setAt((sorted[i + 1] ?? sorted[i - 1])?.id ?? null);
-    pickStill(bundle, p.id, time);
+    // Back to it if it couldn't be saved, rather than leaving someone on the next song.
+    pickStill(bundle, p.id, time).then((ok) => { if (!ok) setAt(p.id); });
   }
   const go = (d: number) => sorted[i + d] && setAt(sorted[i + d].id);
 
@@ -75,6 +76,7 @@ export function StillPicker() {
         ))}
       </div>
       <p className="muted small" style={{ margin: "10px 0 0" }}>Click the best frame: it's saved full size in the record's category and the next song comes up.{p.replaces && !p.auto ? "" : " Until you pick, the song uses the top frame."}</p>
+      {p.clip && <p className="muted small" style={{ margin: "6px 0 0" }}>{record?.name ?? "The record"} isn't on this Mac, so these frames come from the song's clip of it{song?.clips?.find((c) => c.path === p.clip)?.burn_tc ? ", with its TC drawn in" : ""}.</p>}
       {record && <Scrubber key={p.id} pick={p} record={record} onUse={choose} />}
     </div>
   );
@@ -86,16 +88,19 @@ function Scrubber({ pick, record, onUse }: { pick: StillPick; record: SourceReco
   const [t, setT] = useState(pick.current ?? pick.candidates[0]?.time ?? lo);
   const [failed, setFailed] = useState(false);
   const video = useRef<HTMLVideoElement>(null);
+  const bundle = useStore((s) => s.bundle)!;
+  // Times are the record's; the song's clip (when the record isn't here) starts at its in, less any pauses cut out.
+  const at = (time: number) => (pick.clip ? Math.max(0, clipTimeAt(pick.mark, time)) : time);
   const seek = (to: number) => {
-    const at = Math.min(hi, Math.max(lo, to));
-    setT(at);
-    if (video.current) video.current.currentTime = at;
+    const next = Math.min(hi, Math.max(lo, to));
+    setT(next);
+    if (video.current) video.current.currentTime = at(next);
   };
   return (
     <div className="sp-scrub">
       <div className="sp-frame">
-        <video ref={video} src={backend.streamUrl(record.path)} preload="auto" muted playsInline
-               onLoadedMetadata={(e) => { e.currentTarget.currentTime = t; }} onError={() => setFailed(true)} />
+        <video ref={video} src={pick.clip ? backend.mediaUrl(bundle, pick.clip) : backend.streamUrl(record.path)} preload="auto" muted playsInline
+               onLoadedMetadata={(e) => { e.currentTarget.currentTime = at(t); }} onError={() => setFailed(true)} />
         {failed && <span className="ph">This video won't play here</span>}
         <span className="tm">{formatTime(t)}</span>
       </div>

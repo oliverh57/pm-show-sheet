@@ -5,7 +5,7 @@ import { backend } from "../backend";
 import { pickTopStills, runClipJobs } from "../jobs";
 import {
   addAudio, addImages, addRecord, addSong, categories, deptCategory, ensureCategory, GENERAL, addSongWith, AUDIO_EXTENSIONS, cleanLabel, guessRecordLabel, recordClipName, extension, fileName, guessSong, guessVersion,
-  clipLength, cutPauses, joinPauses, marksToMake, MAX_PAUSE, MAX_REWIND, parseTc, type RunPart, setHero, setMarks, splitRuns, syncAudioField, tcInRun, timeAtTcInRun, VIDEO_EXTENSIONS,
+  clipLength, type Cut, cutPauses, joinPauses, marksToMake, MAX_PAUSE, MAX_REWIND, parseTc, type RunPart, setHero, setMarks, splitRuns, syncAudioField, tcInRun, timeAtTcInRun, VIDEO_EXTENSIONS,
 } from "../model/ops";
 import type { AudioFile, LtcResult, MediaInfo, Show, SongMark, SourceRecord } from "../model/types";
 import { useStore } from "../store";
@@ -373,8 +373,9 @@ type Assignment = string; // a song id, "" (unassigned), "__new" or "__skip"
  */
 interface Segment {
   block: number; // the run
-  start: number; // file time; the first segment of a run starts at the run start
+  start: number; // file time; the first segment of a run starts at the run start, unless dragged off it
   song: Assignment;
+  end?: number; // the last segment of a run: where it ends, if dragged off the run end
 }
 
 const segmentOf = (p: RunPart): Segment => ({ block: p.run, start: p.start, song: p.song ?? (p.shorter_of ? "__skip" : "") });
@@ -392,7 +393,11 @@ function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file:
     const existing = isRecord ? (file as SourceRecord).song_marks ?? [] : [];
     const marked = new Set(existing.map((m) => m.song_id));
     return blocks.flatMap((b, i) => {
-      const inBlock = existing.filter((m) => m.in >= b.file_start - 1 && m.in < b.file_end - 1).sort((x, y) => x.in - y.in);
+      // A mark can reach past its run's ends, where it was dragged out over the record with no TC.
+      const inBlock = existing.filter((m) => m.in < b.file_end - 1 && m.out > b.file_start + 1 && (i === 0 || m.in >= blocks[i - 1].file_end - 1))
+        .sort((x, y) => x.in - y.in);
+      // Where the run's free: past a mark from an earlier run that was dragged on into it.
+      const from = Math.max(b.file_start, ...existing.filter((m) => m.in < b.file_start - 1).map((m) => m.out));
       // Marked before: the marks as they were, with what's between them skipped. A mark that stopped where an
       // earlier scan's block did, in a take that now carries on (after a stop or a rewind), carries on with it.
       const parts = auto.filter((p) => p.run === i);
@@ -400,13 +405,15 @@ function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file:
         p.song === m.song_id && p.start < m.out && (parts[k + 1]?.start ?? b.file_end) > m.out + 1);
       if (inBlock.length) return inBlock.flatMap((m, j): Segment[] => {
         const next = inBlock[j + 1]?.in ?? b.file_end;
+        const last = j === inBlock.length - 1;
         return [
-          ...(j === 0 && m.in > b.file_start + 1 ? [{ block: i, start: b.file_start, song: "__skip" }] : []),
-          { block: i, start: j === 0 && m.in <= b.file_start + 1 ? b.file_start : m.in, song: m.song_id },
+          ...(j === 0 && m.in > from + 1 ? [{ block: i, start: from, song: "__skip" }] : []),
+          { block: i, start: j === 0 && Math.abs(m.in - b.file_start) <= 1 ? b.file_start : m.in, song: m.song_id, ...(last && m.out > b.file_end + 1 ? { end: m.out } : {}) },
           ...(m.out < next - 1 && !carriesOn(m) ? [{ block: i, start: m.out, song: "__skip" }] : []),
         ];
       });
-      return auto.filter((p) => p.run === i).map((p) => (p.song && marked.has(p.song) ? { ...segmentOf(p), song: "__skip" } : segmentOf(p)));
+      return parts.filter((_, k) => (parts[k + 1]?.start ?? b.file_end) > from + 1)
+        .map((p, k) => ({ ...segmentOf(p), ...(p.song && marked.has(p.song) ? { song: "__skip" } : {}), ...(k === 0 && p.start < from ? { start: from } : {}) }));
     });
   });
   const [make, setMake] = useState<Make>(isRecord ? initialMake : "none");
@@ -434,10 +441,14 @@ function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file:
   const unmatched = segs.filter((g) => !g.song).length;
   const dur = ltc.duration || blocks[blocks.length - 1]?.file_end || 1;
   const name = (id: string) => show.songs[id]?.fields.name || "Untitled";
-  const endOf = (k: number) => (segs[k + 1]?.block === segs[k].block ? segs[k + 1].start : blocks[segs[k].block].file_end);
-  const tcOf = (k: number) => tcInRun(blocks[segs[k].block], segs[k].start, fps);
-  /** Part `k` as a clip, with its long pauses cut out. */
-  const clipOf = (k: number) => cutPauses(blocks[segs[k].block], segs[k].start, endOf(k), fps);
+  const endOf = (k: number) => (segs[k + 1]?.block === segs[k].block ? segs[k + 1].start : segs[k].end ?? blocks[segs[k].block].file_end);
+  const tcOf = (k: number) => { const b = blocks[segs[k].block]; return tcInRun(b, Math.max(segs[k].start, b.file_start), fps); };
+  /** Part `k` as a clip, with its long pauses cut out, and whatever it's been dragged out over past the TC kept. */
+  const clipOf = (k: number): Cut => {
+    const b = blocks[segs[k].block], from = segs[k].start, to = endOf(k);
+    const clip = cutPauses(b, from, to, fps);
+    return { ...clip, in: from < b.file_start ? from : clip.in, out: to > b.file_end ? to : clip.out };
+  };
 
   /** Move the player to `t` seconds into the file (showing it if it's hidden), optionally starting playback. */
   function seekTo(t: number, play = false) {
@@ -461,8 +472,12 @@ function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file:
   /** Insert a split after part `k` at `at`, giving the new part to `song` (and taking that song off any other part). */
   function insertSplit(k: number, at: number, song: Assignment) {
     const taken = (g: Segment) => isSong(song) && song !== "__new" && g.song === song;
-    setSegs((cur) => [...cur.slice(0, k + 1).map((g) => (taken(g) ? { ...g, song: "" } : g)), { block: cur[k].block, start: at, song },
-      ...cur.slice(k + 1).map((g) => (taken(g) ? { ...g, song: "" } : g))]);
+    setSegs((cur) => {
+      // The new part takes over the end of the one it's split from.
+      const { end, ...before } = cur[k];
+      return [...[...cur.slice(0, k), before].map((g) => (taken(g) ? { ...g, song: "" } : g)), { block: cur[k].block, start: at, song, ...(end !== undefined ? { end } : {}) },
+        ...cur.slice(k + 1).map((g) => (taken(g) ? { ...g, song: "" } : g))];
+    });
   }
 
   /** Split block `block` at the player's position if it's inside the block, otherwise halve its last part. */
@@ -483,18 +498,38 @@ function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file:
     if (song) toast(`Split at ${tcInRun(blocks[segs[k].block], t, fps)} for ${song === "__new" ? "a new song" : name(song)}`);
   }
 
-  /** Drag split `k` along the timeline, between the parts either side of it. */
+  /** Part `k` ends where the next part starts, in its run or the next. */
+  const touches = (k: number) => k + 1 < segs.length && Math.abs(endOf(k) - segs[k + 1].start) < 0.05;
+  const last = (k: number) => segs[k + 1]?.block !== segs[k].block;
+
+  /**
+   * Drag the start or end of part `k` along the timeline. Inside a run that's a split, between the parts either side
+   * of it. At a run's edge it extends the part out over the record past the TC, and on into the part next to it,
+   * which gives way (and comes back if dragged back). Where two parts meet, both move.
+   */
   const dragged = useRef(false);
-  function dragSplit(k: number, e: React.PointerEvent<HTMLDivElement>) {
+  function dragEdge(k: number, side: "start" | "end", e: React.PointerEvent<HTMLDivElement>) {
     e.preventDefault();
     e.stopPropagation();
     const track = e.currentTarget.parentElement!.getBoundingClientRect();
-    const lo = segs[k - 1].start + 1, hi = endOf(k) - 1;
-    let t = segs[k].start;
+    const orig = segs;
+    const ends = segs.map((_, j) => endOf(j));
+    // The part before (for a start) or after (for an end), which gives way, and whether it meets this one.
+    const other = side === "start" ? k - 1 : k + 1;
+    const meets = side === "start" ? k > 0 && touches(k - 1) : touches(k);
+    const lo = side === "start" ? (k > 0 ? orig[k - 1].start + 1 : 0) : orig[k].start + 1;
+    const hi = side === "start" ? ends[k] - 1 : other < orig.length ? ends[other] - 1 : dur;
+    let t = side === "start" ? orig[k].start : ends[k];
+    const at = (t: number) => orig.map((g, j): Segment => {
+      if (j === k) return side === "start" ? { ...g, start: t } : { ...g, end: t };
+      // Inside a run, the part before ends where this starts anyway.
+      if (j !== other || g.block === orig[k].block) return g;
+      return side === "start" ? { ...g, end: meets ? t : Math.min(ends[j], t) } : { ...g, start: meets ? t : Math.max(g.start, t) };
+    });
     const move = (ev: PointerEvent) => {
       dragged.current = true;
       t = Math.min(hi, Math.max(lo, ((ev.clientX - track.left) / track.width) * dur));
-      setSegs((cur) => cur.map((g, j) => (j === k ? { ...g, start: t } : g)));
+      setSegs(at(t));
     };
     const up = () => {
       window.removeEventListener("pointermove", move);
@@ -513,11 +548,12 @@ function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file:
     setSegs((cur) => cur.map((g, j) => (j === k ? { ...g, start: t } : g)));
   }
 
-  const removeSplit = (k: number) => setSegs((cur) => cur.filter((_, j) => j !== k));
+  /** The part before takes over the removed one's stretch, and its end. */
+  const removeSplit = (k: number) => setSegs((cur) => cur.flatMap((g, j) => (j === k ? [] : j === k - 1 && cur[k].end !== undefined ? [{ ...g, end: cur[k].end }] : [g])));
 
   /** A song with no TC right after this segment's song in the running order: TC probably runs on into it. */
   function followOn(k: number): string | null {
-    if (endOf(k) !== blocks[segs[k].block].file_end || !isSong(segs[k].song)) return null;
+    if (!last(k) || !isSong(segs[k].song)) return null;
     const next = show.set_order[show.set_order.indexOf(segs[k].song) + 1];
     return next && !show.songs[next]?.fields.tc && !used.has(next) ? next : null;
   }
@@ -572,7 +608,8 @@ function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file:
   const first = (k: number) => k === 0 || segs[k - 1].block !== segs[k].block;
   const status = (k: number) => {
     const a = segs[k].song;
-    const suggested = auto.find((p) => p.run === segs[k].block && Math.abs(p.start - segs[k].start) < 0.5);
+    // A run's first part may have been dragged off the run start.
+    const suggested = auto.find((p) => p.run === segs[k].block && (first(k) || Math.abs(p.start - segs[k].start) < 0.5));
     if (a === "__skip" && suggested?.shorter_of) return <span className="chip" title={`${name(suggested.shorter_of)} plays for longer elsewhere in the record`}>Shorter take</span>;
     if (a === "__skip") return <span className="chip">Skipped</span>;
     if (a === "__new") return <span className="chip accent">New song</span>;
@@ -642,9 +679,14 @@ function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file:
             </div>
           ))}
           {gaps.map((g) => <div key={`gap-${g.from}`} className="tl-gap" style={{ left: `${(g.from / dur) * 100}%`, width: `${((g.to - g.from) / dur) * 100}%` }} title={`Pause of ${formatTime(g.to - g.from)}: cut out of the clip`} />)}
-          {segs.map((g, k) => !first(k) && (
-            <div key={`split-${k}`} className="tl-split" style={{ left: `${(g.start / dur) * 100}%` }} title={`Drag to move this split (${tcOf(k)})`}
-                 onPointerDown={(e) => dragSplit(k, e)} onClick={(e) => e.stopPropagation()} />
+          {segs.map((_, k) => last(k) && !touches(k) && (
+            <div key={`end-${k}`} className="tl-end" style={{ left: `${(endOf(k) / dur) * 100}%` }} title="Drag to extend or shorten this part"
+                 onPointerDown={(e) => dragEdge(k, "end", e)} onClick={(e) => e.stopPropagation()} />
+          ))}
+          {segs.map((g, k) => (
+            <div key={`split-${k}`} className={`tl-split ${first(k) && !(k > 0 && touches(k - 1)) ? "edge" : ""}`} style={{ left: `${(g.start / dur) * 100}%` }}
+                 title={first(k) ? (k > 0 && touches(k - 1) ? "Drag to move where these parts meet" : "Drag to extend or shorten this part") : `Drag to move this split (${tcOf(k)})`}
+                 onPointerDown={(e) => dragEdge(k, "start", e)} onClick={(e) => e.stopPropagation()} />
           ))}
           {showPlayer && <div className="tl-head" style={{ left: `${(now / dur) * 100}%` }} />}
         </div>
@@ -797,7 +839,7 @@ function DoneStep({ thumbs }: { thumbs: boolean }) {
   const failed = jobs.filter((j) => j.status === "error");
   // Picking one still from the Media page: back there once it's done.
   useEffect(() => {
-    if (fromMedia && thumbs && !picks.length) { toast("Thumbnail updated"); setView("media"); }
+    if (fromMedia && thumbs && !picks.length) { toast("Thumbnail updated"); (useStore.getState().pickBack ?? (() => setView("media")))(); }
   }, [fromMedia, thumbs, picks.length, toast, setView]);
   if (!thumbs && !jobs.length) return <div className="placeholder"><h3>Nothing to do</h3><div style={{ marginTop: 14 }}><button onClick={() => setView("songs")}>Back to songs</button></div></div>;
   const waiting = jobs.filter((j) => j.status === "queued" || j.status === "running").length;

@@ -159,6 +159,16 @@ export interface Backend {
   driveEvict(bundle: string, paths: string[]): Promise<number>;
   /** Delete a show's whole copy from this Mac. */
   driveForget(bundle: string): Promise<void>;
+  /** Every show copied to this Mac, as absolute paths of their folders. */
+  driveCachedShows(): Promise<string[]>;
+  /** Bytes the shows folder takes up on this Mac. */
+  driveCacheSize(): Promise<number>;
+  /** Open the shows folder in Finder. */
+  driveOpenCache(): Promise<void>;
+  /** What the shows folder takes up, and the size of the disk it's on and what's free there, in bytes. */
+  driveStorage(): Promise<{ cache: number; total: number; free: number }>;
+  /** The most the shows folder may take up (0: no limit): over it, the media used longest ago is deleted. Trims it now; returns the bytes freed. */
+  driveSetCacheLimit(bytes: number): Promise<number>;
   /** Which of these absolute paths are files on this Mac. */
   pathsExist(paths: string[]): Promise<boolean[]>;
   readJson<T>(bundle: string, name: SideFile): Promise<T | null>;
@@ -354,6 +364,21 @@ const desktop: Backend = {
   async driveForget(bundle) {
     await invoke("drive_forget", { bundle });
   },
+  async driveCachedShows() {
+    return (await invoke("drive_cached_shows")) as string[];
+  },
+  async driveCacheSize() {
+    return (await invoke("drive_cache_size")) as number;
+  },
+  async driveOpenCache() {
+    await invoke("drive_open_cache");
+  },
+  async driveStorage() {
+    return (await invoke("drive_storage")) as { cache: number; total: number; free: number };
+  },
+  async driveSetCacheLimit(bytes) {
+    return (await invoke("drive_set_cache_limit", { bytes })) as number;
+  },
   async pathsExist(paths) {
     return paths.length ? ((await invoke("paths_exist", { paths })) as boolean[]) : [];
   },
@@ -527,6 +552,19 @@ const browser: Backend = {
     return 0;
   },
   async driveForget() {},
+  async driveCachedShows() {
+    return [];
+  },
+  async driveCacheSize() {
+    return 0;
+  },
+  async driveOpenCache() {},
+  async driveStorage() {
+    return { cache: 0, total: 0, free: 0 };
+  },
+  async driveSetCacheLimit() {
+    return 0;
+  },
   async pathsExist(paths) {
     return paths.map(() => true);
   },

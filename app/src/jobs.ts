@@ -4,7 +4,7 @@
 // Results are added to the show only if it's still the open one.
 import { backend } from "./backend";
 import { trashMedia } from "./drive/media";
-import { addClip, addImages, addRecordStill, burnsTc, categoryFree, clipLength, clipName, GENERAL, newId, recordClipName, recordStillOf, recordTimeAt, setHero, setSongImage, type Cut } from "./model/ops";
+import { addClip, addImages, addRecordStill, burnsTc, categoryFree, clipLength, clipName, clipTimeAt, GENERAL, newId, recordClipName, recordStillOf, recordTimeAt, setHero, setSongImage, type Cut } from "./model/ops";
 import type { Show, SongMark, SourceRecord } from "./model/types";
 import { type StillPick, useStore } from "./store";
 
@@ -91,20 +91,27 @@ async function findFrames(bundle: string, record: SourceRecord, mark: Cut, clip:
 }
 
 /**
- * Pick a song's still from a record again, in place of `still` (clicking it on the Media page). The picker opens
- * straight away, with its scrubber; the suggested frames follow. False when the song isn't marked in the record.
+ * Pick a song's still from a record again, in place of `still` (clicking it on the Media page, or Change in the song's
+ * Media tab). The picker opens straight away, with its scrubber; the suggested frames follow. Once it's picked, `back`
+ * (else the Media page). An earlier one of these left unpicked is dropped, so the picker shows just this one.
+ * When the record isn't on this Mac (deleted, or added on another), the frames come from the song's clip of it.
+ * False when the song isn't marked in the record, or the record's gone and the song has no clip of it.
  */
-export async function repickStill(bundle: string, record: SourceRecord, songId: string, still: string): Promise<boolean> {
+export async function repickStill(bundle: string, record: SourceRecord, songId: string, still: string, back?: () => void): Promise<boolean> {
   const { show, setStillPicks, openPicks } = useStore.getState();
   const clips = (show?.songs[songId]?.clips ?? []).filter((c) => c.record_id === record.id);
   const clip = clips.find((c) => c.still === still) ?? clips[0];
-  const mark = record.song_marks?.find((m) => m.song_id === songId) ?? clip;
+  const [here, clipHere] = await backend.pathsExist([record.path, clip ? `${bundle}/${clip.path}` : ""]).catch(() => [true, true]);
+  // Without the record, the clip's own in and out (and cuts): its frames are all there is.
+  const mark = here ? record.song_marks?.find((m) => m.song_id === songId) ?? clip : clip;
   if (!mark) return false;
   const id = newId("pick");
-  setStillPicks((picks) => [...picks.filter((p) => !(p.songId === songId && p.recordId === record.id)),
-    { id, songId, recordId: record.id, mark: { in: mark.in, out: mark.out, ...(mark.cuts ? { cuts: mark.cuts } : {}) }, candidates: [], replaces: still, finding: true }]);
-  openPicks(id);
-  const found = await findFrames(bundle, record, mark, clip?.path ?? null);
+  const oneOff = (p: StillPick) => p.replaces && !p.auto && !p.saving;
+  setStillPicks((picks) => [...picks.filter((p) => !(p.songId === songId && p.recordId === record.id) && !oneOff(p)),
+    { id, songId, recordId: record.id, mark: { in: mark.in, out: mark.out, ...(mark.cuts ? { cuts: mark.cuts } : {}) }, candidates: [], replaces: still, finding: true, ...(here ? {} : { clip: clip!.path }) }]);
+  openPicks(id, back);
+  // The clip's quicker to read, but not when it's only in Drive and the record's here: it would download first.
+  const found = await findFrames(bundle, record, mark, clip && (clipHere || !here) ? clip.path : null);
   if (useStore.getState().bundle !== bundle) return true;
   setStillPicks((picks) => picks.map((p) => (p.id === id ? { ...p, candidates: found, finding: false } : p)));
   return true;
@@ -114,7 +121,9 @@ export async function repickStill(bundle: string, record: SourceRecord, songId: 
 async function fileStill(bundle: string, record: SourceRecord, pick: StillPick, time: number): Promise<string | null> {
   const show = useStore.getState().show;
   if (!show) return null;
-  const still = await backend.grabFrame(bundle, record.path, time, clipName(show, pick.songId));
+  const still = pick.clip
+    ? await backend.grabFrame(bundle, `${bundle}/${pick.clip}`, Math.max(0, clipTimeAt(pick.mark, time)), clipName(show, pick.songId))
+    : await backend.grabFrame(bundle, record.path, time, clipName(show, pick.songId));
   if (useStore.getState().bundle !== bundle) return null;
   useStore.getState().update((s) => {
     if (!s.songs[pick.songId]) return;
@@ -131,20 +140,25 @@ async function fileStill(bundle: string, record: SourceRecord, pick: StillPick, 
   return still;
 }
 
-/** Use the frame someone picked. The one the song already uses just closes the pick. */
-export async function pickStill(bundle: string, pickId: string, time: number) {
+/** Use the frame someone picked. The one the song already uses just closes the pick. False if it couldn't be saved. */
+export async function pickStill(bundle: string, pickId: string, time: number): Promise<boolean> {
   const { show, stillPicks, setStillPicks } = useStore.getState();
   const pick = stillPicks.find((p) => p.id === pickId);
   const record = show?.records?.find((r) => r.id === pick?.recordId);
-  if (!show || !pick || !record || pick.saving) return;
-  if (pick.current === time) return setStillPicks((picks) => picks.filter((p) => p.id !== pickId));
+  if (!show || !pick || !record || pick.saving) return false;
+  if (pick.current === time) {
+    setStillPicks((picks) => picks.filter((p) => p.id !== pickId));
+    return true;
+  }
   setStillPicks((picks) => picks.map((p) => (p.id === pickId ? { ...p, saving: true } : p)));
   try {
-    if (!(await fileStill(bundle, record, pick, time))) return;
+    if (!(await fileStill(bundle, record, pick, time))) return false;
     setStillPicks((picks) => picks.filter((p) => p.id !== pickId));
+    return true;
   } catch (e) {
     setStillPicks((picks) => picks.map((p) => (p.id === pickId ? { ...p, saving: false } : p)));
     useStore.getState().toast(String(e).replace(/^Error: /, ""));
+    return false;
   }
 }
 

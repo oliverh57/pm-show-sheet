@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import sample from "./sample_show.json";
 import {
   addColumn, addImages, addNote, addSong, archiveSong, cellValue, deleteSong, formatTc, imageLabel, ltcFromName, moveColumn, moveSong,
-  newShow, removeColumn, removeImage, restoreSong, setHero, setHeroCrop, tcSeconds,
+  newShow, removeColumn, removeImage, replaceImage, restoreSong, setHero, setHeroCrop, tcSeconds,
 } from "./ops";
 import type { Show } from "./types";
 import { useStore } from "../store";
@@ -100,6 +100,23 @@ describe("media", () => {
     removeImage(show, "s_glass", "media/renders/a.jpg");
     expect(show.songs.s_glass.hero).toBe("media/renders/b.jpg");
     expect(show.songs.s_glass.hero_crop).toBeUndefined();
+  });
+
+  it("replacing an image keeps its place, its category and the main image", () => {
+    const show = fresh();
+    addImages(show, "s_glass", ["media/renders/a.jpg", "media/renders/b.jpg"]);
+    show.songs.s_glass.images = { img_content: "media/renders/b.jpg" };
+    show.cover = "media/renders/b.jpg";
+    replaceImage(show, "s_glass", "media/renders/b.jpg", "media/renders/c.png");
+    expect(show.songs.s_glass.gallery).toEqual(["media/renders/a.jpg", "media/renders/c.png"]);
+    expect(show.songs.s_glass.images).toEqual({ img_content: "media/renders/c.png" });
+    expect(show.cover).toBe("media/renders/c.png");
+    // A cropped main image becomes the new picture, uncropped.
+    setHeroCrop(show, "s_glass", "media/renders/a.jpg", { x: 0, y: 0.1, w: 1, h: 0.5 }, "media/crops/01 Glass.jpg");
+    replaceImage(show, "s_glass", "media/renders/a.jpg", "media/renders/d.jpg");
+    expect(show.songs.s_glass.hero).toBe("media/renders/d.jpg");
+    expect(show.songs.s_glass.hero_crop).toBeUndefined();
+    expect(show.songs.s_glass.gallery).toEqual(["media/renders/d.jpg", "media/renders/c.png"]);
   });
 });
 
@@ -869,6 +886,20 @@ describe("categories and a record's stills", () => {
     expect(show.songs[b].gallery ?? []).not.toContain("media/grabs/b.jpg");
     expect(show.songs[a].clips).toHaveLength(1);
     expect(show.songs[a].clips![0].still).toBeUndefined();
+  });
+  it("a record's still that no song uses any more can be deleted on its own, and goes when the show opens", async () => {
+    const { addRecordStill, migrate, recordMedia, removeRecordStill } = await import("./ops");
+    const show = fresh();
+    const [a] = show.set_order;
+    show.records = [{ id: "r1", path: "/x/C.mov", name: "C.mov", scope: "show", added_at: "", image_col: "hero" }];
+    addImages(show, a, ["media/grabs/a_2.jpg"]);
+    addRecordStill(show, "r1", "media/grabs/a.jpg"); // its song moved on to a_2.jpg
+    addRecordStill(show, "r1", "media/grabs/a_2.jpg");
+    const orphaned = structuredClone(show);
+    removeRecordStill(show, "r1", "media/grabs/a.jpg");
+    expect(recordMedia(show, "r1").stills).toEqual(["media/grabs/a_2.jpg"]);
+    expect(show.songs[a].gallery).toContain("media/grabs/a_2.jpg");
+    expect(migrate(orphaned).records![0].stills).toEqual(["media/grabs/a_2.jpg"]);
   });
 });
 

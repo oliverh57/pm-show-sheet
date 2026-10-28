@@ -10,7 +10,7 @@ import { infoLine } from "./MediaLists";
 import { MediaPlayer } from "./Player";
 import { MediaViewer } from "./MediaViewer";
 import { formatTime } from "./SongDrawer";
-import { deleteClip, deleteRecordStills, deleteSongImage, removeRecordAndMedia } from "../library";
+import { deleteClip, deleteRecordStill, deleteRecordStills, deleteSongImage, removeRecordAndMedia } from "../library";
 import { RenderInbox } from "./RenderInbox";
 import { SaveCopy } from "./SaveCopy";
 import { CloudButton, useFileStates } from "./CloudFiles";
@@ -258,14 +258,15 @@ function Library() {
                   <div className="rs-strip">
                     {stills.map((p) => {
                       const sid = stillSong(p);
-                      // Only on the Mac with the record: pick another frame from it.
-                      const canPick = here && sid && ((r.song_marks ?? []).some((m) => m.song_id === sid) || clips.some((c) => c.songId === sid));
+                      // Pick another frame from the record on the Mac that has it, else from the song's clip of it.
+                      const canPick = sid && ((here && (r.song_marks ?? []).some((m) => m.song_id === sid)) || clips.some((c) => c.songId === sid));
                       return (
                         <figure key={p} title={sid ? (canPick ? `${clipName(show, sid)}: click to pick another frame` : clipName(show, sid)) : fileName(p)}
                                 className={canPick ? "pickable" : ""} onClick={canPick ? () => repickStill(bundle, r, sid, p) : undefined}>
                           <img src={backend.mediaUrl(bundle, p)} alt="" loading="lazy" />
                           <figcaption>{sid ? clipName(show, sid) : fileName(p)}</figcaption>
-                          {sid && <button className="icon" title="Delete this still" onClick={(e) => { e.stopPropagation(); deleteSongImage(sid, p); }}><Icon name="x" size="sm" /></button>}
+                          {/* A still no song uses any more is only on the record: it can go from there. */}
+                          <button className="icon" title="Delete this still" onClick={(e) => { e.stopPropagation(); if (sid) deleteSongImage(sid, p); else deleteRecordStill(r.id, p); }}><Icon name="x" size="sm" /></button>
                         </figure>
                       );
                     })}

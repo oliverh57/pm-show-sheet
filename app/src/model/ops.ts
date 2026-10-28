@@ -892,6 +892,22 @@ export function removeImage(show: Show, songId: string, path: string) {
   pruneRecordStills(show);
 }
 
+/**
+ * Put another image (bundle-relative, e.g. a file someone chose) in a gallery image's place: its spot in the gallery,
+ * its category, the main image (a crop of it becomes the new image, uncropped) and the show's cover. The old file stays in the bundle.
+ */
+export function replaceImage(show: Show, songId: string, old: string, path: string) {
+  const song = show.songs[songId];
+  if (!song || old === path) return;
+  const gallery = song.gallery ?? (song.hero ? [song.hero] : []);
+  song.gallery = gallery.includes(path) ? gallery.filter((p) => p !== old) : gallery.map((p) => (p === old ? path : p));
+  if (isHeroImage(song, old)) setHero(show, songId, path);
+  for (const [col, p] of Object.entries(song.images ?? {})) if (p === old) song.images![col] = path;
+  for (const c of song.clips ?? []) if (c.still === old) c.still = path;
+  if (show.cover === old) show.cover = path;
+  pruneRecordStills(show);
+}
+
 /** Paths of every image the show's songs use, clip stills included. */
 function usedImages(show: Show): Set<string> {
   return new Set(Object.values(show.songs).flatMap((s) => [...(s.gallery ?? []), ...songImagePaths(s), ...(s.clips ?? []).flatMap((c) => (c.still ? [c.still] : []))]));
@@ -967,6 +983,12 @@ export function recordMedia(show: Show, id: string): { clips: string[]; stills: 
 export function addRecordStill(show: Show, recordId: string, path: string) {
   const record = (show.records ?? []).find((r) => r.id === recordId);
   if (record && !(record.stills ??= []).includes(path)) record.stills.push(path);
+}
+
+/** Forget a still made from a record (one no song uses any more: a song's still goes with removeImage). */
+export function removeRecordStill(show: Show, recordId: string, path: string) {
+  const record = (show.records ?? []).find((r) => r.id === recordId);
+  if (record?.stills) record.stills = record.stills.filter((p) => p !== path);
 }
 
 /** Take a record's stills off every song (the files go to the Trash separately); its clips stay. */

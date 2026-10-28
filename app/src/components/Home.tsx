@@ -4,6 +4,7 @@ import logo from "../assets/logo.png";
 import { backend, type ShowSummary } from "../backend";
 import { cachedShows, createShow, type DriveFolder, newShowFolder, openShow, rememberNewShowFolder, scanShows, timeAgo } from "../library";
 import { bundleName } from "../model/ops";
+import { downloadShow, showOnlineOnly } from "../storage";
 import { useStore } from "../store";
 import { DriveFolderPicker } from "./DriveFolderPicker";
 import { Avatar, GoogleDriveMark, Icon } from "./icons";
@@ -16,6 +17,7 @@ export function Home() {
   const [creating, setCreating] = useState(false);
   const [opening, setOpening] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [media, setMedia] = useState<{ path: string; text: string } | null>(null); // a show whose media is downloading or being removed
 
   async function refresh() {
     setScanning(true);
@@ -39,6 +41,30 @@ export function Home() {
       setError(`Couldn't open that show: ${String(e).replace(/^Error: /, "")}`);
     }
     setOpening(null);
+  }
+
+  async function downloadAll(s: ShowSummary) {
+    setError(null);
+    setMedia({ path: s.path, text: "Looking in Google Drive…" });
+    try {
+      const n = await downloadShow(s.path, (done, total) => setMedia({ path: s.path, text: `Downloading ${done} of ${total}` }));
+      useStore.getState().toast(n ? `Downloaded ${n} file${n === 1 ? "" : "s"} of ${s.name}` : `All of ${s.name}'s media is already on this Mac`);
+    } catch (e) {
+      setError(`Couldn't download all of ${s.name}: ${String(e).replace(/^Error: /, "")}`);
+    }
+    setMedia(null);
+  }
+
+  async function onlineOnly(s: ShowSummary) {
+    setError(null);
+    setMedia({ path: s.path, text: "Removing downloads…" });
+    try {
+      const n = await showOnlineOnly(s.path);
+      useStore.getState().toast(n ? `Removed ${n} file${n === 1 ? "" : "s"} of ${s.name} from this Mac: they download again when they're shown` : `None of ${s.name}'s media is on this Mac`);
+    } catch (e) {
+      setError(`Couldn't remove ${s.name}'s downloads: ${String(e).replace(/^Error: /, "")}`);
+    }
+    setMedia(null);
   }
 
   const q = query.trim().toLowerCase();
@@ -65,8 +91,12 @@ export function Home() {
         <div className="projects">
           <button className="pcard new-card" onClick={() => setCreating(true)}><div><Icon name="plus" size="lg" />New show</div></button>
           {list.map((s, i) => (
-            <button key={s.path} className="pcard" style={{ animationDelay: `${Math.min(i, 12) * 0.03}s` }} onClick={() => open(s.path)} disabled={opening !== null}>
-              <div className="cover">{s.cover ? <img src={backend.fileUrl(s.cover)} alt="" /> : <div className="ph"><Icon name="music" /></div>}</div>
+            <div key={s.path} className="pcard-wrap" style={{ animationDelay: `${Math.min(i, 12) * 0.03}s` }}>
+            <button className="pcard" onClick={() => open(s.path)} disabled={opening !== null}>
+              <div className="cover">
+                {s.cover ? <img src={backend.fileUrl(s.cover)} alt="" /> : <div className="ph"><Icon name="music" /></div>}
+                {media?.path === s.path && <span className="media-busy"><span className="spinner" style={{ width: 11, height: 11, borderWidth: 1.5 }} />{media.text}</span>}
+              </div>
               <div className="body">
                 <div className="name">{s.name}</div>
                 <div className="meta">{[s.venue, s.date].filter(Boolean).join(" · ") || "No venue or date yet"}</div>
@@ -78,6 +108,13 @@ export function Home() {
                 </div>
               </div>
             </button>
+            {backend.isDesktop && (
+              <div className="pcard-acts">
+                <button className="icon" disabled={media !== null} title="Download all its media to this Mac" aria-label="Download all media" onClick={() => downloadAll(s)}><Icon name="download" size="sm" /></button>
+                <button className="icon" disabled={media !== null} title="Make all its media online only: remove it from this Mac (it stays in Google Drive and downloads again when it's shown)" aria-label="Make all media online only" onClick={() => onlineOnly(s)}><Icon name="cloud" size="sm" /></button>
+              </div>
+            )}
+            </div>
           ))}
         </div>
         {!scanning && q && list.length === 0 && <p className="muted">No shows match “{query}”.</p>}

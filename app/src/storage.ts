@@ -5,12 +5,15 @@
 // Records and audio are on this Mac's disks (or an external one), not in Drive, so they're never removed.
 import { create } from "zustand";
 import { backend } from "./backend";
+import { refreshManifest } from "./drive/media";
 import { readManifest } from "./drive/show";
 import { songImagePaths } from "./model/ops";
 import type { Show } from "./model/types";
 import { useStore } from "./store";
 
 const KEY = "pm.removeDownloadsAfterDays";
+const LIMIT_KEY = "pm.mediaCacheLimit";
+const GB = 1e9;
 const LAST_SWEEP_KEY = "pm.downloadsSweptAt";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -38,7 +41,33 @@ function readDays(): number {
   }
 }
 
-export const useStorage = create<{ unusedDays: number }>(() => ({ unusedDays: readDays() }));
+/** The most the media cache may take up on this Mac; over it, the media used longest ago makes room for new downloads. */
+export const LIMIT_OPTIONS: { bytes: number; label: string }[] = [
+  { bytes: 0, label: "No limit" },
+  ...[10, 25, 50, 100, 250, 500].map((n) => ({ bytes: n * GB, label: `${n} GB` })),
+];
+
+function readLimit(): number {
+  try {
+    const v = Number(localStorage.getItem(LIMIT_KEY));
+    return LIMIT_OPTIONS.some((o) => o.bytes === v) ? v : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export const useStorage = create<{ unusedDays: number; cacheLimit: number }>(() => ({ unusedDays: readDays(), cacheLimit: readLimit() }));
+
+/** Tell the app's downloads the cache limit (at launch, and when it's changed), trimming the cache to it. Bytes freed. */
+export async function applyCacheLimit(): Promise<number> {
+  return backend.isDesktop ? backend.driveSetCacheLimit(useStorage.getState().cacheLimit) : 0;
+}
+
+export function setCacheLimit(bytes: number): Promise<number> {
+  try { localStorage.setItem(LIMIT_KEY, String(bytes)); } catch { /* storage unavailable */ }
+  useStorage.setState({ cacheLimit: bytes });
+  return applyCacheLimit();
+}
 
 export function setUnusedDays(days: number) {
   try { localStorage.setItem(KEY, String(days)); } catch { /* storage unavailable */ }
@@ -79,6 +108,31 @@ export async function removeDownloads(bundle: string, paths: string[]): Promise<
 export async function download(bundle: string, paths: string[]) {
   const notes = await backend.driveFetch(bundle, paths.map((p) => (p.startsWith(`${bundle}/`) ? p.slice(bundle.length + 1) : p)));
   if (notes.length) throw new Error(notes.slice(0, 3).join(" · "));
+}
+
+/**
+ * Download every one of a show's media files that's in Google Drive but not on this Mac (All shows, on the show's card).
+ * `onProgress` gets the files done so far, of how many. Returns how many it downloaded.
+ */
+export async function downloadShow(bundle: string, onProgress?: (done: number, total: number) => void): Promise<number> {
+  const rel = Object.keys((await refreshManifest(bundle)).files).filter((r) => r.startsWith("media/"));
+  const here = await backend.pathsExist(rel.map((r) => `${bundle}/${r}`));
+  const todo = rel.filter((_, i) => !here[i]);
+  const notes: string[] = [];
+  for (let i = 0; i < todo.length; i += FETCH_BATCH) {
+    onProgress?.(i, todo.length);
+    notes.push(...(await backend.driveFetch(bundle, todo.slice(i, i + FETCH_BATCH))));
+  }
+  onProgress?.(todo.length, todo.length);
+  if (notes.length) throw new Error(notes.slice(0, 3).join(" · "));
+  return todo.length;
+}
+const FETCH_BATCH = 6;
+
+/** Make a show's media online only: remove every file of it that's in Google Drive from this Mac. How many went. */
+export async function showOnlineOnly(bundle: string): Promise<number> {
+  const m = await readManifest(bundle);
+  return removeDownloads(bundle, Object.keys(m.files).filter((r) => r.startsWith("media/")));
 }
 
 /** Remove the clips of shows not opened on this Mac for the setting's days, at most once a day. */

@@ -33,6 +33,7 @@ export interface StillPick {
   auto?: boolean; // `replaces` is that top frame, not one someone chose
   saving?: boolean;
   finding?: boolean; // its frames are still being found (picking again from the Media page)
+  clip?: string; // the record isn't on this Mac: frames come from the song's clip of it (bundle-relative), still in record times
 }
 
 /** Pseudo song id for the show-level workspace (show records, show audio, watch folders). */
@@ -94,9 +95,11 @@ interface State {
   startImport(files: string[], source?: { kind: "record" | "audio"; id: string }): void;
   endImport(): void;
   /** Go to the import flow's last step: the thumbnails waiting to be picked, one song at a time. */
-  openPicks(focus?: string): void;
+  openPicks(focus?: string, back?: () => void): void;
   /** The pick to show first when the picker opens. */
   pickFocus: string | null;
+  /** Where to go once that pick is done (the Media page when unset). */
+  pickBack: (() => void) | null;
   setJobs(fn: (jobs: Job[]) => Job[]): void;
   setStillPicks(fn: (picks: StillPick[]) => StillPick[]): void;
   setColumnsOpen(open: boolean): void;
@@ -132,6 +135,7 @@ export const useStore = create<State>((set, get) => ({
   jobs: [],
   stillPicks: [],
   pickFocus: null,
+  pickBack: null,
   columnsOpen: false,
   toasts: [],
 
@@ -208,13 +212,13 @@ export const useStore = create<State>((set, get) => ({
     set({ drawerSongId: null, drawerFocus: null });
   },
   startImport(files, source) {
-    set((s) => ({ importFiles: files, importSource: source ?? null, importSeq: s.importSeq + 1, view: "import", drawerSongId: null, pickFocus: null }));
+    set((s) => ({ importFiles: files, importSource: source ?? null, importSeq: s.importSeq + 1, view: "import", drawerSongId: null, pickFocus: null, pickBack: null }));
   },
   endImport() {
     set({ importFiles: null, importSource: null });
   },
-  openPicks(focus) {
-    set((s) => ({ importFiles: null, importSource: null, importSeq: s.importSeq + 1, view: "import", drawerSongId: null, pickFocus: focus ?? null }));
+  openPicks(focus, back) {
+    set((s) => ({ importFiles: null, importSource: null, importSeq: s.importSeq + 1, view: "import", drawerSongId: null, pickFocus: focus ?? null, pickBack: back ?? null }));
   },
   setJobs(fn) {
     set((s) => ({ jobs: fn(s.jobs) }));
