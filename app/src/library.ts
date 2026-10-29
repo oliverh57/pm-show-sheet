@@ -149,6 +149,7 @@ export async function deleteRecordStills(ids: string | string[]): Promise<void> 
   const from = records.length === 1 ? records[0].label || records[0].name : `these ${records.length} recordings`;
   if (!stills.length || !(await backend.confirm(`Delete the ${stills.length} still${stills.length === 1 ? "" : "s"} made from ${from}? ${records.length === 1 ? "Its" : "Their"} clips stay.`))) return;
   update((s) => { for (const r of records) removeRecordStills(s, r.id); });
+  await dropEmptiedRecords(show);
   try {
     await trashMedia(bundle, stills);
   } catch (e) {
@@ -161,6 +162,7 @@ export async function deleteRecordStill(id: string, path: string): Promise<void>
   const { show, bundle, update, toast } = useStore.getState();
   if (!show || !bundle || !(await backend.confirm(`Delete “${fileName(path)}”? No song uses it. The file moves to the bin.`))) return;
   update((s) => removeRecordStill(s, id, path));
+  await dropEmptiedRecords(show);
   if (usedPaths(useStore.getState().show!).has(path)) return;
   try {
     await trashMedia(bundle, [path]);
@@ -182,11 +184,27 @@ async function deleteFromShow(question: string, change: (s: Show) => void) {
   update(change);
   const after = usedPaths(useStore.getState().show!);
   const gone = [...before].filter((p) => p.startsWith("media/") && !after.has(p));
+  await dropEmptiedRecords(show);
   try {
     await trashMedia(bundle, gone);
   } catch (e) {
     toast(message(e));
   }
+}
+
+/**
+ * Remove the records that had clips or stills in `before` and have none now, when the record's file isn't on this Mac:
+ * nothing of it is left to share. On the Mac that has it, it stays, to be split again.
+ */
+async function dropEmptiedRecords(before: Show) {
+  const show = useStore.getState().show;
+  if (!show) return;
+  const made = (s: Show, id: string) => { const m = recordMedia(s, id); return m.clips.length + m.stills.length > 0; };
+  const emptied = (show.records ?? []).filter((r) => made(before, r.id) && !made(show, r.id));
+  if (!emptied.length) return;
+  const here = await backend.pathsExist(emptied.map((r) => r.path)).catch(() => emptied.map(() => true));
+  const gone = emptied.filter((_, i) => !here[i]).map((r) => r.id);
+  if (gone.length) useStore.getState().update((s) => { for (const id of gone) removeRecord(s, id); });
 }
 
 /** Delete a render or still from a song (and its hero crop, if it was the hero). */
