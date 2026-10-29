@@ -32,6 +32,8 @@ const POLL_MS = 60000;
 const RETRY_MS = 30000;
 const QUOTA_RETRY_MS = 60000; // Google's quotas are per minute
 const MAX_RETRY_MS = 5 * 60000;
+const CLASH_RETRY_MS = 4000; // and up to as long again, so two Macs don't clash again
+const MAX_CLASHES = 3; // in a row, before it's said as an error
 const IMAGE_PX = 2560;
 
 export type SyncState = "off" | "syncing" | "ok" | "error";
@@ -534,7 +536,7 @@ async function pushDeck(): Promise<void> {
       videoRefused = null;
     } catch (e) {
       // Slides refuses the whole batch if it can't embed one video (not finished processing on Drive, say): link the clips instead.
-      if (!reqs.some((r) => "createVideo" in r)) throw e;
+      if (!reqs.some((r) => "createVideo" in r) || clashed(e)) throw e;
       await api("POST", `${SLIDES}/${pid}:batchUpdate`, { requests: draw(false) });
       const why = String(e).replace(/^Error: /, "");
       if (why !== videoRefused) useStore.getState().toast(`The deck links its clips for now: Google Slides couldn't embed them (${why})`);
@@ -566,6 +568,14 @@ function sheetFingerprint(show: Show): string {
 
 let retryTimer: number | undefined; // set while waiting to try again after a failed sync
 let failures = 0; // syncs failed in a row: each waits longer before trying again
+let clashes = 0; // syncs in a row another Mac's push got in the way of
+
+/**
+ * Google refusing a push because another Mac with the show open pushed the same change between this one reading the
+ * Sheet or deck and writing to it: a conditional format or slide element that's gone, or one made twice. Every Mac
+ * pushes each save, so they meet when a push is slow (uploading a clip). Read again and it goes through.
+ */
+export const clashed = (e: unknown) => /Google 400: .*(No conditional format|could not be found|should be unique)/i.test(String(e));
 
 /** Run a sync job in turn. While a retry waits, only a full sync (`syncNow`) runs: the retry does the rest. */
 function run(job: () => Promise<void>, full = false) {
@@ -579,9 +589,15 @@ function run(job: () => Promise<void>, full = false) {
     try {
       await job();
       failures = 0;
+      clashes = 0;
       if (gen === generation) status({ state: "ok", message: lockedOut ? LOCKED_OUT : null, lastSync: Date.now(), step: null });
     } catch (e) {
       if (gen !== generation) return;
+      if (clashed(e) && clashes++ < MAX_CLASHES) {
+        retryTimer = window.setTimeout(() => { if (gen === generation) syncNow(); }, CLASH_RETRY_MS * (1 + Math.random()));
+        status({ state: "syncing", step: "Another Mac is syncing this show too, so trying again", deck: "idle", retryAt: null });
+        return;
+      }
       // One retry at a time, waiting longer each time: a retry for every failed job kept an account over Google's
       // per-minute quota, so it never came back.
       const quota = /Google 429/.test(String(e));
@@ -617,6 +633,7 @@ export function useGoogleSync() {
     window.clearTimeout(retryTimer);
     retryTimer = undefined;
     failures = 0;
+    clashes = 0;
     lastDeck = useStore.getState().show?.google?.deck_hash ?? null; // don't redraw an unchanged deck on open
     if (!bundle || !user) return status({ state: "off", message: null });
     if (readOnly) return status({ state: "off", message: "Read only" });
