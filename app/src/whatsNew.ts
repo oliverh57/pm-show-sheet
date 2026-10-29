@@ -7,6 +7,18 @@ export interface ReleaseNotes {
 }
 
 export const WHATS_NEW: Record<string, ReleaseNotes> = {
+  "0.6.0": {
+    summary: "Keep working when Google Drive can't be reached, and see who edited what.",
+    items: [
+      "Without a connection, your changes are saved on this Mac. When you're back online, look over each change and keep it or throw it away before it goes to Drive.",
+      "When someone else edits the show, in the app or the Google Sheet, a notice says who changed which songs. Show edits highlights them in that person's colour.",
+      "Importing asks fewer questions: a video is either split into songs or linked to one song, and the app finds the timecode itself.",
+      "Several recordings can be added at once under one name. The Media page groups them and says which are on another Mac.",
+      "The sidebar says what a sync is doing, and it copes better when Google is busy.",
+      "Comments can be edited after they're posted.",
+      "A new app icon.",
+    ],
+  },
   "0.5.4": {
     summary: "Control how much show media this Mac keeps, and change a song's thumbnail from the song.",
     items: [
