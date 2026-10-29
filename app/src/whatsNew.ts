@@ -7,6 +7,16 @@ export interface ReleaseNotes {
 }
 
 export const WHATS_NEW: Record<string, ReleaseNotes> = {
+  "0.6.3": {
+    summary: "Smoother syncing when several Macs have a show open.",
+    items: [
+      "When two Macs push the same change to the Google Sheet or deck at once, the app tries again instead of showing an error.",
+      "A clash between the app and the Google Sheet is only asked about on the Mac that made the edit, not on everyone's.",
+      "Deleting a clip on another Mac no longer leaves the thumbnail picker coming back to it.",
+      "Recordings left with no clips or stills are removed, unless their file is on this Mac.",
+      "Hovering over who else has the show open says when they last edited, even if they're on an older version.",
+    ],
+  },
   "0.6.2": {
     summary: "Changes no longer get stuck on this Mac when the connection drops.",
     items: [
