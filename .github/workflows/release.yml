@@ -30,20 +30,23 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
+      # A tag run can only read caches saved on its own tag or on main, so warm-cache.yml fills this one from main.
+      # Saving here would store a cache that no later tag can read.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: app/src-tauri -> target
-
-      - name: Cache rcodesign
-        id: rcodesign
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/rcodesign
-          key: rcodesign-0.29.0-${{ runner.os }}-${{ runner.arch }}
+          shared-key: release
+          save-if: false
 
       - name: Install rcodesign
-        if: steps.rcodesign.outputs.cache-hit != 'true'
-        run: cargo install apple-codesign --version 0.29.0 --locked
+        run: |
+          ASSET=apple-codesign-0.29.0-macos-universal
+          curl -fsSL -o "$RUNNER_TEMP/$ASSET.tar.gz" \
+            "https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F0.29.0/$ASSET.tar.gz"
+          echo "d98372d5524226ccf9dc0eda03d4e4f5826182dabb2fc3f2bd303ed9113a748d  $RUNNER_TEMP/$ASSET.tar.gz" | shasum -a 256 -c -
+          tar -xzf "$RUNNER_TEMP/$ASSET.tar.gz" -C "$RUNNER_TEMP"
+          mkdir -p ~/.cargo/bin
+          install -m 755 "$RUNNER_TEMP/$ASSET/rcodesign" ~/.cargo/bin/rcodesign
 
       - name: Install dependencies
         working-directory: app
