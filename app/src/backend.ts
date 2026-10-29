@@ -107,6 +107,8 @@ export interface Backend {
   confirm(message: string): Promise<boolean>;
   /** Files dropped from Finder, with the drop point in CSS pixels; `onHover` says when files are over the window. Returns an unsubscribe function. */
   onFileDrop(cb: (paths: string[], x: number, y: number) => void, onHover?: (over: boolean) => void): () => void;
+  /** Follow the media downloads from Drive (src-tauri/src/drive.rs `fetch`): each one's start, bytes, and end (`done`). Returns a function that stops. */
+  onDownloadProgress(cb: (p: { id: string; received: number; total: number; done: boolean }) => void): () => void;
 
   // Google sign-in (see src-tauri/src/google.rs)
   googleConfigured(): Promise<boolean>;
@@ -155,10 +157,10 @@ export interface Backend {
   driveCacheRoot(): Promise<string>;
   /** Download a Drive file (or one `revision` of it) into a show's copy. */
   driveDownload(fileId: string, dest: string, revision?: string): Promise<void>;
-  /** Upload a file: new in `parent` (named `name`), or new content for `fileId`. */
-  driveUpload(path: string, to: { name?: string; parent?: string; fileId?: string; properties?: Record<string, string> }): Promise<DriveFile>;
-  /** Download any of a show's files (bundle-relative) that aren't on this Mac yet. Returns a note for each that couldn't be. */
-  driveFetch(bundle: string, paths: string[]): Promise<string[]>;
+  /** Upload a file: new in `parent` (named `name`), or new content for `fileId`. `onProgress` gets the bytes sent so far. */
+  driveUpload(path: string, to: { name?: string; parent?: string; fileId?: string; properties?: Record<string, string> }, onProgress?: (sent: number, total: number) => void): Promise<DriveFile>;
+  /** Download any of a show's files (bundle-relative) that aren't on this Mac yet. Returns a note for each that couldn't be. `quiet`: not in the download progress bar. */
+  driveFetch(bundle: string, paths: string[], quiet?: boolean): Promise<string[]>;
   /** Delete downloaded files (bundle-relative, under media/) from a show's copy; they stay in Drive. Returns how many. */
   driveEvict(bundle: string, paths: string[]): Promise<number>;
   /** Delete a show's whole copy from this Mac. */
@@ -274,6 +276,16 @@ const desktop: Backend = {
       unlisten?.();
     };
   },
+  onDownloadProgress(cb) {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    listen<{ id: string; received: number; total: number; done: boolean }>("download-progress", (e) => cb(e.payload))
+      .then((fn) => (cancelled ? fn() : (unlisten = fn)));
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  },
   async googleConfigured() {
     return (await invoke("google_client_configured")) as boolean;
   },
@@ -356,11 +368,16 @@ const desktop: Backend = {
   async driveDownload(fileId, dest, revision) {
     await invoke("drive_download", { fileId, dest, revision: revision ?? null });
   },
-  async driveUpload(path, to) {
-    return (await invoke("drive_upload", { path, name: to.name ?? null, parent: to.parent ?? null, fileId: to.fileId ?? null, properties: to.properties ?? null })) as DriveFile;
+  async driveUpload(path, to, onProgress) {
+    const unlisten = onProgress ? await listen<{ id: string; sent: number; total: number }>("upload-progress", (e) => e.payload.id === path && onProgress(e.payload.sent, e.payload.total)) : null;
+    try {
+      return (await invoke("drive_upload", { path, name: to.name ?? null, parent: to.parent ?? null, fileId: to.fileId ?? null, properties: to.properties ?? null })) as DriveFile;
+    } finally {
+      unlisten?.();
+    }
   },
-  async driveFetch(bundle, paths) {
-    return paths.length ? ((await invoke("drive_fetch", { bundle, paths })) as string[]) : [];
+  async driveFetch(bundle, paths, quiet) {
+    return paths.length ? ((await invoke("drive_fetch", { bundle, paths, quiet: quiet ?? null })) as string[]) : [];
   },
   async driveEvict(bundle, paths) {
     return paths.length ? ((await invoke("drive_evict", { bundle, paths })) as number) : 0;
@@ -457,6 +474,9 @@ const browser: Backend = {
   },
   async confirm(message) {
     return window.confirm(message);
+  },
+  onDownloadProgress() {
+    return () => {};
   },
   onFileDrop() {
     return () => {};

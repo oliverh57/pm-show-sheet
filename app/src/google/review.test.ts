@@ -186,6 +186,17 @@ describe("REVIEW tab", () => {
     expect(c.replies[0]).toMatchObject({ from: "Ria", text: "fixed in V3" });
     expect(show.reviews!.find((x) => x.id === "rev_new")).toMatchObject({ song_id: a, record_id: "rec1", t: 70, tc: "04:01:00:00", dept: "LX", from: "Sam", source: "sheet" });
   });
+  it("reads only the first copy of a row (a second is left when two Macs push at once)", () => {
+    const show = fresh();
+    const [a, b] = show.set_order;
+    addReview(show, { song_id: a, record_id: "rec1", t: 50, text: "Strobe early", from: "Sam" });
+    addReview(show, { song_id: b, record_id: "rec1", t: 250, text: "Haze", from: "Ria" });
+    const published = snapshot(show);
+    const v = values(show);
+    v.push([...v[FIRST]]);
+    v[v.length - 1][col(show, "comment")] = "Haze";
+    expect(diffReviewTab(show, published, v)).toEqual([]);
+  });
   it("edits a comment's text and marks it edited, only when the text changes", () => {
     const show = fresh();
     const id = addReview(show, { song_id: show.set_order[0], record_id: "rec1", t: 50, text: "Strobe early", from: "Sam" });

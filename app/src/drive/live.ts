@@ -184,8 +184,8 @@ export function useDriveLive() {
     locate(bundle).then((where) => { if (useStore.getState().bundle === bundle) useStore.getState().setLocation(where); }).catch(() => {});
     const say = () => {
       if (!folderId) return;
-      const canEdit = !useStore.getState().readOnly;
-      beat(folderId, user.email, user.name, canEdit).then((o) => { if (useStore.getState().bundle === bundle) useStore.getState().setOthers(o); }).catch(() => {});
+      const { readOnly, editedAt } = useStore.getState();
+      beat(folderId, user.email, user.name, !readOnly, editedAt).then((o) => { if (useStore.getState().bundle === bundle) useStore.getState().setOthers(o); }).catch(() => {});
     };
     const firstBeat = window.setTimeout(say, 1000);
     const lost = () => goOffline();

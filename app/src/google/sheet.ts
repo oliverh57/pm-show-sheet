@@ -454,6 +454,28 @@ export function keptCells(g: TabGrid, kind: "show" | "review", now: Record<strin
   };
 }
 
+/**
+ * `g` with the `keep` cells' values as they are in the Sheet (`sheet`: the tab read just before the push, its id row
+ * first), found by the row's id rather than where it is, to be written with the rest. Another Mac pushing at the same time
+ * can move rows between that read and this push's write; a cell left as it is would then end up beside another row's id
+ * (and the next pull would read it as an edit to that row), where a row written whole stays its own.
+ */
+export function withSheetValues(g: TabGrid, keep: (row: number, col: number) => boolean, sheet: unknown[][]): TabGrid {
+  const colPos = new Map((sheet[0] ?? []).map((cid, i) => [String(cid), i]));
+  const byId = new Map<string, unknown[]>();
+  for (const row of sheet.slice(HEADER_ROWS)) {
+    const id = String(normalize(row?.[0]));
+    if (id && !byId.has(id)) byId.set(id, row);
+  }
+  const dataRows = g.dataRows.map((r, ri) => r.map((cell, ci) => {
+    if (!keep(ri, ci)) return cell;
+    const p = colPos.get(g.colIds[ci]);
+    const v = p === undefined ? undefined : byId.get(g.rowIds[ri])?.[p];
+    return { ...cell, value: typeof cell.value === "boolean" ? asBool(v) : normalize(v), formula: undefined, links: undefined };
+  }));
+  return { ...g, dataRows };
+}
+
 /** The data rows, leaving the values of `keep` cells alone (their format is still set). */
 function dataRequests(g: TabGrid, sheetId: number, keep?: (row: number, col: number) => boolean): object[] {
   const rows = g.dataRows;
@@ -540,9 +562,9 @@ export function reconcileRows(current: string[], desired: string[]): RowOp[] {
       cur.splice(i, 0, rid);
     }
   });
-  const wanted = new Set(desired);
+  // Below the wanted rows, a row with an id is one no longer wanted, or a second copy of one (left by two Macs pushing at once).
   for (let j = cur.length - 1; j >= desired.length; j--) {
-    if (cur[j] && !wanted.has(cur[j])) {
+    if (cur[j]) {
       ops.push(["delete", j]);
       cur.splice(j, 1);
     }
@@ -587,10 +609,12 @@ export function diffShowTab(show: Show, published: Record<string, string | boole
   if (!values.length) return { edits, conflicts };
   const colPos = new Map(values[0].map((cid, i) => [String(cid), i]));
   const editable = show.columns.filter(sheetEditable);
+  const seen = new Set<string>();
   for (const row of values.slice(HEADER_ROWS)) {
     const rid = String(normalize(row[0]));
     const song = show.songs[rid];
-    if (!song) continue;
+    if (!song || seen.has(rid)) continue; // a second copy of a row: the next push deletes it
+    seen.add(rid);
     for (const col of editable) {
       const pos = colPos.get(col.id);
       if (pos === undefined) continue;
@@ -792,7 +816,8 @@ export function diffReviewTab(show: Show, published: Record<string, string | boo
       return;
     }
     const mine = app.get(id);
-    if (!mine) return; // deleted in the app: the next push takes the row out
+    if (!mine) return; // deleted in the app (or a second copy of a row): the next push takes the row out
+    app.delete(id);
     for (const col of REVIEW_EDITABLE) {
       if (!colPos.has(col)) continue;
       const sheet = col === "done" ? asBool(cell(row, col)) : normalize(cell(row, col));

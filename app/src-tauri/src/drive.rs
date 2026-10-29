@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Semaphore;
 
 const FILES: &str = "https://www.googleapis.com/drive/v3/files";
@@ -34,6 +34,34 @@ static FETCHING: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
 static CACHE_LIMIT: AtomicU64 = AtomicU64::new(0);
 /// One trim at a time.
 static TRIMMING: Mutex<()> = Mutex::new(());
+
+/// How far an upload has got, in bytes, for the upload progress bar (src/components/UploadProgress.tsx). `id` is the
+/// file's path.
+#[derive(Clone, serde::Serialize)]
+struct UploadProgress {
+    id: String,
+    sent: u64,
+    total: u64,
+}
+
+fn upload_progress(app: &AppHandle, path: &Path, sent: u64, total: u64) {
+    let _ = app.emit("upload-progress", UploadProgress { id: path.to_string_lossy().to_string(), sent, total });
+}
+
+/// How far a media download has got (src/drive/media.ts `watchDownloads`): a start, bytes now and then, and an end
+/// (`done`, whether or not it worked). `id` is the file's path; `total` is 0 until Drive says the size.
+#[derive(Clone, serde::Serialize)]
+struct DownloadProgress {
+    id: String,
+    received: u64,
+    total: u64,
+    done: bool,
+}
+const DOWNLOAD_PROGRESS_EVERY: Duration = Duration::from_millis(150);
+
+fn download_progress(app: &AppHandle, id: &str, received: u64, total: u64, done: bool) {
+    let _ = app.emit("download-progress", DownloadProgress { id: id.to_string(), received, total, done });
+}
 
 fn err<E: std::fmt::Display>(context: &str) -> impl Fn(E) -> String + '_ {
     move |e| format!("{context}: {e}")
@@ -85,8 +113,9 @@ async fn get_json(app: &AppHandle, url: &str) -> Result<Value, String> {
 }
 
 /// Download a Drive file to `dest` (through a .part file, so a half-downloaded file is never mistaken for the file).
-/// `revision`: an earlier version of the file instead of the current one.
-async fn download_to(app: &AppHandle, file_id: &str, revision: Option<&str>, dest: &Path) -> Result<u64, String> {
+/// `revision`: an earlier version of the file instead of the current one. `progress` gets the bytes received so far, and
+/// the size (0 if Drive doesn't say), every so often.
+async fn download_to(app: &AppHandle, file_id: &str, revision: Option<&str>, dest: &Path, progress: &(dyn Fn(u64, u64) + Send + Sync)) -> Result<u64, String> {
     if !valid_id(file_id) || revision.is_some_and(|r| !valid_id(r)) {
         return Err(format!("not a Drive file id: {file_id}"));
     }
@@ -116,12 +145,19 @@ async fn download_to(app: &AppHandle, file_id: &str, revision: Option<&str>, des
     }
     let part = dest.with_file_name(format!("{}.part", dest.file_name().and_then(|n| n.to_str()).unwrap_or("download")));
     let mut file = fs::File::create(&part).map_err(err("write download"))?;
+    let size = res.content_length().unwrap_or(0);
     let mut n = 0u64;
+    let mut reported = Instant::now();
+    progress(0, size);
     loop {
         match res.chunk().await {
             Ok(Some(bytes)) => {
                 file.write_all(&bytes).map_err(err("write download"))?;
                 n += bytes.len() as u64;
+                if reported.elapsed() >= DOWNLOAD_PROGRESS_EVERY {
+                    progress(n, size);
+                    reported = Instant::now();
+                }
             }
             Ok(None) => break,
             Err(e) => {
@@ -144,7 +180,7 @@ pub async fn drive_download(app: AppHandle, file_id: String, dest: String, revis
     if !in_cache(&app, &dest) {
         return Err("Downloads only go into the app's shows folder".into());
     }
-    download_to(&app, &file_id, revision.as_deref(), &dest).await.map(|_| ())
+    download_to(&app, &file_id, revision.as_deref(), &dest, &|_, _| {}).await.map(|_| ())
 }
 
 /// Which of these files are on this Mac.
@@ -355,6 +391,7 @@ pub async fn drive_upload(app: AppHandle, path: String, name: Option<String>, pa
             if !status.is_success() {
                 return Err(api_error(status, &text));
             }
+            upload_progress(&app, &src, size, size);
             return serde_json::from_str(&text).map_err(err("read Drive's reply"));
         }
         unreachable!()
@@ -383,6 +420,7 @@ async fn resumable(app: &AppHandle, method: reqwest::Method, url: &str, meta: &V
     let mut file = fs::File::open(src).map_err(err("read file"))?;
     let mut buf = vec![0u8; CHUNK];
     let mut offset = 0u64;
+    upload_progress(app, src, 0, size);
     loop {
         file.seek(SeekFrom::Start(offset)).map_err(err("read file"))?;
         let mut n = 0;
@@ -408,12 +446,14 @@ async fn resumable(app: &AppHandle, method: reqwest::Method, url: &str, meta: &V
         if status.as_u16() == 308 {
             // "Range: bytes=0-N": what Drive has so far
             offset = res.headers().get("range").and_then(|v| v.to_str().ok()).and_then(|r| r.rsplit('-').next()?.parse::<u64>().ok()).map(|last| last + 1).unwrap_or(0);
+            upload_progress(app, src, offset, size);
             continue;
         }
         let text = res.text().await.map_err(err("read Drive's reply"))?;
         if !status.is_success() {
             return Err(api_error(status, &text));
         }
+        upload_progress(app, src, size, size);
         return serde_json::from_str(&text).map_err(err("read Drive's reply"));
     }
 }
@@ -444,8 +484,8 @@ async fn file_id(app: &AppHandle, show: &Path, rel: &str) -> Result<String, Stri
 }
 
 /// Make sure a file in a show's copy is on this Mac, downloading it if it isn't. Several asks for the same file
-/// share one download.
-async fn fetch(app: &AppHandle, path: &Path) -> Result<(), String> {
+/// share one download. `report`: show it in the download progress bar (not for copies the Sheet sync needs).
+async fn fetch(app: &AppHandle, path: &Path, report: bool) -> Result<(), String> {
     let root = cache_root(app).ok_or("no app data folder")?;
     let (show, rel) = split_cached(&root, path).ok_or("not in a show")?;
     let started = Instant::now();
@@ -465,11 +505,15 @@ async fn fetch(app: &AppHandle, path: &Path) -> Result<(), String> {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    let key = path.to_string_lossy().to_string();
+    let progress = |got: u64, size: u64, done: bool| if report { download_progress(app, &key, got, size, done) };
+    progress(0, 0, false);
     let result = async {
         let id = file_id(app, &show, &rel).await?;
-        download_to(app, &id, None, path).await.map(|_| ())
+        download_to(app, &id, None, path, &|got, size| progress(got, size, false)).await.map(|_| ())
     }
     .await;
+    progress(0, 0, true);
     FETCHING.lock().unwrap().get_or_insert_with(HashSet::new).remove(path);
     // Make room: the least recently used media goes once the shows folder is over its limit.
     let limit = CACHE_LIMIT.load(Ordering::Relaxed);
@@ -489,13 +533,14 @@ pub fn fetch_blocking(path: &Path) -> bool {
     if !in_cache(app, path) {
         return false;
     }
-    tauri::async_runtime::block_on(fetch(app, path)).is_ok()
+    tauri::async_runtime::block_on(fetch(app, path, true)).is_ok()
 }
 
 /// Download any of a show's files (bundle-relative paths) that aren't on this Mac. Returns a note for each one that
-/// couldn't be.
+/// couldn't be. `quiet`: keep them out of the download progress bar.
 #[tauri::command]
-pub async fn drive_fetch(app: AppHandle, bundle: String, paths: Vec<String>) -> Vec<String> {
+pub async fn drive_fetch(app: AppHandle, bundle: String, paths: Vec<String>, quiet: Option<bool>) -> Vec<String> {
+    let report = !quiet.unwrap_or(false);
     let show = PathBuf::from(&bundle);
     if !in_cache(&app, &show) {
         return vec!["This show isn't one of the app's copies".into()];
@@ -505,7 +550,7 @@ pub async fn drive_fetch(app: AppHandle, bundle: String, paths: Vec<String>) -> 
         .filter(|rel| !rel.starts_with('/') && !rel.split('/').any(|p| p == ".."))
         .map(|rel| {
             let (app, path) = (app.clone(), show.join(&rel));
-            tauri::async_runtime::spawn(async move { fetch(&app, &path).await.map_err(|e| format!("{rel}: {e}")) })
+            tauri::async_runtime::spawn(async move { fetch(&app, &path, report).await.map_err(|e| format!("{rel}: {e}")) })
         })
         .collect();
     let mut notes = Vec::new();

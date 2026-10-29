@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import sample from "../model/sample_show.json";
 import { addClip, addCustomField, deptCategory, GENERAL, imageColumnFor, migrate, sheetEditable } from "../model/ops";
 import type { Show } from "../model/types";
-import { contentRequests, diffShowTab, formatRuleRequests, HEADER_ROWS, keptCells, LOGO_URL, protectionUpdateRequests, reconcileRows, showTab, snapshot, spareColumnRequests, structureRequests } from "./sheet";
+import { contentRequests, diffShowTab, formatRuleRequests, HEADER_ROWS, keptCells, LOGO_URL, protectionUpdateRequests, reconcileRows, showTab, snapshot, spareColumnRequests, structureRequests, withSheetValues } from "./sheet";
 import { deckFingerprint, deckRequests, textHeight } from "./slides";
 
 const fresh = () => migrate(structuredClone(sample) as Show);
@@ -114,6 +114,7 @@ describe("row reconcile", () => {
     [["a", "c"], ["a", "b", "c"], [["insert", 1]]],
     [["a", "x", "b"], ["a", "b"], [["move", 2, 1], ["delete", 2]]],
     [["a", "", "b"], ["a", "b"], [["move", 2, 1]]],
+    [["a", "b", "a"], ["a", "b"], [["delete", 2]]], // a second copy, left by two Macs pushing at once
   ])("%j → %j", (cur, want, ops) => {
     expect(reconcileRows(cur, want)).toEqual(ops);
   });
@@ -232,6 +233,25 @@ describe("pushing over Sheet edits", () => {
     expect(at("s_glass")[ci]).toBe("typed during the sync");
     expect(at("s_glass")[g.colIds.indexOf("name")]).toBe("Glass (edit)");
     expect(diffShowTab(show, snapshot(show), sheet).edits).toEqual([{ songId: "s_glass", colId: col, value: "typed during the sync" }]);
+  });
+  it("writes each row whole, as its own id's, even if another Mac moved rows after the push read the Sheet", () => {
+    const show = fresh();
+    const col = editable(show);
+    const published = snapshot(show);
+    const sheet = sheetValues(show);
+    const g0 = showTab(show, {});
+    const ci = g0.colIds.indexOf(col);
+    const glass = HEADER_ROWS + g0.rowIds.indexOf("s_glass");
+    sheet[glass][ci] = "typed during the sync";
+    const read = structuredClone(sheet);
+    // Another Mac's push lands between this one's read and its write: s_glass moves up a row.
+    sheet.splice(glass - 1, 0, sheet.splice(glass, 1)[0]);
+    const g = showTab(show, {});
+    applyValues(sheet, contentRequests(withSheetValues(g, keptCells(g, "show", snapshot(show), published, new Set(g.rowIds)), read), 1));
+    const rows = sheet.slice(HEADER_ROWS, HEADER_ROWS + g.rowIds.length);
+    expect(rows.map((r) => r[0])).toEqual(g.rowIds);
+    for (const r of rows) expect(r[ci]).toBe(r[0] === "s_glass" ? "typed during the sync" : published[`show|${r[0]}|${col}`]);
+    expect(diffShowTab(show, published, sheet).edits).toEqual([{ songId: "s_glass", colId: col, value: "typed during the sync" }]);
   });
   it("writes every cell of a row it's adding, and every cell when nothing's been pushed", () => {
     const show = fresh();

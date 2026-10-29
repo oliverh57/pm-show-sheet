@@ -5,6 +5,7 @@ import { useEffect } from "react";
 import { create } from "zustand";
 
 const CHECK_EVERY_MS = 4 * 60 * 60 * 1000;
+const CHECK_TIMEOUT_MS = 20 * 1000; // shows wait on the check, so a slow network mustn't hold them up for long
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 export type UpdateStatus = "idle" | "checking" | "downloading" | "ready" | "up-to-date" | "error";
@@ -23,6 +24,18 @@ export const useUpdates = create<UpdateState>(() => ({
   current: null, status: "idle", version: null, notes: null, progress: null, error: null, lastChecked: null,
 }));
 
+/**
+ * Why shows can't be opened right now, or null if they can. While a newer version is being looked for, downloaded or
+ * waiting for a restart, shows stay shut: an older version editing a show alongside a newer one could clash with it
+ * (a newer show format, say). A check that fails (offline) doesn't hold shows up.
+ */
+export function showsBlocked(s: Pick<UpdateState, "status" | "version">): string | null {
+  if (s.status === "checking") return "Checking for updates before opening shows…";
+  if (s.status === "downloading") return `PM Show Sheet ${s.version} is downloading. Shows open once you've restarted to update, so edits from two versions can't clash.`;
+  if (s.status === "ready") return `PM Show Sheet ${s.version} is ready. Restart to update to open shows, so edits from two versions can't clash.`;
+  return null;
+}
+
 let running = false;
 
 /** Check GitHub; if there's a newer version, download and install it, ready for the next restart. */
@@ -32,7 +45,7 @@ export async function checkForUpdates(): Promise<void> {
   useUpdates.setState({ status: "checking", error: null });
   try {
     const { check } = await import("@tauri-apps/plugin-updater");
-    const update = await check();
+    const update = await check({ timeout: CHECK_TIMEOUT_MS });
     if (!update) {
       useUpdates.setState({ status: "up-to-date", lastChecked: Date.now() });
       return;

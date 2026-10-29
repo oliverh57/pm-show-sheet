@@ -18,11 +18,13 @@ import { SignIn } from "./components/SignIn";
 import { SongDrawer } from "./components/SongDrawer";
 import { SongsPage } from "./components/SongsPage";
 import { UpdateBar, WhatsNew } from "./components/UpdateBar";
+import { TransferProgress } from "./components/TransferProgress";
 import { addImages, deptCategory, ensureCategory, extension, keepResolvedDays, resolvedToTidy, tidyResolved } from "./model/ops";
 import { useAdoptWatchFolders } from "./watchFolders";
 import { useStore, type View } from "./store";
 import { useAutoUpdate } from "./updates";
 import { applyCacheLimit } from "./storage";
+import { watchDownloads } from "./drive/media";
 import { useGoogleSync } from "./google/sync";
 import { goOffline, isOffline, pushShow, useDriveLive } from "./drive/live";
 import { holdEdits } from "./drive/show";
@@ -48,12 +50,13 @@ export default function App() {
   useAdoptWatchFolders();
   useTidyResolved();
   useEffect(() => { applyCacheLimit().catch(() => {}); }, []);
+  useEffect(() => watchDownloads(), []);
 
   if (!authChecked) return null;
   if (!user) return <div className="app"><UpdateBar /><WhatsNew /><SignIn /></div>;
   if (!show && toolsReady === null) return null;
   if (!show && !toolsReady) return <div className="app"><UpdateBar /><WhatsNew /><ToolsSetup onDone={skipTools} /></div>;
-  if (!show) return <div className="app"><UpdateBar /><WhatsNew />{view === "prefs" ? <HomeSettings /> : <Home />}<Toasts /></div>;
+  if (!show) return <div className="app"><UpdateBar /><WhatsNew />{view === "prefs" ? <HomeSettings /> : <Home />}<TransferProgress /><Toasts /></div>;
 
   const page = { songs: <SongsPage />, media: <MediaPage />, comments: <CommentsPage />, import: <ImportPage key={importSeq} />, share: <SharePage />, sheet: <SheetPage />, settings: <SettingsPage />, prefs: <AppSettings /> }[view];
   return (
@@ -73,6 +76,7 @@ export default function App() {
       {columnsOpen && <ColumnsDialog />}
       {dragging && <div className="drop-overlay">Drop to add media</div>}
       <RemoteEditsNotice />
+      <TransferProgress />
       <Toasts />
     </div>
   );

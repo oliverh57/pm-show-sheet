@@ -4,6 +4,7 @@ import { create } from "zustand";
 import type { GoogleUser, ThumbCandidate } from "./backend";
 import type { RemoteEdits } from "./drive/edits";
 import type { Clash } from "./drive/offline";
+import type { Presence } from "./drive/presence";
 import { merge3 } from "./drive/merge";
 import type { Show } from "./model/types";
 
@@ -52,7 +53,8 @@ interface State {
   bundle: string | null;
   readOnly: string | null; // why the open show can't be edited (it's only shared with you to view), or null
   location: string | null; // where the open show is in Google Drive ("Shared drives / X › 2026")
-  others: { email: string; name: string }[]; // who else has the show open
+  others: Presence[]; // who else has the show open
+  editedAt: number | null; // when the show was last edited here, since it was opened (others see it on hover)
   version: number; // bumps on every change; App saves when it moves
   past: Show[];
   future: Show[];
@@ -84,7 +86,7 @@ interface State {
 
   setUser(user: GoogleUser | null): void;
   load(show: Show, bundle: string, readOnly?: string | null): void;
-  setOthers(others: { email: string; name: string }[]): void;
+  setOthers(others: Presence[]): void;
   setLocation(location: string | null): void;
   setReadOnly(readOnly: string | null): void;
   setConnection(connection: Connection): void;
@@ -143,6 +145,7 @@ export const useStore = create<State>((set, get) => ({
   readOnly: null,
   location: null,
   others: [],
+  editedAt: null,
   version: 0,
   past: [],
   future: [],
@@ -174,7 +177,7 @@ export const useStore = create<State>((set, get) => ({
     set({ user, authChecked: true });
   },
   load(show, bundle, readOnly = null) {
-    set({ show, bundle, readOnly, location: null, others: [], past: [], future: [], saveState: "saved", saveError: null, connection: "online", view: "songs", mediaTab: "add",
+    set({ show, bundle, readOnly, location: null, others: [], editedAt: null, past: [], future: [], saveState: "saved", saveError: null, connection: "online", view: "songs", mediaTab: "add",
           selectedSongId: show.set_order[0] ?? null, selectedColId: "name", drawerSongId: null, importFiles: null, importSource: null, jobs: [], stillPicks: [], remoteEdits: null, showingEdits: false, clashes: [], clashesOpen: false });
   },
   setBundle(bundle) {
@@ -196,7 +199,7 @@ export const useStore = create<State>((set, get) => ({
     set({ show, past: [], future: [], saveState: "saved", saveError: null });
   },
   close() {
-    set({ show: null, bundle: null, readOnly: null, connection: "online", location: null, others: [], past: [], future: [], selectedSongId: null, drawerSongId: null, importFiles: null, stillPicks: [], view: "songs", remoteEdits: null, showingEdits: false, clashes: [], clashesOpen: false });
+    set({ show: null, bundle: null, readOnly: null, connection: "online", location: null, others: [], editedAt: null, past: [], future: [], selectedSongId: null, drawerSongId: null, importFiles: null, stillPicks: [], view: "songs", remoteEdits: null, showingEdits: false, clashes: [], clashesOpen: false });
   },
   update(fn) {
     const { show, past, version, readOnly } = get();
@@ -204,7 +207,7 @@ export const useStore = create<State>((set, get) => ({
     if (readOnly) return get().toast(`Read only: ${readOnly}`);
     const next = structuredClone(show);
     fn(next);
-    set({ show: next, past: [...past.slice(-HISTORY_LIMIT + 1), show], future: [], version: version + 1, saveState: "unsaved" });
+    set({ show: next, past: [...past.slice(-HISTORY_LIMIT + 1), show], future: [], version: version + 1, saveState: "unsaved", editedAt: Date.now() });
   },
   updateQuiet(fn) {
     const { show, version, readOnly } = get();
@@ -223,12 +226,12 @@ export const useStore = create<State>((set, get) => ({
   undo() {
     const { show, past, future, version } = get();
     if (!show || past.length === 0) return;
-    set({ show: { ...past[past.length - 1], google: show.google }, past: past.slice(0, -1), future: [show, ...future], version: version + 1, saveState: "unsaved" });
+    set({ show: { ...past[past.length - 1], google: show.google }, past: past.slice(0, -1), future: [show, ...future], version: version + 1, saveState: "unsaved", editedAt: Date.now() });
   },
   redo() {
     const { show, past, future, version } = get();
     if (!show || future.length === 0) return;
-    set({ show: { ...future[0], google: show.google }, past: [...past, show], future: future.slice(1), version: version + 1, saveState: "unsaved" });
+    set({ show: { ...future[0], google: show.google }, past: [...past, show], future: future.slice(1), version: version + 1, saveState: "unsaved", editedAt: Date.now() });
   },
   select(songId, colId) {
     set((s) => ({ selectedSongId: songId, selectedColId: colId === undefined ? s.selectedColId : colId }));

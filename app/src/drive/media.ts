@@ -11,9 +11,57 @@ import { readManifest, serial, updateManifest, type Manifest } from "./show";
 
 const SKIP = new Set(["Slides images", "presence", "thumbs", "proxies"]); // the deck's own copies, and what was only ever per-Mac
 
-/** Uploads in progress, for the "Uploading…" badges. */
-export const useUploads = create<{ uploading: string[] }>(() => ({ uploading: [] }));
-const setUploading = (fn: (cur: string[]) => string[]) => useUploads.setState((s) => ({ uploading: fn(s.uploading) }));
+/** A file going up or coming down now: its name, and the bytes moved so far of `size` (0 until Drive says). */
+export interface Transfer { id: string; name: string; sent: number; size: number }
+/** Files in a run of uploads (or downloads), how many are done, and the ones going now. Back to 0 once all are done. */
+export interface TransferRun { total: number; done: number; active: Transfer[] }
+interface Transfers {
+  /** Media paths uploading, for the "Uploading…" badges. */
+  uploading: string[];
+  /** For the progress bars (src/components/TransferProgress.tsx). */
+  up: TransferRun;
+  down: TransferRun;
+}
+const IDLE: TransferRun = { total: 0, done: 0, active: [] };
+export const useTransfers = create<Transfers>(() => ({ uploading: [], up: IDLE, down: IDLE }));
+const setUploading = (fn: (cur: string[]) => string[]) => useTransfers.setState((s) => ({ uploading: fn(s.uploading) }));
+const setRun = (dir: "up" | "down", fn: (r: TransferRun) => TransferRun) => useTransfers.setState((s) => ({ [dir]: fn(s[dir]) }));
+const report = (r: TransferRun, id: string, sent: number, size: number): TransferRun => ({ ...r, active: r.active.map((t) => (t.id === id ? { ...t, sent, size } : t)) });
+function finish(r: TransferRun, id: string): TransferRun {
+  const active = r.active.filter((t) => t.id !== id);
+  const done = r.done + 1;
+  return active.length || done < r.total ? { ...r, active, done } : IDLE;
+}
+let uploadSeq = 0;
+
+/** Count `n` more files into the upload progress bar. Each must then go up through `trackUpload` (or the bar never finishes). */
+export function willUpload(n: number) {
+  if (n > 0) setRun("up", (r) => ({ ...r, total: r.total + n }));
+}
+
+/** Upload a file (named `name`), shown in the progress bar while it goes. `run` reports the bytes sent. */
+export async function trackUpload<T>(name: string, run: (onProgress: (sent: number, size: number) => void) => Promise<T>): Promise<T> {
+  const id = `up${++uploadSeq}`;
+  setRun("up", (r) => ({ ...r, active: [...r.active, { id, name, sent: 0, size: 0 }] }));
+  try {
+    return await run((sent, size) => setRun("up", (r) => report(r, id, sent, size)));
+  } finally {
+    setRun("up", (r) => finish(r, id));
+  }
+}
+
+/**
+ * Follow the media the Rust side downloads from Drive (for the player and images, and Download on a show's card) into
+ * the download progress bar. Each download counts in when it starts. Returns a function that stops.
+ */
+export function watchDownloads(): () => void {
+  return backend.onDownloadProgress(({ id, received, total, done }) => setRun("down", (r) => {
+    const known = r.active.some((t) => t.id === id);
+    if (done) return known ? finish(r, id) : r;
+    if (known) return report(r, id, received, total);
+    return { ...r, total: r.total + 1, active: [...r.active, { id, name: id.split("/").pop() ?? id, sent: received, size: total }] };
+  }));
+}
 
 /** Every media path the show uses (bundle-relative): images, crops, clips and their stills, comment frames, the cover. */
 export function showMedia(show: Show): string[] {
@@ -73,17 +121,20 @@ export function uploadNewMedia(bundle: string, show: Show): Promise<string[]> {
     if (!todo.length) return [];
     const here = await backend.pathsExist(todo.map((rel) => `${bundle}/${rel}`));
     const notes: string[] = [];
+    willUpload(here.filter(Boolean).length);
     for (const [i, rel] of todo.entries()) {
       if (!here[i]) continue; // made on another Mac: it's in Drive (or will be when that Mac uploads it)
       const dir = rel.split("/").slice(0, -1).join("/");
       const name = rel.split("/").pop()!;
       setUploading((cur) => [...cur, rel]);
       try {
-        const parent = await folderFor(bundle, dir);
-        // Downloaded here from Drive rather than made here: it's there already.
-        const there = await child(parent, name, "id,md5Checksum");
-        const file = there ?? (await backend.driveUpload(`${bundle}/${rel}`, { parent, name }));
-        await updateManifest(bundle, (x) => { x.files[rel] = { id: file.id, md5: file.md5Checksum, modified: Date.now() }; });
+        await trackUpload(name, async (onProgress) => {
+          const parent = await folderFor(bundle, dir);
+          // Downloaded here from Drive rather than made here: it's there already.
+          const there = await child(parent, name, "id,md5Checksum");
+          const file = there ?? (await backend.driveUpload(`${bundle}/${rel}`, { parent, name }, onProgress));
+          await updateManifest(bundle, (x) => { x.files[rel] = { id: file.id, md5: file.md5Checksum, modified: Date.now() }; });
+        });
       } catch (e) {
         notes.push(`${name}: ${String(e).replace(/^Error: /, "")}`);
       } finally {

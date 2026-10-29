@@ -57,7 +57,7 @@ function Value({ c, v, show }: { c: Change; v: unknown; show: Show }) {
   if (Array.isArray(v)) return <span>{plural(v.length, c.label === "Clips" ? "clip" : "item")}</span>;
   if (typeof v === "object" && v !== null) {
     const o = v as Record<string, unknown>;
-    if (typeof o.text === "string") return <span className="ov-text">“{o.text}”{typeof o.from === "string" && <span className="ov-from"> {o.from}</span>}</span>;
+    if (typeof o.text === "string") return <span className="ov-text">“{o.text}”{typeof o.from === "string" && <span className="ov-from"> {o.from}</span>}{o.done === true && <span className="ov-from"> · Resolved</span>}</span>;
     const name = [o.label, o.name].find((x) => typeof x === "string" && x);
     return <span className="ov-text">{name ? String(name) : "Changed"}</span>;
   }

@@ -67,7 +67,7 @@ export function AppSettings({ onBack }: { onBack?: () => void }) {
 }
 
 /** 1.8 GB, 240 MB, 12 KB. */
-function formatSize(bytes: number): string {
+export function formatSize(bytes: number): string {
   const units = ["bytes", "KB", "MB", "GB", "TB"];
   let n = bytes;
   let i = 0;

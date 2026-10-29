@@ -10,6 +10,7 @@ import { useStore } from "../store";
 import { DriveFolderPicker } from "./DriveFolderPicker";
 import { Avatar, GoogleDriveMark, Icon } from "./icons";
 import { VersionLine } from "./UpdateBar";
+import { restartToUpdate, showsBlocked, useUpdates } from "../updates";
 
 /** An error, said plainly: Drive not being reachable says so, rather than the request that failed. */
 const why = (e: unknown) => isOffline(e) ? "Google Drive can't be reached" : String(e).replace(/^Error: /, "");
@@ -23,6 +24,8 @@ export function Home() {
   const [error, setError] = useState<string | null>(null);
   const [offline, setOffline] = useState(false); // Drive couldn't be reached: the shows are the ones found last time
   const [media, setMedia] = useState<{ path: string; text: string } | null>(null); // a show whose media is downloading or being removed
+  const blocked = useUpdates(showsBlocked); // a newer version is on its way: shows stay shut until it's installed
+  const updateReady = useUpdates((s) => s.status === "ready");
 
   async function refresh() {
     setScanning(true);
@@ -46,6 +49,7 @@ export function Home() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function open(path: string) {
+    if (showsBlocked(useUpdates.getState())) return;
     setError(null);
     setOpening(path);
     try {
@@ -107,12 +111,19 @@ export function Home() {
               Shows you've opened on this Mac before still open. Changes you make are saved on this Mac, and you approve them before they upload when you're back online.</span>
           </p>
         )}
+        {blocked && (
+          <p className="offline-note home-offline">
+            <Icon name="alert" size="sm" />
+            <span>{blocked}</span>
+            {updateReady && <button className="primary" onClick={restartToUpdate}>Restart to update</button>}
+          </p>
+        )}
         {error && <p className="error">{error}</p>}
         <div className="projects">
-          <button className="pcard new-card" onClick={() => setCreating(true)}><div><Icon name="plus" size="lg" />New show</div></button>
+          <button className="pcard new-card" onClick={() => setCreating(true)} disabled={blocked !== null}><div><Icon name="plus" size="lg" />New show</div></button>
           {list.map((s, i) => (
             <div key={s.path} className="pcard-wrap" style={{ animationDelay: `${Math.min(i, 12) * 0.03}s` }}>
-            <button className="pcard" onClick={() => open(s.path)} disabled={opening !== null}>
+            <button className="pcard" onClick={() => open(s.path)} disabled={opening !== null || blocked !== null} title={blocked ?? undefined}>
               <div className="cover">
                 {s.cover ? <img src={backend.fileUrl(s.cover)} alt="" /> : <div className="ph"><Icon name="music" /></div>}
                 {media?.path === s.path && <span className="media-busy"><span className="spinner" style={{ width: 11, height: 11, borderWidth: 1.5 }} />{media.text}</span>}
@@ -184,6 +195,8 @@ function NewShowDialog({ onClose }: { onClose: () => void }) {
 
   async function create() {
     if (!name.trim() || busy) return;
+    const blocked = showsBlocked(useUpdates.getState());
+    if (blocked) { setError(blocked); return; }
     setBusy(true);
     setError(null);
     try {

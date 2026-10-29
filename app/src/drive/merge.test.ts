@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import sample from "../model/sample_show.json";
-import { migrate } from "../model/ops";
+import { addReview, migrate, setReviewDone } from "../model/ops";
 import type { Show } from "../model/types";
 import { merge3, mergeList } from "./merge";
 
@@ -33,6 +33,19 @@ describe("merge3", () => {
     const { merged, conflicts } = merge3(base, local, remote);
     expect(merged.songs[a].fields.name).toBe("MINE");
     expect(conflicts).toEqual([{ path: ["songs", a, "fields", "name"], local: "MINE", remote: "THEIRS" }]);
+  });
+
+  it("a comment resolved on both Macs (each bringing in the same tick from the Sheet) isn't a clash", () => {
+    const [base, local, remote] = three();
+    const id = addReview(base, { song_id: base.set_order[0], t: 0, text: "Too dark", from: "Sam" });
+    [local, remote].forEach((s) => (s.reviews = structuredClone(base.reviews)));
+    setReviewDone(local, id, true);
+    setReviewDone(remote, id, true);
+    local.reviews![0].resolved_at = "2026-10-29T21:01:21.938Z";
+    remote.reviews![0].resolved_at = "2026-10-29T21:01:40.002Z";
+    const { merged, conflicts } = merge3(base, local, remote);
+    expect(conflicts).toEqual([]);
+    expect(merged.reviews![0]).toMatchObject({ done: true, resolved_at: "2026-10-29T21:01:40.002Z" });
   });
 
   it("is a no-op when only one side changed", () => {

@@ -8,6 +8,7 @@ import { showCover } from "../model/ops";
 import { useStore, type View } from "../store";
 import { DriveFolderPicker } from "./DriveFolderPicker";
 import { openClashes } from "../drive/offline";
+import { editedAgo } from "../drive/presence";
 import { ClashDialog, OfflineReviewDialog } from "./OfflineReview";
 import { SyncBadge } from "./OtherPages";
 import { Avatar, GoogleDriveMark, Icon, type IconName } from "./icons";
@@ -90,7 +91,7 @@ export function Sidebar({ onClose }: { onClose: () => void }) {
       <nav className="nav">{NAV.map(item)}<div className="sep" />{COLLAB_NAV.map(item)}</nav>
       <div className="side-foot">
         {others.length > 0 && (
-          <div className="here" title={others.map((o) => `${o.name} (${o.email})`).join("\n")}>
+          <div className="here" title={others.map((o) => `${o.name} (${o.email})${o.editedAt ? ` · ${editedAgo(o.editedAt)}` : ""}`).join("\n")}>
             <span className="avatars">{others.slice(0, 3).map((o) => <Avatar key={o.email} name={o.name} />)}</span>
             <span className="nm">{others.length === 1 ? `${others[0].name.split(" ")[0]} also has this open` : `${others.length} others have this open`}</span>
           </div>

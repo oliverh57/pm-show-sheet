@@ -9,7 +9,7 @@ import type { GoogleSync, Show } from "../model/types";
 import { applySheetValue, newId, songImagePaths } from "../model/ops";
 import { useStore } from "../store";
 import {
-  applyReviewEdits, colLetter, emailKey, REPLY_FROM, sheetAuthor, type SheetAuthor, type SheetRevision, columnChangeRequests, formatRuleRequests, mergeUpdateRequests, spareColumnRequests, type SheetFormatRule, type SheetMerge, contentRequests, diffReviewTab, diffShowTab, HEADER_ROWS, keptCells, protectionUpdateRequests, reconcileRequests, reconcileRows,
+  applyReviewEdits, colLetter, emailKey, REPLY_FROM, sheetAuthor, type SheetAuthor, type SheetRevision, columnChangeRequests, formatRuleRequests, mergeUpdateRequests, spareColumnRequests, type SheetFormatRule, type SheetMerge, contentRequests, withSheetValues, diffReviewTab, diffShowTab, HEADER_ROWS, keptCells, protectionUpdateRequests, reconcileRequests, reconcileRows,
   reviewTab, type SheetProtection, showTab, snapshot, structureRequests, ARCHIVE_TAB, REVIEW_TAB, SHOW_TAB, type Conflict, type Edit, type TabGrid,
 } from "./sheet";
 import { deckFingerprint, deckRequests, playUrl } from "./slides";
@@ -145,7 +145,7 @@ async function ensureImages(songIds: string[], extra: string[] = []): Promise<Re
       step(`Uploading image ${++n} of ${todo}`);
       const path = img.startsWith("/") ? img : `${bundle}/${img}`;
       try {
-        if (!img.startsWith("/")) await backend.driveFetch(bundle, [img]); // made on another Mac: download it first
+        if (!img.startsWith("/")) await backend.driveFetch(bundle, [img], true); // made on another Mac: download it first (quietly: it's only for the Sheet)
         id = await backend.googleUpload(path, img.split("/").pop() ?? "render.jpg", g().media_folder_id ?? null, null, IMAGE_PX);
       } catch {
         continue; // missing file: the cell stays empty
@@ -334,11 +334,9 @@ async function pullReviews(ssid: string, published: Record<string, string | bool
   const edits = diffReviewTab(useStore.getState().show!, published, values);
   if (!edits.length) return;
   step("Bringing in comments from the Sheet");
-  // A comment or reply that doesn't say who it's from is put down to whoever edited the Sheet since it was last read.
-  const unnamed = edits.some((e) => (e.kind === "new" && !e.from) || (e.kind === "reply" && e.from === REPLY_FROM));
-  const author = unnamed ? await sheetEditor(ssid, since).catch(() => null) : null;
   // First mark the Sheet: rows typed there get their new comment's id and replies are taken out of REPLY, so a pull that
-  // runs again (the push after this one failing, say) doesn't bring them in twice.
+  // runs again (the push after this one failing, say) doesn't bring them in twice. Straight after the read, so the rows
+  // are still where it found them.
   const ids = new Map(edits.flatMap((e) => (e.kind === "new" ? [[e.row, newId("rev")] as const] : [])));
   const replyCol = values[0]?.map(String).indexOf("reply") ?? -1;
   const rowOf = new Map(values.map((r, i) => [String(r?.[0] ?? ""), i]));
@@ -350,6 +348,9 @@ async function pullReviews(ssid: string, published: Record<string, string | bool
     })),
   ];
   if (data.length) await api("POST", `${SHEETS}/${ssid}/values:batchUpdate`, { valueInputOption: "RAW", data });
+  // A comment or reply that doesn't say who it's from is put down to whoever edited the Sheet since it was last read.
+  const unnamed = edits.some((e) => (e.kind === "new" && !e.from) || (e.kind === "reply" && e.from === REPLY_FROM));
+  const author = unnamed ? await sheetEditor(ssid, since).catch(() => null) : null;
   const before = useStore.getState().show!;
   useStore.getState().update((s) => applyReviewEdits(s, edits, ids, author));
   meta((x) => { for (const e of edits) if (e.kind === "set") x.published = { ...x.published, [`review|${e.id}|${e.col}`]: e.value }; });
@@ -396,33 +397,34 @@ async function pushSheet(): Promise<void> {
   // Snapshot the show that's pushed, not the current one: an edit made while the push is in flight isn't in the
   // Sheet, and recording it as published would make the next pull read the Sheet's old value as a collaborator's edit.
   const pushed = snapshot(show);
-  const keep = new Map<number, (row: number, col: number) => boolean>(); // by tab: the ✎ cells left as they are (see keptCells)
   const existing = grids.filter(([, id]) => tabs.has(id));
   const read = existing.length ? await api<{ valueRanges: { values?: unknown[][] }[] }>("GET",
-    `${SHEETS}/${ssid}/values:batchGet?valueRenderOption=UNFORMATTED_VALUE&${existing.flatMap(([, id]) => {
-      const t = a1(tabs.get(id)!.properties.title);
-      return [`ranges=${enc(`${t}!1:1`)}`, `ranges=${enc(`${t}!A${HEADER_ROWS + 1}:A`)}`];
-    }).join("&")}`) : { valueRanges: [] };
-  for (const [grid, id] of grids) {
+    `${SHEETS}/${ssid}/values:batchGet?valueRenderOption=UNFORMATTED_VALUE&${existing.map(([, id]) => `ranges=${enc(a1(tabs.get(id)!.properties.title))}`).join("&")}`)
+    : { valueRanges: [] };
+  for (const [i, [grid, id]] of grids.entries()) {
     const tab = tabs.get(id);
     if (!tab) {
       reqs.push(...structureRequests(grid, id));
       if (id === TAB_ID && tabs.has(0)) reqs.push({ deleteSheet: { sheetId: 0 } }); // the default "Sheet1"
       continue;
     }
-    const at = existing.findIndex(([, eid]) => eid === id) * 2;
+    const sheet = read.valueRanges[existing.findIndex(([, eid]) => eid === id)]?.values ?? [];
     if (tab.properties.title !== grid.title) reqs.push({ updateSheetProperties: { properties: { sheetId: id, title: grid.title }, fields: "title" } });
-    const headerIds = (read.valueRanges[at]?.values?.[0] ?? []).map(String);
+    const headerIds = (sheet[0] ?? []).map(String);
     if (headerIds.join("|") !== grid.colIds.join("|")) {
       columnsChanged.add(id);
       reqs.push(...columnChangeRequests(grid, id, tab.properties.gridProperties?.columnCount ?? headerIds.length));
     } else reqs.push(...mergeUpdateRequests(grid, id, tab.merges ?? []), ...spareColumnRequests(grid, id, tab.properties.gridProperties?.columnCount ?? headerIds.length));
-    const rowIds = (read.valueRanges[at + 1]?.values ?? []).map((r) => (r?.[0] === undefined ? "" : String(r[0])));
+    const rowIds = sheet.slice(HEADER_ROWS).map((r) => (r?.[0] === undefined ? "" : String(r[0])));
     reqs.push(...reconcileRequests(reconcileRows(rowIds, grid.rowIds), id));
-    // Changed columns put cells under other columns, so they're all written.
-    if (!columnsChanged.has(id)) keep.set(id, keptCells(grid, id === REVIEW_TAB_ID ? "review" : "show", pushed, g().published ?? {}, new Set(rowIds.filter(Boolean))));
+    // The ✎ cells the app hasn't changed are written as the Sheet has them (see withSheetValues). Changed columns put
+    // cells under other columns, so then the app's are written.
+    if (!columnsChanged.has(id)) {
+      const keep = keptCells(grid, id === REVIEW_TAB_ID ? "review" : "show", pushed, g().published ?? {}, new Set(rowIds.filter(Boolean)));
+      grids[i] = [withSheetValues(grid, keep, sheet), id];
+    }
   }
-  for (const [grid, id] of grids) reqs.push(...contentRequests(grid, id, keep.get(id)), ...formatRuleRequests(grid, id, tabs.get(id)?.conditionalFormats ?? []));
+  for (const [grid, id] of grids) reqs.push(...contentRequests(grid, id), ...formatRuleRequests(grid, id, tabs.get(id)?.conditionalFormats ?? []));
   try {
     await api("POST", `${SHEETS}/${ssid}:batchUpdate`, { requests: reqs });
   } catch (e) {

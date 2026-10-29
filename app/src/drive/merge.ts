@@ -13,6 +13,8 @@ export interface MergeConflict {
   remote: Json;
 }
 
+const STAMP = /(^|_)at$/; // when something was done
+
 const isObject = (v: Json): v is Record<string, Json> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 export function same(a: Json, b: Json): boolean {
@@ -90,8 +92,20 @@ function mergeValue(base: Json, local: Json, remote: Json, path: (string | numbe
   if (isObject(local) && isObject(remote)) {
     const b = isObject(base) ? base : {};
     const out: Record<string, Json> = {};
-    for (const k of new Set([...Object.keys(remote), ...Object.keys(local)])) {
+    const keys = [...new Set([...Object.keys(remote), ...Object.keys(local)])];
+    const before = conflicts.length;
+    for (const k of keys.filter((k) => !STAMP.test(k))) {
       const merged = mergeValue(b[k], local[k], remote[k], [...path, k], conflicts);
+      if (merged !== undefined) out[k] = merged;
+    }
+    // When something was done ("resolved_at", "edited_at"): with the rest agreeing, both Macs did the same thing (each
+    // brought in the same tick from the Sheet, say), each at its own time, so the later and not a clash. Otherwise it
+    // goes with whichever version won.
+    const agreed = conflicts.length === before;
+    for (const k of keys.filter((k) => STAMP.test(k))) {
+      const [l, r] = [local[k], remote[k]];
+      const merged = agreed && typeof l === "string" && typeof r === "string" ? (same(b[k], l) ? r : same(b[k], r) ? l : l > r ? l : r)
+        : mergeValue(b[k], l, r, [...path, k], conflicts);
       if (merged !== undefined) out[k] = merged;
     }
     return out;
