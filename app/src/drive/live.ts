@@ -12,8 +12,8 @@ import { addEdits, editsFromDrive } from "./edits";
 import { same } from "./merge";
 import { uploadNewMedia } from "./media";
 import { agreed, mergeClashes, type Clash } from "./offline";
-import { beat, leave } from "./presence";
-import { holdEdits, readManifest, releaseEdits, syncShow, updateManifest, type SyncResult } from "./show";
+import { beat, leave, type Presence } from "./presence";
+import { holdEdits, lastSaves, readManifest, releaseEdits, syncShow, updateManifest, type SyncResult } from "./show";
 
 const PULL_EVERY_MS = 10_000;
 const PRESENCE_EVERY_MS = 30_000;
@@ -173,6 +173,20 @@ async function locate(bundle: string): Promise<string | null> {
   return parent?.name && parent.parents?.length ? `${where} › ${parent.name}` : where;
 }
 
+/**
+ * When anyone without an edit time in their presence (older apps send none, and it only counts since they opened the
+ * show) last saved it, from project.json's revisions.
+ */
+async function withLastSaves(bundle: string, others: Presence[]): Promise<Presence[]> {
+  if (others.every((o) => o.editedAt)) return others;
+  const { projectId } = await readManifest(bundle);
+  const saves = projectId ? await lastSaves(projectId).catch(() => null) : null;
+  return others.map((o) => {
+    const saved = saves?.get(o.email.toLowerCase());
+    return o.editedAt || !saved ? o : { ...o, editedAt: saved };
+  });
+}
+
 /** While a show is open: pull other people's saves, say who has it open, and find where it is. */
 export function useDriveLive() {
   const bundle = useStore((s) => s.bundle);
@@ -185,7 +199,7 @@ export function useDriveLive() {
     const say = () => {
       if (!folderId) return;
       const { readOnly, editedAt } = useStore.getState();
-      beat(folderId, user.email, user.name, !readOnly, editedAt).then((o) => { if (useStore.getState().bundle === bundle) useStore.getState().setOthers(o); }).catch(() => {});
+      beat(folderId, user.email, user.name, !readOnly, editedAt).then((o) => withLastSaves(bundle, o)).then((o) => { if (useStore.getState().bundle === bundle) useStore.getState().setOthers(o); }).catch(() => {});
     };
     const firstBeat = window.setTimeout(say, 1000);
     const lost = () => goOffline();

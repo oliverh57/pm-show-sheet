@@ -78,6 +78,16 @@ async function revisions(fileId: string): Promise<Revision[]> {
   return [...(res.revisions ?? [])].sort((a, b) => a.modifiedTime.localeCompare(b.modifiedTime));
 }
 
+/** When each person (by lowercased email) last saved project.json, from its revisions (Drive prunes old ones). */
+export async function lastSaves(fileId: string): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  for (const r of await revisions(fileId)) {
+    const email = r.lastModifyingUser?.emailAddress?.toLowerCase();
+    if (email) out.set(email, Date.parse(r.modifiedTime));
+  }
+  return out;
+}
+
 /** The revision saved just before `rev`, if it isn't `base`: someone else's save that landed between ours. */
 async function slippedIn(fileId: string, base: string | undefined, rev: string | undefined): Promise<Revision | null> {
   if (!base || !rev) return null;
