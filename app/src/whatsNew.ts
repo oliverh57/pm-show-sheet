@@ -7,6 +7,16 @@ export interface ReleaseNotes {
 }
 
 export const WHATS_NEW: Record<string, ReleaseNotes> = {
+  "0.6.1": {
+    summary: "Fixes for comments when several people have a show open, and progress for uploads.",
+    items: [
+      "Resolving or editing a comment in the Google Sheet while someone else has the show open no longer mixes up comments, or says you edited them all.",
+      "Resolving a comment no longer asks you to pick between two versions that look the same.",
+      "A card in the bottom-right corner shows media uploading to Google Drive or downloading from it.",
+      "Hover over who else has the show open to see when they last edited it.",
+      "While an update is downloading, shows stay shut until you restart to install it.",
+    ],
+  },
   "0.6.0": {
     summary: "Keep working when Google Drive can't be reached, and see who edited what.",
     items: [
