@@ -299,3 +299,20 @@ export const useStore = create<State>((set, get) => ({
     set({ clashesOpen });
   },
 }));
+
+/**
+ * Is this pick's song, record (or, when the record isn't on this Mac, the clip its frames come from) still in the show?
+ * Someone can delete them meanwhile, here or on another Mac, and a pick for one can't be saved.
+ */
+export function pickLive(show: Show, p: StillPick): boolean {
+  const song = show.songs[p.songId];
+  if (!song || !show.records?.some((r) => r.id === p.recordId)) return false;
+  return !p.clip || Boolean(song.clips?.some((c) => c.path === p.clip));
+}
+
+// Drop the picks the show no longer has a song, record or clip for, else "Pick N thumbnails" keeps asking for them.
+useStore.subscribe((s, prev) => {
+  if (s.show === prev.show || !s.show || !s.stillPicks.length) return;
+  const show = s.show;
+  if (!s.stillPicks.every((p) => pickLive(show, p))) useStore.setState({ stillPicks: s.stillPicks.filter((p) => pickLive(show, p)) });
+});
