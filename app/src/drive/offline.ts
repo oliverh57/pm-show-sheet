@@ -280,9 +280,13 @@ export function mergeClashes(base: Show, mine: Show, theirs: Show, conflicts: Me
   return [...songs, ...rest].map((change) => ({ change, theirs }));
 }
 
-/** The Sheet edits that clashed with the app (show.conflicts): the app's value is in the show and the Sheet for now. */
-export function sheetClashes(show: Show): Clash[] {
-  const found = Object.entries((show.conflicts ?? {}) as Record<string, { sheet: string | boolean }>).flatMap(([key, c]) => {
+/**
+ * The Sheet edits that clashed with the app (show.conflicts): the app's value is in the show and the Sheet for now. Only
+ * those whose app edit was `me`'s (an email), or that no one could put down to anyone: the others are for whoever made it.
+ */
+export function sheetClashes(show: Show, me?: string): Clash[] {
+  const found = Object.entries((show.conflicts ?? {}) as Record<string, { sheet: string | boolean; by?: string }>).flatMap(([key, c]) => {
+    if (c.by && c.by !== me?.toLowerCase()) return [];
     const [, song, colId] = key.split("|");
     const col = show.columns.find((x) => x.id === colId);
     return col && show.songs[song] ? [{ key, song, col, value: c.sheet }] : [];
@@ -297,9 +301,9 @@ export function sheetClashes(show: Show): Clash[] {
   });
 }
 
-/** The clashes still waiting for someone to pick: `drive`'s (newest last) and the Sheet's, less any no longer different. */
-export function openClashes(show: Show, drive: Clash[]): Clash[] {
+/** The clashes still waiting for `me` to pick: `drive`'s (newest last) and the Sheet's, less any no longer different. */
+export function openClashes(show: Show, drive: Clash[], me?: string): Clash[] {
   const byId = new Map<string, Clash>();
-  for (const c of [...drive, ...sheetClashes(show)]) byId.set(c.change.id, c);
+  for (const c of [...drive, ...sheetClashes(show, me)]) byId.set(c.change.id, c);
   return [...byId.values()].filter((c) => !same(valueIn(c.change, c.theirs), valueIn(c.change, show)));
 }

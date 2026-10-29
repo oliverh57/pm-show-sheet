@@ -275,4 +275,15 @@ describe("clashes while online", () => {
     expect(clash.theirs.songs[a].fields[col.id]).toBe("SHEET");
     expect(sheetClashes({ ...show, conflicts: {} })).toEqual([]);
   });
+
+  it("asks only whoever made the app edit about a Sheet clash", () => {
+    const show = fresh();
+    const [a] = show.set_order;
+    const col = show.columns.find((c) => c.type === "text" && c.id !== "name") ?? show.columns.find((c) => c.id === "name")!;
+    show.songs[a].fields[col.id] = "APP";
+    show.conflicts = { [`show|${a}|${col.id}`]: { sheet: "SHEET", app: "APP", published: "", by: "sam@example.com" } };
+    expect(sheetClashes(show, "Sam@Example.com")).toHaveLength(1);
+    expect(sheetClashes(show, "alex@example.com")).toEqual([]);
+    expect(openClashes(show, [], "alex@example.com")).toEqual([]);
+  });
 });

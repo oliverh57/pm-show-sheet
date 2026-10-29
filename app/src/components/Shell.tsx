@@ -164,8 +164,9 @@ export function ClashBanner() {
   const show = useStore((s) => s.show);
   const drive = useStore((s) => s.clashes);
   const open = useStore((s) => s.clashesOpen);
+  const me = useStore((s) => s.user?.email);
   const { setClashesOpen } = useStore.getState();
-  const count = useMemo(() => (show ? openClashes(show, drive).length : 0), [show, drive]);
+  const count = useMemo(() => (show ? openClashes(show, drive, me).length : 0), [show, drive, me]);
   if (!count && !open) return null;
   return (<>
     {count > 0 && (

@@ -213,7 +213,8 @@ export function OfflineReviewDialog({ onClose }: { onClose: () => void }) {
 export function ClashDialog({ onClose }: { onClose: () => void }) {
   const show = useStore((s) => s.show)!;
   const drive = useStore((s) => s.clashes);
-  const list = useMemo(() => openClashes(show, drive), [show, drive]);
+  const me = useStore((s) => s.user?.email);
+  const list = useMemo(() => openClashes(show, drive, me), [show, drive, me]);
   const [choices, setChoices] = useState<Record<string, Choice>>({});
   const undecided = list.filter((c) => !choices[c.change.id]).length;
   const taken = list.filter((c) => choices[c.change.id] === "throw");

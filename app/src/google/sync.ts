@@ -10,7 +10,7 @@ import { applySheetValue, newId, songImagePaths } from "../model/ops";
 import { useStore } from "../store";
 import {
   applyReviewEdits, colLetter, emailKey, REPLY_FROM, sheetAuthor, type SheetAuthor, type SheetRevision, columnChangeRequests, formatRuleRequests, mergeUpdateRequests, spareColumnRequests, type SheetFormatRule, type SheetMerge, contentRequests, withSheetValues, diffReviewTab, diffShowTab, HEADER_ROWS, keptCells, protectionUpdateRequests, reconcileRequests, reconcileRows,
-  reviewTab, type SheetProtection, showTab, snapshot, structureRequests, ARCHIVE_TAB, REVIEW_TAB, SHOW_TAB, type Conflict, type Edit, type TabGrid,
+  reviewTab, type SheetProtection, sheetValue, showTab, snapshot, structureRequests, ARCHIVE_TAB, REVIEW_TAB, SHOW_TAB, type Conflict, type Edit, type TabGrid,
 } from "./sheet";
 import { deckFingerprint, deckRequests, playUrl } from "./slides";
 import { driveIdOf } from "../drive/media";
@@ -281,7 +281,7 @@ async function pull(): Promise<void> {
     meta((x) => { for (const e of edits) x.published = { ...x.published, [`show|${e.songId}|${e.colId}`]: e.value }; });
     await noteSheetEdits(ssid, show, useStore.getState().show!, since);
   }
-  if (conflicts.length) recordConflicts(conflicts);
+  noteConflicts(conflicts);
   if (review) {
     const since = lastRead.get(ssid) ?? null;
     lastRead.set(ssid, readAt);
@@ -357,15 +357,54 @@ async function pullReviews(ssid: string, published: Record<string, string | bool
   await noteSheetEdits(ssid, before, useStore.getState().show!, since, author);
 }
 
-function recordConflicts(conflicts: Conflict[]) {
-  const current = (useStore.getState().show?.conflicts ?? {}) as Record<string, unknown>;
+/**
+ * Keep the Sheet edits that clashed with the app in the show, each with whose app edit it clashed with (`by`, an email,
+ * when this Mac can tell): only they're asked to pick. Every Mac with the show open can find the same clash, as can one
+ * that only got the app edit from Drive. Also claims the clashes no one could put down to anyone, that were made here.
+ */
+function noteConflicts(conflicts: Conflict[]) {
+  const st = useStore.getState();
+  const me = st.user?.email.toLowerCase();
+  const current = (st.show?.conflicts ?? {}) as Record<string, { by?: string }>;
   const fresh = conflicts.filter((c) => !(`show|${c.songId}|${c.colId}` in current));
-  if (!fresh.length) return;
-  useStore.getState().updateQuiet((s) => {
+  const claimed = me ? Object.keys(current).filter((key) => !current[key].by && changedHere(key)) : [];
+  if (!fresh.length && !claimed.length) return;
+  const by = new Map(fresh.map((c) => [`show|${c.songId}|${c.colId}`, appAuthor(`show|${c.songId}|${c.colId}`, me)]));
+  st.updateQuiet((s) => {
     s.conflicts = { ...(s.conflicts ?? {}) };
-    for (const c of fresh) s.conflicts[`show|${c.songId}|${c.colId}`] = { sheet: c.sheet, app: c.app, published: c.published };
+    for (const c of fresh) {
+      const who = by.get(`show|${c.songId}|${c.colId}`);
+      s.conflicts[`show|${c.songId}|${c.colId}`] = { sheet: c.sheet, app: c.app, published: c.published, ...(who ? { by: who } : {}) };
+    }
+    for (const key of claimed) s.conflicts[key] = { ...(s.conflicts[key] as object), by: me };
   });
-  useStore.getState().setClashesOpen(true);
+  if (claimed.length || (me && [...by.values()].includes(me))) st.setClashesOpen(true);
+}
+
+/**
+ * Whether the app's value of a Sheet cell ("show|<song>|<column>") was changed on this Mac: it differs somewhere in the
+ * undo history, onto which other people's edits from Drive are replayed (so theirs never show up there).
+ */
+function changedHere(key: string): boolean {
+  const [, songId, colId] = key.split("|");
+  const { show, past } = useStore.getState();
+  const col = show?.columns.find((c) => c.id === colId);
+  const song = show?.songs[songId];
+  if (!show || !col || !song) return false;
+  const now = sheetValue(show, col, song);
+  return past.some((p) => !p.songs[songId] || sheetValue(p, col, p.songs[songId]) !== now);
+}
+
+/** Who made the app's value of a Sheet cell, as an email: `me` if it was changed here, else whoever's save from Drive last changed that field. */
+function appAuthor(key: string, me: string | undefined): string | undefined {
+  if (changedHere(key)) return me;
+  const [, songId, colId] = key.split("|");
+  const { show, remoteEdits } = useStore.getState();
+  const col = show?.columns.find((c) => c.id === colId);
+  const edits = remoteEdits?.songs[songId];
+  if (!col || !edits || !edits.keys.some((k) => k === colId || (k === "colours" && col.type === "colour"))) return undefined;
+  const who = remoteEdits!.by.find((e) => editorKey(e) === edits.by[edits.by.length - 1]);
+  return who && !who.via && who.email ? who.email.toLowerCase() : undefined;
 }
 
 /** Why this Mac isn't writing the Sheet yet: its locked columns aren't open to this account. */
