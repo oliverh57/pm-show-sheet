@@ -343,20 +343,20 @@ function SongCard({ show, song, position, last, selected, placeholder, dropClass
     <div className={["scard", position === null && "archived", selected && "sel", placeholder && "placeholder", dropClass].filter(Boolean).join(" ")}
          data-card-id={song.id} data-drag-id={song.id} data-song-id={song.id}
          onPointerDown={onPointerDown} onClick={() => onOpen()}>
-      <div className="media">{song.hero ? <img src={backend.mediaUrl(bundle, song.hero)} alt="" draggable={false} /> : <div className="ph"><Icon name="music" /></div>}</div>
+      <div className="media" data-col="hero gallery">{song.hero ? <img src={backend.mediaUrl(bundle, song.hero)} alt="" draggable={false} /> : <div className="ph"><Icon name="music" /></div>}</div>
       <CommentBadge count={openReviews(show, song.id)} onClick={() => useStore.getState().focusSong(song.id, "comments")} />
       <SongSaveMenu show={show} bundle={bundle} song={song} />
       <button className="grip" title={position === null ? "Drag into the set" : "Drag to reorder"} tabIndex={-1}><Icon name="grip" size="sm" /></button>
       <div className="body">
-        <div className="title">{position !== null && <span className="num">{String(position).padStart(2, "0")}</span>}<span className="t">{song.fields.name || "Untitled"}</span></div>
+        <div className="title">{position !== null && <span className="num" data-col="moved">{String(position).padStart(2, "0")}</span>}<span className="t" data-col="name">{song.fields.name || "Untitled"}</span></div>
         <div className="meta">
-          {song.fields.tc ? <span className="chip tc">{song.fields.tc}</span> : <span className="chip missing">No TC</span>}
-          {audio && <span className="chip">{audio}</span>}
-          {song.fields.bpm && <span className="chip">{song.fields.bpm} BPM</span>}
-          {song.segues_into_next && <span className="chip accent"><Icon name="link" size="sm" />Segue</span>}
+          {song.fields.tc ? <span className="chip tc" data-col="tc">{song.fields.tc}</span> : <span className="chip missing" data-col="tc">No TC</span>}
+          {audio && <span className="chip" data-col="audio">{audio}</span>}
+          {song.fields.bpm && <span className="chip" data-col="bpm">{song.fields.bpm} BPM</span>}
+          {song.segues_into_next && <span className="chip accent" data-col="segues_into_next"><Icon name="link" size="sm" />Segue</span>}
         </div>
         <div className="notes">
-          <button className={`nline ${song.colours.length ? "has" : ""}`} onClick={(e) => { e.stopPropagation(); onOpen("colours"); }}
+          <button className={`nline ${song.colours.length ? "has" : ""}`} data-col="colours" onClick={(e) => { e.stopPropagation(); onOpen("colours"); }}
                   title={song.colours.map((c) => c.label || c.hex).join(", ")}>
             <span className="k">Colours</span>
             {song.colours.length
@@ -365,9 +365,9 @@ function SongCard({ show, song, position, last, selected, placeholder, dropClass
           </button>
         </div>
         <div className="foot">
-          <span className={renders ? "on" : ""}><Icon name="image" />{renders || ""}</span>
+          <span className={renders ? "on" : ""} data-col="gallery"><Icon name="image" />{renders || ""}</span>
           <span className={audio ? "on" : ""}><Icon name="music" /></span>
-          <span className={clips ? "on" : ""}><Icon name="film" />{clips ? `${clips}` : ""}</span>
+          <span className={clips ? "on" : ""} data-col="clips records"><Icon name="film" />{clips ? `${clips}` : ""}</span>
           {onRestore && <button className="icon restore" title="Back into the set" onClick={(e) => { e.stopPropagation(); onRestore(); }}><Icon name="undo" size="sm" /></button>}
         </div>
       </div>
@@ -389,11 +389,11 @@ function SongRow({ show, song, position, selected, placeholder, dropClass, onPoi
     <div className={["lrow", selected && "sel", placeholder && "placeholder", dropClass].filter(Boolean).join(" ")}
          data-card-id={song.id} data-drag-id={song.id} data-song-id={song.id} onPointerDown={onPointerDown} onClick={onOpen}>
       <button className="grip ghost" tabIndex={-1}><Icon name="grip" /></button>
-      <span className="n">{position !== null && String(position).padStart(2, "0")}</span>
+      <span className="n" data-col="moved">{position !== null && String(position).padStart(2, "0")}</span>
       <span className="th">{song.hero ? <img src={backend.mediaUrl(bundle, song.hero)} alt="" draggable={false} /> : <span className="ph"><Icon name="music" /></span>}<CommentBadge count={openReviews(show, song.id)} /></span>
-      <span className="nm">{song.fields.name || "Untitled"}{song.segues_into_next && <span className="pill">SEGUE</span>}</span>
-      {song.fields.tc ? <span className="chip tc">{song.fields.tc}</span> : <span className="chip missing">No TC</span>}
-      <span className="muted small">{audio || "—"}</span>
+      <span className="nm"><span data-col="name">{song.fields.name || "Untitled"}</span>{song.segues_into_next && <span className="pill" data-col="segues_into_next">SEGUE</span>}</span>
+      {song.fields.tc ? <span className="chip tc" data-col="tc">{song.fields.tc}</span> : <span className="chip missing" data-col="tc">No TC</span>}
+      <span className="muted small" data-col="audio">{audio || "—"}</span>
       <span className="icons"><span className={renders ? "on" : ""}><Icon name="image" /></span><span className={audio ? "on" : ""}><Icon name="music" /></span><span className={clips ? "on" : ""}><Icon name="film" /></span></span>
       <span><SongSaveMenu show={show} bundle={bundle} song={song} /></span>
       {onRestore

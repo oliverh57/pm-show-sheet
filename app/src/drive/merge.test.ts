@@ -111,6 +111,63 @@ describe("merge3", () => {
     expect(conflicts).toEqual([]);
   });
 
+  it("keeps a comment edited here while they resolve it and reply there", async () => {
+    const { addReview, editReview, replyToReview, setReviewDone } = await import("../model/ops");
+    const base = fresh();
+    const id = addReview(base, { song_id: base.set_order[0], t: 0, text: "Too dark", from: "Sam" });
+    const [local, remote] = [structuredClone(base), structuredClone(base)];
+    editReview(local, id, "Too dark in the chorus");
+    setReviewDone(remote, id, true);
+    replyToReview(remote, id, { from: "Ria", text: "Brighter in V2" });
+    const { merged, conflicts } = merge3(base, local, remote);
+    const c = merged.reviews!.find((x) => x.id === id)!;
+    expect(c).toMatchObject({ text: "Too dark in the chorus", edited_at: local.reviews![0].edited_at, done: true });
+    expect(c.replies.map((r) => r.text)).toEqual(["Brighter in V2"]);
+    expect(conflicts).toEqual([]);
+    expect(merge3(base, remote, local).merged.reviews![0]).toMatchObject({ text: "Too dark in the chorus", edited_at: local.reviews![0].edited_at });
+  });
+
+  it("both edit the same comment: this Mac's text and its edited time win together, and it's reported", async () => {
+    const { addReview } = await import("../model/ops");
+    const base = fresh();
+    const id = addReview(base, { song_id: base.set_order[0], t: 0, text: "Too dark", from: "Sam" });
+    const [local, remote] = [structuredClone(base), structuredClone(base)];
+    Object.assign(local.reviews![0], { text: "MINE", edited_at: "2026-10-29T10:00:00.000Z" });
+    Object.assign(remote.reviews![0], { text: "THEIRS", edited_at: "2026-10-29T11:00:00.000Z" });
+    const { merged, conflicts } = merge3(base, local, remote);
+    expect(merged.reviews![0]).toMatchObject({ text: "MINE", edited_at: "2026-10-29T10:00:00.000Z" });
+    expect(conflicts.map((c) => c.path)).toEqual([["reviews", id, "text"], ["reviews", id, "edited_at"]]);
+  });
+
+  it("keeps a department set here while they edit the text there, and one taken out", async () => {
+    const { addReview, editReview, setReviewDept } = await import("../model/ops");
+    const base = fresh();
+    const id = addReview(base, { song_id: base.set_order[0], t: 0, text: "Too dark", from: "Sam" });
+    const out = addReview(base, { song_id: base.set_order[0], t: 0, text: "Haze", from: "Ria", dept: "SFX" });
+    const [local, remote] = [structuredClone(base), structuredClone(base)];
+    setReviewDept(local, id, "LX");
+    setReviewDept(local, out, "");
+    editReview(remote, id, "Too dark in the chorus");
+    for (const [a, b] of [[local, remote], [remote, local]]) {
+      const { merged, conflicts } = merge3(base, a, b);
+      expect(merged.reviews!.find((x) => x.id === id)).toMatchObject({ dept: "LX", text: "Too dark in the chorus" });
+      expect(merged.reviews!.find((x) => x.id === out)!.dept).toBeUndefined();
+      expect(conflicts).toEqual([]);
+    }
+  });
+
+  it("both put a comment in a department: this Mac's wins, and it's reported", async () => {
+    const { addReview, setReviewDept } = await import("../model/ops");
+    const base = fresh();
+    const id = addReview(base, { song_id: base.set_order[0], t: 0, text: "Too dark", from: "Sam" });
+    const [local, remote] = [structuredClone(base), structuredClone(base)];
+    setReviewDept(local, id, "LX");
+    setReviewDept(remote, id, "VIDEO");
+    const { merged, conflicts } = merge3(base, local, remote);
+    expect(merged.reviews![0].dept).toBe("LX");
+    expect(conflicts.map((c) => c.path)).toEqual([["reviews", id, "dept"]]);
+  });
+
   it("merges clips by path", () => {
     const [base, local, remote] = three();
     const a = base.set_order[0];

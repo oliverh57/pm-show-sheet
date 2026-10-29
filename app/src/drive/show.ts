@@ -7,7 +7,7 @@
 // `syncShow` brings the copy and Drive together: it pulls someone else's save (merging it with edits made here), then
 // uploads what's changed here. Drive has no "only if unchanged" upload, so after each upload it checks that nobody
 // else's save landed just before it; if one did, that save is merged in and uploaded again.
-import { backend } from "../backend";
+import { backend, type DriveUser } from "../backend";
 import type { Show } from "../model/types";
 import { child, getFile } from "./api";
 import { merge3, same, type MergeConflict } from "./merge";
@@ -24,6 +24,7 @@ export interface Manifest {
   folders: Record<string, string>; // bundle-relative folder ("media/clips") → Drive folder id
   summary?: Record<string, string>; // the properties last written on the show's folder (see list.ts)
   openedAt?: number;
+  held?: number; // when edits made offline began waiting to be approved (ms): nothing syncs until they are
 }
 
 // --- where copies live ---------------------------------------------------------------
@@ -68,24 +69,60 @@ async function download(bundle: string, fileId: string, revision?: string): Prom
   return show;
 }
 
+interface Revision { id: string; modifiedTime: string; lastModifyingUser?: DriveUser }
+
+/** project.json's revisions, oldest first. */
+async function revisions(fileId: string): Promise<Revision[]> {
+  const res = await backend.googleApi<{ revisions?: Revision[] }>("GET",
+    `https://www.googleapis.com/drive/v3/files/${fileId}/revisions?pageSize=1000&fields=${encodeURIComponent("revisions(id,modifiedTime,lastModifyingUser(displayName,emailAddress,me))")}`);
+  return [...(res.revisions ?? [])].sort((a, b) => a.modifiedTime.localeCompare(b.modifiedTime));
+}
+
 /** The revision saved just before `rev`, if it isn't `base`: someone else's save that landed between ours. */
-async function slippedIn(fileId: string, base: string | undefined, rev: string | undefined): Promise<string | null> {
+async function slippedIn(fileId: string, base: string | undefined, rev: string | undefined): Promise<Revision | null> {
   if (!base || !rev) return null;
-  const res = await backend.googleApi<{ revisions?: { id: string; modifiedTime: string }[] }>("GET",
-    `https://www.googleapis.com/drive/v3/files/${fileId}/revisions?pageSize=1000&fields=${encodeURIComponent("revisions(id,modifiedTime)")}`);
-  const revs = [...(res.revisions ?? [])].sort((a, b) => a.modifiedTime.localeCompare(b.modifiedTime));
+  const revs = await revisions(fileId);
   const i = revs.findIndex((r) => r.id === rev);
   if (i < 1 || !revs.some((r) => r.id === base)) return null; // can't tell (Drive prunes old revisions)
-  return revs[i - 1].id === base ? null : revs[i - 1].id;
+  return revs[i - 1].id === base ? null : revs[i - 1];
 }
+
+/** Someone who edited the show. `me`: the signed-in user (on another Mac). `via`: typed in the Google Sheet. */
+export interface Editor { name: string; email: string; me?: boolean; via?: "sheet" }
+
+export const editorOf = (u: DriveUser | undefined): Editor =>
+  ({ name: u?.displayName || u?.emailAddress || "Someone", email: u?.emailAddress ?? "", ...(u?.me ? { me: true } : {}) });
+
+/** Add `more` to `list`, once each. */
+const addEditors = (list: Editor[], more: Editor[]) => {
+  for (const e of more) if (!list.some((x) => (x.email || x.name) === (e.email || e.name))) list.push(e);
+};
+
+/** Who saved project.json after revision `since` (up to `head`): the head's last saver if those revisions are gone. */
+async function savedBy(fileId: string, since: string, head: DriveUser | undefined): Promise<Editor[]> {
+  const revs = await revisions(fileId).catch(() => []);
+  const i = revs.findIndex((r) => r.id === since);
+  if (i < 0) return [editorOf(head)];
+  const out: Editor[] = [];
+  addEditors(out, revs.slice(i + 1).map((r) => editorOf(r.lastModifyingUser)));
+  return out.length ? out : [editorOf(head)];
+}
+
+export interface Merge { base: Show; mine: Show; theirs: Show; conflicts: MergeConflict[] }
 
 export interface SyncResult {
   /** The show on this Mac now: this Mac's edits with everyone else's merged in. Null if there's none yet. */
   show: Show | null;
   /** Both sides changed the same thing; this Mac's value was kept. */
   conflicts: MergeConflict[];
+  /** The merges that had conflicts, with the versions merged (to show each clash, and take theirs if someone picks it). */
+  merges: Merge[];
   uploaded: boolean;
   canEdit: boolean;
+  /** Edits made offline are waiting to be approved, so nothing was pulled or uploaded. */
+  held?: boolean;
+  /** Who saved the edits that came from Drive (none when nothing did, or on the first download). */
+  editors: Editor[];
 }
 
 /**
@@ -98,19 +135,27 @@ export function syncShow(bundle: string, local?: Show | null): Promise<SyncResul
 
 async function syncNow(bundle: string, localIn?: Show | null): Promise<SyncResult> {
   const m = await readManifest(bundle);
+  if (m.held) {
+    const show = localIn !== undefined ? localIn : await backend.open(bundle).catch(() => null);
+    return { show, conflicts: [], merges: [], uploaded: false, canEdit: m.canEdit !== false, held: true, editors: [] };
+  }
   const projectId = m.projectId ?? (await child(m.folderId, PROJECT))?.id;
   if (!projectId) throw new Error("This show's folder in Google Drive has no project.json");
-  const meta = await getFile(projectId, "id,headRevisionId,capabilities(canEdit)");
+  const meta = await getFile(projectId, "id,headRevisionId,capabilities(canEdit),lastModifyingUser(displayName,emailAddress,me)");
   const canEdit = meta.capabilities?.canEdit ?? false;
   let rev = m.rev;
   let base = await backend.readJson<Show>(bundle, "base.json").catch(() => null);
   let current = localIn !== undefined ? localIn : await backend.open(bundle).catch(() => null);
   const conflicts: MergeConflict[] = [];
+  const merges: Merge[] = [];
+  const editors: Editor[] = [];
 
   if (meta.headRevisionId !== rev || !base) {
     const theirs = await download(bundle, projectId);
+    if (base && rev) addEditors(editors, await savedBy(projectId, rev, meta.lastModifyingUser));
     if (current && base && !same(base, current)) {
       const r = merge3(base, current, theirs);
+      if (r.conflicts.length) merges.push({ base, mine: current, theirs, conflicts: r.conflicts });
       current = r.merged;
       conflicts.push(...r.conflicts);
     } else {
@@ -134,12 +179,35 @@ async function syncNow(bundle: string, localIn?: Show | null): Promise<SyncResul
     await backend.writeJson(bundle, "base.json", base);
     if (!slipped || attempt >= RETRIES) break;
     // Someone saved between our check and our upload, and ours replaced theirs: merge theirs back in.
-    const theirs = await download(bundle, projectId, slipped);
+    const theirs = await download(bundle, projectId, slipped.id);
+    addEditors(editors, [editorOf(slipped.lastModifyingUser)]);
     const r = merge3(before, current, theirs);
+    if (r.conflicts.length) merges.push({ base: before, mine: current, theirs, conflicts: r.conflicts });
     current = r.merged;
     conflicts.push(...r.conflicts);
   }
 
   await updateManifest(bundle, (x) => { x.projectId = projectId; x.rev = rev; x.canEdit = canEdit; });
-  return { show: current, conflicts, uploaded, canEdit };
+  return { show: current, conflicts, merges, uploaded, canEdit, editors };
+}
+
+// --- edits made offline ------------------------------------------------------------------
+
+/** Hold the copy's edits (made while Drive couldn't be reached): nothing syncs until they're approved. */
+export const holdEdits = (bundle: string) => updateManifest(bundle, (m) => { m.held ??= Date.now(); });
+
+/** Let the copy sync again (its held edits were approved, or thrown away). */
+export const releaseEdits = (bundle: string) => updateManifest(bundle, (m) => { delete m.held; });
+
+/** The show as last agreed with Drive, and Drive's project.json if someone has saved since (else null). Throws offline. */
+export function peekDrive(bundle: string): Promise<{ base: Show | null; theirs: Show | null }> {
+  return serial(`sync:${bundle}`, async () => {
+    const m = await readManifest(bundle);
+    const projectId = m.projectId ?? (await child(m.folderId, PROJECT))?.id;
+    if (!projectId) throw new Error("This show's folder in Google Drive has no project.json");
+    const meta = await getFile(projectId, "id,headRevisionId");
+    const base = await backend.readJson<Show>(bundle, "base.json").catch(() => null);
+    const theirs = meta.headRevisionId !== m.rev || !base ? await download(bundle, projectId) : null;
+    return { base, theirs };
+  });
 }

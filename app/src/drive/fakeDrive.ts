@@ -1,6 +1,6 @@
 // An in-memory Google Drive and Mac disk for tests: just enough of the Drive API, and the backend calls the Drive copy
 // of a show uses (download, upload, side files, open and save), so syncs can be run against it.
-import { backend, type DriveFile } from "../backend";
+import { backend, type DriveFile, type DriveUser } from "../backend";
 import type { Show } from "../model/types";
 
 interface FakeFile {
@@ -9,8 +9,11 @@ interface FakeFile {
   folder?: boolean;
   canEdit: boolean;
   properties: Record<string, string>;
-  revisions: { id: string; content: string; modifiedTime: string }[];
+  revisions: { id: string; content: string; modifiedTime: string; by?: DriveUser }[];
 }
+
+/** The signed-in user, who every upload is by. */
+export const ME: DriveUser = { displayName: "Me", emailAddress: "me@example.com", me: true };
 
 export class FakeDrive {
   files = new Map<string, FakeFile>();
@@ -30,11 +33,11 @@ export class FakeDrive {
     return id;
   }
 
-  /** A new file, or (with `id`) someone else saving a new version of it. */
-  put(content: unknown, at: { id?: string; name?: string; parent?: string }): string {
+  /** A new file, or (with `id`) someone else (`by`) saving a new version of it. */
+  put(content: unknown, at: { id?: string; name?: string; parent?: string }, by?: DriveUser): string {
     const id = at.id ?? this.nextId("P");
     const f = this.files.get(id) ?? { name: at.name!, parent: at.parent!, canEdit: true, properties: {}, revisions: [] };
-    f.revisions.push({ id: this.nextId("R"), content: JSON.stringify(content), modifiedTime: this.tick() });
+    f.revisions.push({ id: this.nextId("R"), content: JSON.stringify(content), modifiedTime: this.tick(), ...(by ? { by } : {}) });
     this.files.set(id, f);
     return id;
   }
@@ -46,6 +49,7 @@ export class FakeDrive {
     if (!f) throw new Error("Google 404: File not found");
     const head = f.revisions[f.revisions.length - 1];
     return { id, name: f.name, parents: [f.parent], headRevisionId: head?.id, modifiedTime: head?.modifiedTime, properties: f.properties, capabilities: { canEdit: f.canEdit },
+      lastModifyingUser: head?.by,
       mimeType: f.folder ? "application/vnd.google-apps.folder" : "application/json" };
   }
 
@@ -67,7 +71,7 @@ export class FakeDrive {
       }
       const [, id, sub] = path.split("/");
       if (method === "GET" && sub === "revisions") {
-        return { revisions: this.files.get(id)!.revisions.map(({ id: rid, modifiedTime }) => ({ id: rid, modifiedTime })) };
+        return { revisions: this.files.get(id)!.revisions.map(({ id: rid, modifiedTime, by }) => ({ id: rid, modifiedTime, lastModifyingUser: by })) };
       }
       if (method === "GET") return this.meta(id);
       if (method === "PATCH") {
@@ -93,7 +97,7 @@ export class FakeDrive {
       this.beforeUpload?.();
       const text = this.disk.get(path);
       if (text === undefined) throw new Error(`read file: ${path} is missing`);
-      const id = this.put(JSON.parse(text), { id: to.fileId, parent: to.parent, name: to.name ?? path.split("/").pop() });
+      const id = this.put(JSON.parse(text), { id: to.fileId, parent: to.parent, name: to.name ?? path.split("/").pop() }, ME);
       return this.meta(id);
     };
     b.readJson = async (bundle: string, name: string) => {

@@ -4,19 +4,31 @@
 // Results are added to the show only if it's still the open one.
 import { backend } from "./backend";
 import { trashMedia } from "./drive/media";
-import { addClip, addImages, addRecordStill, burnsTc, categoryFree, clipLength, clipName, clipTimeAt, GENERAL, newId, recordClipName, recordStillOf, recordTimeAt, setHero, setSongImage, type Cut } from "./model/ops";
+import { addClip, addImages, addRecordStill, burnsTc, categoryFree, clipCategory, clipLength, clipName, clipTimeAt, GENERAL, newId, recordClipName, recordStillOf, recordTimeAt, setHero, setSongImage, type Cut } from "./model/ops";
 import type { Show, SongMark, SourceRecord } from "./model/types";
 import { type StillPick, useStore } from "./store";
 
 /** How many frames each song offers to pick its still from. */
 const CHOICES = 3;
 
-export async function runClipJobs(bundle: string, record: SourceRecord, marks: SongMark[], grabStills: boolean, makeClips = true) {
+/** The runs so far: a record split while another's clips are still being cut waits its turn behind them. */
+let previous: Promise<void> = Promise.resolve();
+
+export function runClipJobs(bundle: string, record: SourceRecord, marks: SongMark[], grabStills: boolean, makeClips = true): Promise<void> {
   const { show, setJobs } = useStore.getState();
-  if (!show) return;
+  if (!show) return Promise.resolve();
   const queue = marks.map((m) => ({ mark: m, id: newId("job"), name: recordClipName(show, record, m.song_id) }));
   const kind = makeClips ? "clip" as const : "thumbnail" as const;
-  setJobs(() => queue.map((q) => ({ id: q.id, label: show.songs[q.mark.song_id]?.fields.name || "Song", recordId: record.id, kind, progress: 0, status: "queued" })));
+  const added = queue.map((q) => ({ id: q.id, label: show.songs[q.mark.song_id]?.fields.name || "Song", recordId: record.id, kind, progress: 0, status: "queued" as const }));
+  // Listed after the jobs still going (several records split one after another), else in place of the finished ones.
+  setJobs((jobs) => (jobs.some((j) => j.status === "queued" || j.status === "running") ? [...jobs, ...added] : added));
+  const run = previous.then(() => cutClips(bundle, record, queue, grabStills, makeClips));
+  previous = run.catch(() => {});
+  return run;
+}
+
+async function cutClips(bundle: string, record: SourceRecord, queue: { mark: SongMark; id: string; name: string }[], grabStills: boolean, makeClips: boolean) {
+  const { setJobs } = useStore.getState();
   const patch = (id: string, change: Partial<{ progress: number; status: "running" | "done" | "error"; error: string }>) =>
     setJobs((jobs) => jobs.map((j) => (j.id === id ? { ...j, ...change } : j)));
   const stillOpen = () => useStore.getState().bundle === bundle;
@@ -127,7 +139,8 @@ async function fileStill(bundle: string, record: SourceRecord, pick: StillPick, 
   if (useStore.getState().bundle !== bundle) return null;
   useStore.getState().update((s) => {
     if (!s.songs[pick.songId]) return;
-    const col = record.image_col ?? GENERAL;
+    const clip = s.songs[pick.songId].clips?.find((c) => c.record_id === record.id && Math.abs(c.in - pick.mark.in) < 0.5);
+    const col = clip ? clipCategory(s, clip) : record.image_col ?? GENERAL;
     if (pick.replaces) replaceStill(s, pick.songId, pick.replaces, still, col);
     else addImages(s, pick.songId, [still], col);
     const rec = s.records?.find((r) => r.id === record.id);

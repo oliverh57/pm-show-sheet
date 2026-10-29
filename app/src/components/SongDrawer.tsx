@@ -140,7 +140,7 @@ export function SongDrawer() {
       <div className="drawer-scrim" onClick={closeDrawer} />
       <aside className="drawer" data-song-id={song.id}>
         <div className="dh">
-          <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ flex: 1, minWidth: 0 }} data-col="name moved archived restored">
             <div className="n">{archived ? "Archived" : `Song ${String(pos + 1).padStart(2, "0")}`}</div>
             <DraftInput value={song.fields.name ?? ""} placeholder="Song name" onCommit={(v) => set("name", v)} />
           </div>
@@ -148,7 +148,7 @@ export function SongDrawer() {
         </div>
         <div className="tabs">
           {(["overview", "media", "comments"] as Tab[]).map((t) => (
-            <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
+            <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)} data-col={{ overview: undefined, media: "hero gallery clips records audio", comments: "comments" }[t]}>
               {{ overview: "Overview", media: "Media", comments: "Comments" }[t]}
               {t === "comments" && openComments > 0 && <span className="tab-count">{openComments}</span>}
             </button>
@@ -159,7 +159,7 @@ export function SongDrawer() {
             <>
               {song.hero && (
                 <div className="preview">
-                  <div className="im pickable" onClick={() => setWatching(song.hero!)} title="Open full screen">
+                  <div className="im pickable" data-col="hero" onClick={() => setWatching(song.hero!)} title="Open full screen">
                     <img src={backend.mediaUrl(bundle, song.hero)} alt="" />
                     {editHero && (
                       <button className="change sm-pill" title={photo ? "Crop the image" : "Choose a different frame from the video"} onClick={(e) => { e.stopPropagation(); editHero(); }}>
@@ -175,7 +175,7 @@ export function SongDrawer() {
                 <div className="frow" data-col="tc"><span>TC start</span><DraftInput mono value={song.fields.tc ?? ""} onCommit={(v) => set("tc", v)} /></div>
                 <div className="frow" data-col="bpm"><span>BPM</span><DraftInput value={song.fields.bpm ?? ""} onCommit={(v) => set("bpm", v.trim())} /></div>
                 <div className="frow" data-col="audio"><span>Audio version</span><DraftInput value={song.fields.audio ?? ""} onCommit={(v) => set("audio", v)} /></div>
-                <div className="frow"><span>Segues into next</span>
+                <div className="frow" data-col="segues_into_next"><span>Segues into next</span>
                   <div className="setting-row"><span className="muted">Shows as “Cont.” in the Sheet</span>
                     <button className={`toggle ${song.segues_into_next ? "on" : ""}`} aria-label="Segues into the next song"
                             onClick={() => update((s) => { s.songs[song.id].segues_into_next = !s.songs[song.id].segues_into_next; })} />
@@ -185,7 +185,7 @@ export function SongDrawer() {
                   <div className="frow"><span>Status</span>
                     <div className="ticks">
                       {ticks.map((c) => (
-                        <label key={c.id} className={`tick-chip ${song.statuses[c.id] ? "on" : ""}`}>
+                        <label key={c.id} className={`tick-chip ${song.statuses[c.id] ? "on" : ""}`} data-col={c.id}>
                           <input type="checkbox" checked={Boolean(song.statuses[c.id])} onChange={() => update((s) => toggleStatus(s, song.id, c.id))} />
                           {c.label}
                         </label>

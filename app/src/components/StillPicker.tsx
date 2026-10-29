@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import { backend } from "../backend";
 import { pickStill } from "../jobs";
-import { categoryName, clipTimeAt, guessRecordLabel } from "../model/ops";
+import { categoryName, clipCategory, clipTimeAt, guessRecordLabel } from "../model/ops";
 import type { SourceRecord } from "../model/types";
 import { type StillPick, useStore } from "../store";
 import { Icon } from "./icons";
@@ -46,7 +46,8 @@ export function StillPicker() {
   if (!p) return null;
   const song = show.songs[p.songId];
   const record = show.records?.find((r) => r.id === p.recordId);
-  const col = show.columns.find((c) => c.id === (record?.image_col ?? "hero"));
+  const clip = song?.clips?.find((c) => c.record_id === p.recordId && Math.abs(c.in - p.mark.in) < 0.5);
+  const col = show.columns.find((c) => c.id === (clip ? clipCategory(show, clip) : record?.image_col ?? "hero"));
   const pos = show.set_order.indexOf(p.songId);
   return (
     <div className="still-picker">

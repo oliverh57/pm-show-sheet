@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import sample from "../model/sample_show.json";
 import { addClip, addCustomField, deptCategory, GENERAL, imageColumnFor, migrate, sheetEditable } from "../model/ops";
 import type { Show } from "../model/types";
-import { contentRequests, diffShowTab, formatRuleRequests, HEADER_ROWS, keptCells, protectionUpdateRequests, reconcileRows, showTab, snapshot, spareColumnRequests, structureRequests } from "./sheet";
-import { deckRequests, textHeight } from "./slides";
+import { contentRequests, diffShowTab, formatRuleRequests, HEADER_ROWS, keptCells, LOGO_URL, protectionUpdateRequests, reconcileRows, showTab, snapshot, spareColumnRequests, structureRequests } from "./sheet";
+import { deckFingerprint, deckRequests, textHeight } from "./slides";
 
 const fresh = () => migrate(structuredClone(sample) as Show);
 
@@ -337,6 +337,19 @@ describe("SHOW DECK", () => {
     expect(links.some((r) => r.createVideo)).toBe(false);
     expect(links.map((r) => (r.updateTextStyle as { style?: { link?: { url: string } } })?.style?.link?.url).filter(Boolean)).toEqual([urls["media/clips/a.mp4"]]);
   });
+  it("only redraws when something on the slides changes", () => {
+    const show = fresh();
+    const s = show.songs[show.set_order[0]];
+    const before = deckFingerprint(show);
+    s.fields.notch = "Off the slide";
+    s.statuses.st_lx = true;
+    expect(deckFingerprint(show)).toBe(before);
+    s.fields.lx_notes = "On the slide";
+    expect(deckFingerprint(show)).not.toBe(before);
+    const notes = deckFingerprint(show);
+    s.fields.name = "Renamed";
+    expect(deckFingerprint(show)).not.toBe(notes);
+  });
   it("draws long notes smaller so they stay on the slide", () => {
     const show = fresh();
     const id = show.set_order[0];
@@ -368,7 +381,7 @@ describe("SHOW DECK", () => {
     const reqs = deckRequests(show, 1, urls, {}, "01 JAN 2027") as Record<string, Record<string, unknown>>[];
     const mine = reqs.filter((r) => JSON.stringify(r).includes(`pm1_${id}_`));
     const imgs = mine.map((r) => r.createImage as { url: string; elementProperties: { size: { height: { magnitude: number } } } }).filter(Boolean);
-    expect(imgs.map((i) => i.url)).toEqual(["https://img/r", "https://img/l"]);
+    expect(imgs.map((i) => i.url)).toEqual(["https://img/r", "https://img/l", LOGO_URL]); // the logo, bottom left
     expect(imgs[0].elementProperties.size.height.magnitude).toBeLessThan(180);
     expect(mine.map((r) => (r.insertText as { text?: string })?.text)).toContain("LASERS");
   });

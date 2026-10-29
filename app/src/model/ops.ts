@@ -416,9 +416,28 @@ function clipSource(show: Show): string | undefined {
   return [...count].sort((a, b) => b[1] - a[1])[0]?.[0];
 }
 
-/** The category (image column id) a clip is in: its record's (General unless named, or once the record's gone). */
+/** The category (image column id) a clip's record files it in: General unless named, or once the record's gone. */
+const recordCategory = (show: Show, clip: Clip) => (show.records ?? []).find((r) => r.id === clip.record_id)?.image_col ?? GENERAL;
+
+/** The category (image column id) a clip is in: the one it was moved into, else its record's. */
 export function clipCategory(show: Show, clip: Clip): string {
-  return (show.records ?? []).find((r) => r.id === clip.record_id)?.image_col ?? GENERAL;
+  return clip.category ?? recordCategory(show, clip);
+}
+
+/**
+ * Move one of a song's clips into another category (an image column id), away from the rest of its record's: it shows
+ * in that category's clip column, and the song's still from it moves with it, if the new category's picture is empty.
+ */
+export function moveClip(show: Show, songId: string, path: string, category: string) {
+  const song = show.songs[songId];
+  const clip = song?.clips?.find((c) => c.path === path);
+  if (!clip || !category) return;
+  const from = clipCategory(show, clip);
+  const to = ensureCategory(show, category);
+  if (to === recordCategory(show, clip)) delete clip.category;
+  else clip.category = to;
+  ensureClipColumn(show, to);
+  if (to !== from) moveStills(show, song, from, to, new Set(clipStills(song, clip)));
 }
 
 /** The clips a clip column shows: those in its category (every clip, for one with none). */
@@ -580,6 +599,8 @@ export function deleteCategory(show: Show, id: string) {
   for (const c of show.columns.filter((x) => x.type === "clip" && x.category === id)) removeColumn(show, c.id);
   const filed = (show.records ?? []).filter((r) => r.image_col === id);
   for (const r of filed) delete r.image_col;
+  // Clips moved into it go back to their record's.
+  for (const song of Object.values(show.songs)) for (const c of song.clips ?? []) if (c.category === id) { delete c.category; ensureClipColumn(show, clipCategory(show, c)); }
   // Their clips are General's now.
   if (filed.some((r) => recordMedia(show, r.id).clips.length) && show.columns.some((c) => c.id === GENERAL)) ensureClipColumn(show, GENERAL);
 }
@@ -968,15 +989,20 @@ export function recordMedia(show: Show, id: string): { clips: string[]; stills: 
     for (const c of song.clips ?? []) {
       if (c.record_id !== id) continue;
       clips.push(c.path);
-      // Clips from before stills were recorded on them share the still's name: media/clips/01 X.mp4 ↔ media/grabs/01 X.jpg (or 01 X_2.jpg).
-      const stem = fileName(c.path).replace(/\.[^.]+$/, "");
-      const same = (p: string) => p.startsWith("media/grabs/") && new RegExp(`^${stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(_\\d+)?\\.jpg$`).test(fileName(p));
-      const images = [...new Set([...(song.gallery ?? []), ...songImagePaths(song)])];
-      stills.push(...(c.still ? images.filter((p) => p === c.still) : images.filter(same)));
+      stills.push(...clipStills(song, c));
     }
   }
   const own = (show.records ?? []).find((r) => r.id === id)?.stills ?? [];
   return { clips, stills: [...new Set([...stills, ...own])] };
+}
+
+/** The song's stills made with one of its clips. */
+function clipStills(song: Song, c: Clip): string[] {
+  // Clips from before stills were recorded on them share the still's name: media/clips/01 X.mp4 ↔ media/grabs/01 X.jpg (or 01 X_2.jpg).
+  const stem = fileName(c.path).replace(/\.[^.]+$/, "");
+  const same = (p: string) => p.startsWith("media/grabs/") && new RegExp(`^${stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(_\\d+)?\\.jpg$`).test(fileName(p));
+  const images = [...new Set([...(song.gallery ?? []), ...songImagePaths(song)])];
+  return c.still ? images.filter((p) => p === c.still) : images.filter(same);
 }
 
 /** Remember a still as made from a record. */
@@ -1013,19 +1039,24 @@ export function retagRecord(show: Show, recordId: string, category: string) {
   const from = record.image_col ?? "hero";
   const to = ensureCategory(show, category);
   record.image_col = to;
-  if (recordMedia(show, recordId).clips.length) ensureClipColumn(show, to); // its clips go with it
+  // Its clips go with it, but for any moved into a category of their own (one moved into this one is just the record's now).
+  for (const song of Object.values(show.songs)) for (const c of song.clips ?? []) if (c.record_id === recordId && c.category === to) delete c.category;
+  if (recordMedia(show, recordId).clips.length) ensureClipColumn(show, to);
   if (to === from) return;
   const stills = new Set(recordMedia(show, recordId).stills);
-  for (const song of Object.values(show.songs)) {
-    const still = from === "hero" ? song.hero_crop?.src ?? song.hero : song.images?.[from]; // a cropped hero counts as its source
-    if (!still || !stills.has(still)) continue;
-    if (from === "hero") {
-      // The hero falls back to an image that isn't one of this record's stills, or none.
-      song.hero = (song.gallery ?? []).find((p) => !stills.has(p));
-      delete song.hero_crop;
-    } else delete song.images![from];
-    if (!songImage(song, to)) setSongImage(show, song.id, to, still);
-  }
+  for (const song of Object.values(show.songs)) moveStills(show, song, from, to, stills);
+}
+
+/** Move a song's picture in category `from` to `to` (if that's empty), when it's one of `stills`. Other images stay put. */
+function moveStills(show: Show, song: Song, from: string, to: string, stills: Set<string>) {
+  const still = from === "hero" ? song.hero_crop?.src ?? song.hero : song.images?.[from]; // a cropped hero counts as its source
+  if (!still || !stills.has(still)) return;
+  if (from === "hero") {
+    // The hero falls back to an image that isn't one of these stills, or none.
+    song.hero = (song.gallery ?? []).find((p) => !stills.has(p));
+    delete song.hero_crop;
+  } else delete song.images![from];
+  if (!songImage(song, to)) setSongImage(show, song.id, to, still);
 }
 
 /** Records that songs still have clips from, though the record itself is gone. */
@@ -1532,7 +1563,10 @@ export function startsFromMarks(marks: SongMark[], duration: number): { song_id:
 export function addClip(show: Show, songId: string, clip: Clip) {
   const song = show.songs[songId];
   if (!song) return;
-  song.clips = [...(song.clips ?? []).filter((c) => !(c.record_id === clip.record_id && c.in === clip.in)), clip];
+  // A clip cut again stays in the category it was moved into.
+  const was = song.clips?.find((c) => c.record_id === clip.record_id && c.in === clip.in);
+  if (was?.category && !clip.category) clip = { ...clip, category: was.category };
+  song.clips = [...(song.clips ?? []).filter((c) => c !== was), clip];
   ensureClipColumn(show, clipCategory(show, clip));
 }
 
@@ -1547,6 +1581,24 @@ export function guessRecordLabel(show: Show, path: string): string {
   const parts = fileName(path).replace(/\.[^.]+$/, "").split(/\s+-\s+|_+/).map((p) => p.trim()).filter(Boolean);
   const kept = parts.filter((p) => p.toLowerCase() !== artist && p.replace(RECORD_WORDS, "").trim().length > 0);
   return cleanLabel(kept.join(" "));
+}
+
+/**
+ * The one name for records added together, or for a record joining ones already in the show. Songs recorded one at
+ * a time ("DEPENCE RENDER 04", "DEPENCE RENDER 05") share the start of their names ("DEPENCE RENDER"), and a record
+ * whose name starts with one the show already has ("DEPENCE RENDER" for "DEPENCE RENDER 06") takes that one, so they
+ * all list together.
+ */
+export function guessRecordsLabel(show: Show, paths: string[]): string {
+  const guesses = paths.map((p) => guessRecordLabel(show, p).split(" ").filter(Boolean));
+  const common = guesses.slice(1).reduce((acc, words) => {
+    const differs = acc.findIndex((w, i) => words[i] !== w);
+    return differs < 0 ? acc : acc.slice(0, differs);
+  }, guesses[0] ?? []);
+  const own = (common.length ? common : guesses[0] ?? []).join(" ");
+  const have = new Set((show.records ?? []).filter((r) => r.scope === "show").map((r) => cleanLabel(r.label ?? guessRecordLabel(show, r.path))).filter(Boolean));
+  const joins = [...have].filter((l) => own === l || own.startsWith(`${l} `)).sort((a, b) => b.length - a.length)[0];
+  return joins ?? own;
 }
 
 /** Upper case, and nothing that can't go in a file name (or the "_" that separates the name's parts). */
@@ -1673,9 +1725,34 @@ export function tidyResolved(show: Show, now = Date.now()): number {
   return gone.size;
 }
 
+/** Change a comment's text, marking it edited. Nothing changes when the text is the same. */
 export function editReview(show: Show, id: string, text: string) {
   const c = findReview(show, id);
-  if (c) c.text = text;
+  if (!c || c.text === text) return;
+  c.text = text;
+  c.edited_at = new Date().toISOString();
+}
+
+/** The departments a comment can be for: the show's, less the Sheet's own (CORE, STATUS, COLOUR). */
+export function commentDepts(show: Show): Dept[] {
+  return deptList(show).filter((d) => !["CORE", "STATUS", "COLOUR"].includes(d));
+}
+
+/** Put a comment in a department, or in none (""). */
+export function setReviewDept(show: Show, id: string, dept: Dept) {
+  const c = findReview(show, id);
+  if (!c) return;
+  if (dept) c.dept = dept;
+  else delete c.dept;
+}
+
+/**
+ * Whether `user` wrote a comment, so can edit it: by their Google email, or for one with no email (written while signed
+ * out), by the name it was written under. One typed in the Sheet with no email is edited there.
+ */
+export function wroteReview(c: ReviewComment, user: { name?: string; email?: string } | null): boolean {
+  if (c.email) return c.email.toLowerCase() === user?.email?.toLowerCase();
+  return c.source === "app" && c.from === (user?.name || user?.email || "Me");
 }
 
 /** Delete a comment. Its still stays in media/grabs/, so undoing the delete brings it back whole. */

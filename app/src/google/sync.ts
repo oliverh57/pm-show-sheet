@@ -9,11 +9,12 @@ import type { GoogleSync, Show } from "../model/types";
 import { applySheetValue, newId, songImagePaths } from "../model/ops";
 import { useStore } from "../store";
 import {
-  applyReviewEdits, colLetter, emailKey, REPLY_FROM, sheetAuthor, type SheetRevision, columnChangeRequests, formatRuleRequests, mergeUpdateRequests, spareColumnRequests, type SheetFormatRule, type SheetMerge, contentRequests, diffReviewTab, diffShowTab, HEADER_ROWS, keptCells, protectionUpdateRequests, reconcileRequests, reconcileRows,
-  reviewTab, type SheetProtection, showTab, snapshot, structureRequests, ARCHIVE_TAB, REVIEW_TAB, SHOW_TAB, type Conflict, type TabGrid,
+  applyReviewEdits, colLetter, emailKey, REPLY_FROM, sheetAuthor, type SheetAuthor, type SheetRevision, columnChangeRequests, formatRuleRequests, mergeUpdateRequests, spareColumnRequests, type SheetFormatRule, type SheetMerge, contentRequests, diffReviewTab, diffShowTab, HEADER_ROWS, keptCells, protectionUpdateRequests, reconcileRequests, reconcileRows,
+  reviewTab, type SheetProtection, showTab, snapshot, structureRequests, ARCHIVE_TAB, REVIEW_TAB, SHOW_TAB, type Conflict, type Edit, type TabGrid,
 } from "./sheet";
 import { deckFingerprint, deckRequests, playUrl } from "./slides";
 import { driveIdOf } from "../drive/media";
+import { addEdits, editsBetween, editorKey, sheetEditor as asEditor, sheetPull } from "../drive/edits";
 import { readManifest } from "../drive/show";
 
 const SHEETS = "https://sheets.googleapis.com/v4/spreadsheets";
@@ -26,9 +27,11 @@ const TAB_ID = 1001;
 const ARCHIVE_TAB_ID = 1002;
 const REVIEW_TAB_ID = 1003;
 const PUSH_DELAY_MS = 3000;
-const DECK_DELAY_MS = 15000;
+const DECK_DELAY_MS = 60000; // a redraw takes a while, so wait for a proper pause
 const POLL_MS = 60000;
 const RETRY_MS = 30000;
+const QUOTA_RETRY_MS = 60000; // Google's quotas are per minute
+const MAX_RETRY_MS = 5 * 60000;
 const IMAGE_PX = 2560;
 
 export type SyncState = "off" | "syncing" | "ok" | "error";
@@ -37,9 +40,14 @@ interface Status {
   message: string | null;
   lastSync: number | null;
   deck: "idle" | "waiting" | "drawing";
+  /** What the running sync is doing, in plain words ("Updating the Sheet"). */
+  step: string | null;
+  /** When a failed sync is tried again (ms). */
+  retryAt: number | null;
 }
-export const useSyncStatus = create<Status>(() => ({ state: "off", message: null, lastSync: null, deck: "idle" }));
+export const useSyncStatus = create<Status>(() => ({ state: "off", message: null, lastSync: null, deck: "idle", step: null, retryAt: null }));
 const status = (s: Partial<Status>) => useSyncStatus.setState(s);
+const step = (what: string) => status({ step: what });
 
 const api = <T,>(method: string, url: string, body?: unknown) => backend.googleApi<T>(method, url, body);
 const enc = encodeURIComponent;
@@ -73,6 +81,7 @@ async function moveInto(folder: string): Promise<void> {
   const old = g().folder_id;
   const files: [string | undefined, string | null][] = [[g().spreadsheet_id, null], [g().presentation_id, null], [g().media_folder_id, IMAGES_FOLDER]];
   let refused = false;
+  step("Moving the Sheet and deck into the show's folder");
   for (const [id, rename] of files) {
     if (!id) continue;
     const f = await api<{ parents?: string[] }>("GET", `${DRIVE}/${id}?fields=parents&${ALL}`);
@@ -94,6 +103,7 @@ async function ensureFiles(): Promise<void> {
   const folder = await showFolderId();
   const create = (body: object) => api<{ id: string; webViewLink?: string }>("POST", `${DRIVE}?fields=id,webViewLink&${ALL}`, body);
   if (g().folder_id !== folder) await moveInto(folder);
+  if (!g().media_folder_id || !g().spreadsheet_id || !g().presentation_id) step("Making the Google Sheet and deck");
   if (!g().media_folder_id) {
     const f = await create({ name: IMAGES_FOLDER, mimeType: FOLDER, parents: [folder] });
     meta((x) => { x.media_folder_id = f.id; });
@@ -104,6 +114,7 @@ async function ensureFiles(): Promise<void> {
   }
   if (g().named !== show.name && g().spreadsheet_id && g().presentation_id) {
     // Renamed show: retitle the Sheet and deck to match.
+    step("Renaming the Sheet and deck");
     await api("PATCH", `${DRIVE}/${g().spreadsheet_id}?${ALL}`, { name: `${show.name} | SHOW SHEET` });
     await api("PATCH", `${DRIVE}/${g().presentation_id}?${ALL}`, { name: `${show.name} | SHOW DECK` });
     meta((x) => { x.named = show.name; });
@@ -126,9 +137,12 @@ async function ensureImages(songIds: string[], extra: string[] = []): Promise<Re
   if (!show || !bundle) return {};
   const out: Record<string, { url: string; id: string }> = {};
   const paths = [...new Set([...songIds.flatMap((sid) => (show.songs[sid] ? songImagePaths(show.songs[sid]) : [])), ...extra])];
+  const todo = paths.filter((p) => !g().images?.[p]).length;
+  let n = 0;
   for (const img of paths) {
     let id = g().images?.[img];
     if (!id) {
+      step(`Uploading image ${++n} of ${todo}`);
       const path = img.startsWith("/") ? img : `${bundle}/${img}`;
       try {
         if (!img.startsWith("/")) await backend.driveFetch(bundle, [img]); // made on another Mac: download it first
@@ -150,6 +164,7 @@ async function pruneImages(): Promise<void> {
   const used = new Set([...Object.values(show.songs).flatMap(songImagePaths), ...reviewStills(show)]);
   for (const [path, id] of Object.entries(g().images ?? {})) {
     if (used.has(path)) continue;
+    step("Removing images no song uses");
     try {
       await api("PATCH", `${DRIVE}/${id}?${ALL}`, { trashed: true });
     } catch (e) {
@@ -174,6 +189,7 @@ export async function resolveClips(): Promise<void> {
   if (!show || !bundle) return;
   const known = g().clips ?? {};
   const paths = new Set(Object.values(show.songs).flatMap((s) => (s.clips ?? []).map((c) => c.path)));
+  if (paths.size) step("Finding the clips on Drive");
   const inFolder = [...paths].filter((p) => p.startsWith(CLIPS_DIR) && !p.slice(CLIPS_DIR.length).includes("/"));
   const onDrive = new Map<string, string>(); // file name → id, the most recently changed if two share a name
   const folder = inFolder.length ? await driveIdOf(`${bundle}/${CLIPS_DIR.slice(0, -1)}`, bundle) : null;
@@ -213,15 +229,46 @@ interface SheetMeta {
 /** Bring collaborator edits from the ✎ columns (of the song tabs and the REVIEW tab) into the show. */
 /** When each Sheet's REVIEW tab was last read (its id → ms): anything new in it since was typed after then. */
 const lastRead = new Map<string, number>();
+/** The same for its song tabs. */
+const lastShowRead = new Map<string, number>();
+
+/**
+ * Say what a pull brought in from the Sheet (`before` → `after`), put down to `author` (else whoever edited the Sheet
+ * since `since`), like an edit from another Mac. Noted in the show too, so the other Macs say so when it reaches them.
+ */
+async function noteSheetEdits(ssid: string, before: Show, after: Show, since: number | null, author?: SheetAuthor | null) {
+  const typist = asEditor(author ?? await sheetEditor(ssid, since).catch(() => null), useStore.getState().user?.email);
+  const found = editsBetween(before, after, editorKey(typist));
+  if (!found) return;
+  useStore.getState().setRemoteEdits((prev) => addEdits(prev, [typist], found));
+  meta((x) => {
+    // Song cells and comments read in the same pull, by the same person: one note.
+    const was = x.sheet_pull;
+    const next = sheetPull(found, typist);
+    if (was && was.by.name === next.by.name && was.by.email === next.by.email && next.at - was.at < POLL_MS) {
+      for (const [id, keys] of Object.entries(was.songs)) next.songs[id] = [...new Set([...keys, ...(next.songs[id] ?? [])])];
+    }
+    x.sheet_pull = next;
+  });
+}
 
 async function pull(): Promise<void> {
   const { spreadsheet_id: ssid, tab_id, archive_tab_id, review_tab_id, published } = g();
   if (!ssid || !tab_id || !published) return;
-  const tabs = archive_tab_id ? [SHOW_TAB, ARCHIVE_TAB] : [SHOW_TAB];
-  const res = await api<{ valueRanges: { values?: unknown[][] }[] }>("GET",
-    `${SHEETS}/${ssid}/values:batchGet?valueRenderOption=UNFORMATTED_VALUE&${tabs.map((t) => `ranges=${enc(a1(t))}`).join("&")}`);
+  step("Checking the Sheet for edits");
+  const readAt = Date.now();
+  // REVIEW in the same read. A REVIEW tab someone deleted is made again by the push, so it mustn't stop the pull: then
+  // Google refuses the range and the song tabs are read on their own.
+  const tabs = songTabs(archive_tab_id);
+  const all = review_tab_id
+    ? await tabValues(ssid, [...tabs, REVIEW_TAB]).catch((e) => { if (/Google 400/.test(String(e))) return null; throw e; })
+    : null;
+  const values = all ? all.slice(0, tabs.length) : await tabValues(ssid, tabs);
+  const review = all?.[tabs.length];
+  const since = lastShowRead.get(ssid) ?? null;
+  lastShowRead.set(ssid, readAt);
   const show = useStore.getState().show!;
-  const diffs = res.valueRanges.map((r) => diffShowTab(show, published, r.values ?? []));
+  const diffs = values.map((v) => diffShowTab(show, published, v));
   const edits = diffs.flatMap((d) => d.edits);
   const conflicts = diffs.flatMap((d) => d.conflicts);
   if (edits.length) {
@@ -232,19 +279,37 @@ async function pull(): Promise<void> {
       }
     });
     meta((x) => { for (const e of edits) x.published = { ...x.published, [`show|${e.songId}|${e.colId}`]: e.value }; });
-    useStore.getState().toast(`${edits.length} change${edits.length === 1 ? "" : "s"} from the Google Sheet`);
+    await noteSheetEdits(ssid, show, useStore.getState().show!, since);
   }
   if (conflicts.length) recordConflicts(conflicts);
-  if (review_tab_id) {
-    // Read on its own: a REVIEW tab someone deleted is made again by the push, so it mustn't stop the pull.
-    const readAt = Date.now();
-    const review = await api<{ values?: unknown[][] }>("GET", `${SHEETS}/${ssid}/values/${enc(a1(REVIEW_TAB))}?valueRenderOption=UNFORMATTED_VALUE`).catch(() => null);
-    if (review) {
-      const since = lastRead.get(ssid) ?? null;
-      lastRead.set(ssid, readAt);
-      await pullReviews(ssid, published, review.values ?? [], since);
-    }
+  if (review) {
+    const since = lastRead.get(ssid) ?? null;
+    lastRead.set(ssid, readAt);
+    await pullReviews(ssid, published, review, since);
   }
+}
+
+/** The song tabs: the running order, and the archive if it has one. */
+const songTabs = (archiveTabId: number | undefined) => (archiveTabId ? [SHOW_TAB, ARCHIVE_TAB] : [SHOW_TAB]);
+
+/** The cells of each of `tabs`, in one read. */
+async function tabValues(ssid: string, tabs: string[]): Promise<unknown[][][]> {
+  const res = await api<{ valueRanges: { values?: unknown[][] }[] }>("GET",
+    `${SHEETS}/${ssid}/values:batchGet?valueRenderOption=UNFORMATTED_VALUE&${tabs.map((t) => `ranges=${enc(a1(t))}`).join("&")}`);
+  return res.valueRanges.map((r) => r.values ?? []);
+}
+
+/** The song tabs' cells (and the archive's, if it has one). */
+const showTabValues = (ssid: string, archiveTabId: number | undefined) => tabValues(ssid, songTabs(archiveTabId));
+
+/**
+ * Edits typed in the Sheet that no app has brought into the show yet (`show` is the show as it is in Drive): the cells
+ * a pull would take. Only reads. Used while edits made offline wait to be approved, when nothing pulls the Sheet.
+ */
+export async function unpulledSheetEdits(show: Show): Promise<Edit[]> {
+  const { spreadsheet_id: ssid, tab_id, archive_tab_id, published } = show.google ?? {};
+  if (!ssid || !tab_id || !published) return [];
+  return (await showTabValues(ssid, archive_tab_id)).flatMap((v) => diffShowTab(show, published, v).edits);
 }
 
 const READ_MARGIN_MS = 30 * 1000; // the Mac's clock and Google's may differ a little
@@ -268,6 +333,7 @@ async function sheetEditor(ssid: string, since: number | null): Promise<ReturnTy
 async function pullReviews(ssid: string, published: Record<string, string | boolean>, values: unknown[][], since: number | null): Promise<void> {
   const edits = diffReviewTab(useStore.getState().show!, published, values);
   if (!edits.length) return;
+  step("Bringing in comments from the Sheet");
   // A comment or reply that doesn't say who it's from is put down to whoever edited the Sheet since it was last read.
   const unnamed = edits.some((e) => (e.kind === "new" && !e.from) || (e.kind === "reply" && e.from === REPLY_FROM));
   const author = unnamed ? await sheetEditor(ssid, since).catch(() => null) : null;
@@ -284,9 +350,10 @@ async function pullReviews(ssid: string, published: Record<string, string | bool
     })),
   ];
   if (data.length) await api("POST", `${SHEETS}/${ssid}/values:batchUpdate`, { valueInputOption: "RAW", data });
+  const before = useStore.getState().show!;
   useStore.getState().update((s) => applyReviewEdits(s, edits, ids, author));
   meta((x) => { for (const e of edits) if (e.kind === "set") x.published = { ...x.published, [`review|${e.id}|${e.col}`]: e.value }; });
-  useStore.getState().toast(`${edits.length} comment change${edits.length === 1 ? "" : "s"} from the Google Sheet`);
+  await noteSheetEdits(ssid, before, useStore.getState().show!, since, author);
 }
 
 function recordConflicts(conflicts: Conflict[]) {
@@ -297,7 +364,7 @@ function recordConflicts(conflicts: Conflict[]) {
     s.conflicts = { ...(s.conflicts ?? {}) };
     for (const c of fresh) s.conflicts[`show|${c.songId}|${c.colId}`] = { sheet: c.sheet, app: c.app, published: c.published };
   });
-  useStore.getState().toast(`${fresh.length} Sheet edit${fresh.length === 1 ? "" : "s"} clashed with the app. See Share & publish.`);
+  useStore.getState().setClashesOpen(true);
 }
 
 /** Why this Mac isn't writing the Sheet yet: its locked columns aren't open to this account. */
@@ -316,12 +383,13 @@ async function pushSheet(): Promise<void> {
   const show = useStore.getState().show!;
   const images = await ensureImages([...show.set_order, ...show.archive], reviewStills(show));
   const urls = Object.fromEntries(Object.entries(images).map(([k, v]) => [k, v.url]));
+  step("Updating the Sheet");
   // The running order on SHOW SHEET, archived songs on ARCHIVED SONGS: a song moves between them as it's archived or restored.
   const grids: [TabGrid, number][] = [[showTab(show, urls, clipUrls()), TAB_ID], [showTab(show, urls, clipUrls(), true), ARCHIVE_TAB_ID]];
   // REVIEW is added once there's a comment to put in it.
   const reviewing = Boolean(g().review_tab_id || show.reviews?.length);
   if (reviewing) grids.push([reviewTab(show, urls, clipUrls()), REVIEW_TAB_ID]);
-  const metaRes = await api<SheetMeta>("GET", `${SHEETS}/${ssid}?fields=${enc("sheets(properties(sheetId,title,gridProperties(columnCount)),merges,conditionalFormats(booleanRule(condition(values))))")}`);
+  const metaRes = await api<SheetMeta>("GET", `${SHEETS}/${ssid}?fields=${enc(`sheets(properties(sheetId,title,gridProperties(columnCount)),merges,conditionalFormats(booleanRule(condition(values))),${PROTECTED_FIELDS})`)}`);
   const tabs = new Map(metaRes.sheets.map((s) => [s.properties.sheetId, s]));
   const reqs: object[] = [];
   const columnsChanged = new Set<number>();
@@ -365,23 +433,26 @@ async function pushSheet(): Promise<void> {
   lockedOut = false;
   meta((x) => { x.tab_id = TAB_ID; x.archive_tab_id = ARCHIVE_TAB_ID; if (reviewing) x.review_tab_id = REVIEW_TAB_ID; x.published = pushed; });
   lastSheet = sheetFingerprint(show);
-  await lockTabs(ssid, grids, user?.email ?? "", columnsChanged);
+  await lockTabs(ssid, grids, user?.email ?? "", columnsChanged, metaRes);
   await pruneImages();
 }
 
 let lockRefused: string | null = null; // why Google last refused the tabs' lock, said once rather than every push
+const PROTECTED_FIELDS = "protectedRanges(protectedRangeId,warningOnly,range,unprotectedRanges,editors)";
 
 /**
- * Lock all but the ✎ columns of each tab, when they aren't locked that way already. Sent on its own after the push, with
- * the ranges read fresh (a column deleted in the push can change them), so a lock Google refuses never stops the sync.
+ * Lock all but the ✎ columns of each tab, when they aren't locked that way already. Sent on its own after the push, so a
+ * lock Google refuses never stops the sync. The ranges are the ones `before` the push read, unless it changed columns
+ * (a column deleted can change them): then they're read fresh. The locks cover whole columns, so moving rows doesn't.
  */
-async function lockTabs(ssid: string, grids: [TabGrid, number][], me: string, columnsChanged: Set<number>) {
+async function lockTabs(ssid: string, grids: [TabGrid, number][], me: string, columnsChanged: Set<number>, before: SheetMeta) {
   // One address per account, your own last so its spelling wins (Google lists the one it knows the account by).
   const byAccount = new Map<string, string>();
   for (const e of [...(g().app_editors ?? []), me].filter(Boolean)) byAccount.set(emailKey(e), e.toLowerCase());
   const editors = [...byAccount.values()];
+  step("Locking the Sheet's columns");
   try {
-    const res = await api<SheetMeta>("GET", `${SHEETS}/${ssid}?fields=${enc("sheets(properties(sheetId),protectedRanges(protectedRangeId,warningOnly,range,unprotectedRanges,editors))")}`);
+    const res = columnsChanged.size ? await api<SheetMeta>("GET", `${SHEETS}/${ssid}?fields=${enc(`sheets(properties(sheetId),${PROTECTED_FIELDS})`)}`) : before;
     const reqs = grids.flatMap(([grid, id]) => {
       const ranges = res.sheets.find((s) => s.properties.sheetId === id)?.protectedRanges ?? [];
       return protectionUpdateRequests(grid, id, ranges, editors, columnsChanged.has(id));
@@ -404,6 +475,7 @@ async function pushDeck(): Promise<void> {
   const pid = g().presentation_id!;
   status({ deck: "drawing" });
   const images = await ensureImages(show.set_order);
+  step("Redrawing the deck");
   const pres = await api<{ slides?: { objectId: string; pageElements?: { objectId: string }[] }[] }>("GET", `${SLIDES}/${pid}?fields=${enc("slides(objectId,pageElements(objectId))")}`);
   const existing = Object.fromEntries((pres.slides ?? []).map((s) => [s.objectId, (s.pageElements ?? []).map((e) => e.objectId)]));
   const rev = (g().slides_rev ?? 0) + 1;
@@ -451,18 +523,30 @@ function sheetFingerprint(show: Show): string {
     show.google?.app_editors]); // someone new using the show in the app: push, so the lock lets them in
 }
 
-function run(job: () => Promise<void>) {
+let retryTimer: number | undefined; // set while waiting to try again after a failed sync
+let failures = 0; // syncs failed in a row: each waits longer before trying again
+
+/** Run a sync job in turn. While a retry waits, only a full sync (`syncNow`) runs: the retry does the rest. */
+function run(job: () => Promise<void>, full = false) {
   const gen = generation;
   queue = queue.then(async () => {
     if (gen !== generation || !useStore.getState().show) return;
-    status({ state: "syncing" });
+    if (retryTimer !== undefined && !full) return;
+    window.clearTimeout(retryTimer);
+    retryTimer = undefined;
+    status({ state: "syncing", step: null, retryAt: null });
     try {
       await job();
-      if (gen === generation) status({ state: "ok", message: lockedOut ? LOCKED_OUT : null, lastSync: Date.now() });
+      failures = 0;
+      if (gen === generation) status({ state: "ok", message: lockedOut ? LOCKED_OUT : null, lastSync: Date.now(), step: null });
     } catch (e) {
       if (gen !== generation) return;
-      status({ state: "error", message: String(e).replace(/^Error: /, ""), deck: "idle" });
-      setTimeout(() => { if (gen === generation) syncNow(); }, RETRY_MS);
+      // One retry at a time, waiting longer each time: a retry for every failed job kept an account over Google's
+      // per-minute quota, so it never came back.
+      const quota = /Google 429/.test(String(e));
+      const wait = Math.min((quota ? QUOTA_RETRY_MS : RETRY_MS) * 2 ** failures++, MAX_RETRY_MS);
+      retryTimer = window.setTimeout(() => { if (gen === generation) syncNow(); }, wait);
+      status({ state: "error", message: String(e).replace(/^Error: /, ""), deck: "idle", step: null, retryAt: Date.now() + wait });
     }
   });
 }
@@ -476,7 +560,7 @@ export function syncNow(force = false) {
     const show = useStore.getState().show!;
     if (force || sheetFingerprint(show) !== lastSheet || !g().tab_id) await pushSheet();
     if (force || deckFingerprint(show) !== lastDeck) await pushDeck();
-  });
+  }, true);
 }
 
 /** Run the sync engine while a show is open (desktop app, signed in). */
@@ -484,14 +568,20 @@ export function useGoogleSync() {
   const bundle = useStore((s) => s.bundle);
   const user = useStore((s) => s.user);
   const readOnly = useStore((s) => s.readOnly);
+  const connection = useStore((s) => s.connection);
   useEffect(() => {
     generation++;
     lastSheet = null;
     lockedOut = false;
+    window.clearTimeout(retryTimer);
+    retryTimer = undefined;
+    failures = 0;
     lastDeck = useStore.getState().show?.google?.deck_hash ?? null; // don't redraw an unchanged deck on open
     if (!bundle || !user) return status({ state: "off", message: null });
     if (readOnly) return status({ state: "off", message: "Read only" });
     if (!backend.isDesktop) return status({ state: "off", message: "Google sync runs in the desktop app" });
+    if (connection === "offline") return status({ state: "off", message: "Offline" });
+    if (connection === "back") return status({ state: "off", message: "Waiting for your offline changes" }); // the Sheet mustn't get them before they're approved
     syncNow();
     let sheetTimer: number | undefined;
     let deckTimer: number | undefined;
@@ -518,5 +608,5 @@ export function useGoogleSync() {
       window.clearTimeout(deckTimer);
       window.clearInterval(poll);
     };
-  }, [bundle, user, readOnly]);
+  }, [bundle, user, readOnly, connection]);
 }

@@ -78,6 +78,7 @@ export function MediaViewer({ song, start, play, comment, onClose }: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const inMedia = e.target instanceof HTMLMediaElement || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement;
+      if (e.key === "Escape" && e.target instanceof HTMLElement && e.target.closest(".rv-edit")) return; // the comment being edited cancels the edit itself
       if (e.key === "Escape" && (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) (e.target as HTMLElement).blur(); // leave the comment box, not the viewer
       else if (e.key === "Escape") onClose();
       else if (e.key === "ArrowLeft" && !inMedia && items.length > 1) step(-1);

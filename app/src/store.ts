@@ -2,11 +2,16 @@
 // records the previous version for undo. Saving is wired up in App (it watches `version`).
 import { create } from "zustand";
 import type { GoogleUser, ThumbCandidate } from "./backend";
+import type { RemoteEdits } from "./drive/edits";
+import type { Clash } from "./drive/offline";
 import { merge3 } from "./drive/merge";
 import type { Show } from "./model/types";
 
 export type View = "songs" | "media" | "comments" | "share" | "sheet" | "import" | "settings" | "prefs"; // settings = this show; prefs = the app
 export type SaveState = "saved" | "saving" | "unsaved" | "offline" | "error"; // offline: saved on this Mac, uploads when Drive can be reached
+/** online: as usual. offline: Drive can't be reached, so edits are saved on this Mac and held. back: Drive can be reached
+ * again, and the edits made offline wait for someone to approve them before they upload. */
+export type Connection = "online" | "offline" | "back";
 export type MediaTab = "add" | "inbox";
 export type SongsLayout = "grid" | "list" | "present"; // present: one song at a time, full size
 
@@ -53,6 +58,7 @@ interface State {
   future: Show[];
   saveState: SaveState;
   saveError: string | null;
+  connection: Connection;
   view: View;
   mediaTab: MediaTab;
   songsLayout: SongsLayout;
@@ -67,12 +73,23 @@ interface State {
   stillPicks: StillPick[];
   columnsOpen: boolean;
   toasts: { id: number; text: string }[];
+  /** Other people's edits that came from Drive since the notice was last closed. */
+  remoteEdits: RemoteEdits | null;
+  /** Highlight them (Show edits), until the notice is closed. */
+  showingEdits: boolean;
+  /** Things someone else changed in Drive at the same time as this Mac (this Mac's kept), until someone picks. */
+  clashes: Clash[];
+  /** The clash dialog is open (it opens itself when there's a new clash; the Sheet's are in show.conflicts). */
+  clashesOpen: boolean;
 
   setUser(user: GoogleUser | null): void;
   load(show: Show, bundle: string, readOnly?: string | null): void;
   setOthers(others: { email: string; name: string }[]): void;
   setLocation(location: string | null): void;
   setReadOnly(readOnly: string | null): void;
+  setConnection(connection: Connection): void;
+  /** Put a different version of the show in place (the edits made offline were thrown away): saved, with no undo back past it. */
+  replace(show: Show): void;
   close(): void;
   setBundle(path: string): void; // the show was moved
   update(fn: (show: Show) => void): void;
@@ -105,6 +122,15 @@ interface State {
   setColumnsOpen(open: boolean): void;
   setSaveState(state: SaveState, error?: string | null): void;
   toast(text: string): void;
+  setRemoteEdits(fn: (edits: RemoteEdits | null) => RemoteEdits | null): void;
+  showEdits(): void;
+  /** Close the notice of other people's edits, and their highlights. */
+  closeEdits(): void;
+  /** New clashes (replacing any of the same things): opens the clash dialog. */
+  addClashes(clashes: Clash[]): void;
+  /** Someone picked a version for these (by id). */
+  settleClashes(ids: string[]): void;
+  setClashesOpen(open: boolean): void;
 }
 
 let toastId = 0;
@@ -122,6 +148,7 @@ export const useStore = create<State>((set, get) => ({
   future: [],
   saveState: "saved",
   saveError: null,
+  connection: "online",
   view: "songs",
   mediaTab: "add",
   songsLayout: "grid",
@@ -138,13 +165,17 @@ export const useStore = create<State>((set, get) => ({
   pickBack: null,
   columnsOpen: false,
   toasts: [],
+  remoteEdits: null,
+  showingEdits: false,
+  clashes: [],
+  clashesOpen: false,
 
   setUser(user) {
     set({ user, authChecked: true });
   },
   load(show, bundle, readOnly = null) {
-    set({ show, bundle, readOnly, location: null, others: [], past: [], future: [], saveState: "saved", saveError: null, view: "songs", mediaTab: "add",
-          selectedSongId: show.set_order[0] ?? null, selectedColId: "name", drawerSongId: null, importFiles: null, importSource: null, jobs: [], stillPicks: [] });
+    set({ show, bundle, readOnly, location: null, others: [], past: [], future: [], saveState: "saved", saveError: null, connection: "online", view: "songs", mediaTab: "add",
+          selectedSongId: show.set_order[0] ?? null, selectedColId: "name", drawerSongId: null, importFiles: null, importSource: null, jobs: [], stillPicks: [], remoteEdits: null, showingEdits: false, clashes: [], clashesOpen: false });
   },
   setBundle(bundle) {
     set({ bundle, readOnly: null });
@@ -158,8 +189,14 @@ export const useStore = create<State>((set, get) => ({
   setReadOnly(readOnly) {
     set({ readOnly });
   },
+  setConnection(connection) {
+    set({ connection });
+  },
+  replace(show) {
+    set({ show, past: [], future: [], saveState: "saved", saveError: null });
+  },
   close() {
-    set({ show: null, bundle: null, readOnly: null, location: null, others: [], past: [], future: [], selectedSongId: null, drawerSongId: null, importFiles: null, stillPicks: [], view: "songs" });
+    set({ show: null, bundle: null, readOnly: null, connection: "online", location: null, others: [], past: [], future: [], selectedSongId: null, drawerSongId: null, importFiles: null, stillPicks: [], view: "songs", remoteEdits: null, showingEdits: false, clashes: [], clashesOpen: false });
   },
   update(fn) {
     const { show, past, version, readOnly } = get();
@@ -236,5 +273,26 @@ export const useStore = create<State>((set, get) => ({
     const id = ++toastId;
     set((s) => ({ toasts: [...s.toasts, { id, text }] }));
     setTimeout(() => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })), 2600);
+  },
+  setRemoteEdits(fn) {
+    set((s) => ({ remoteEdits: fn(s.remoteEdits) }));
+  },
+  showEdits() {
+    set({ showingEdits: true });
+  },
+  closeEdits() {
+    set({ remoteEdits: null, showingEdits: false });
+  },
+  addClashes(clashes) {
+    if (!clashes.length) return;
+    const ids = new Set(clashes.map((c) => c.change.id));
+    set((s) => ({ clashes: [...s.clashes.filter((c) => !ids.has(c.change.id)), ...clashes], clashesOpen: true }));
+  },
+  settleClashes(ids) {
+    const done = new Set(ids);
+    set((s) => ({ clashes: s.clashes.filter((c) => !done.has(c.change.id)) }));
+  },
+  setClashesOpen(clashesOpen) {
+    set({ clashesOpen });
   },
 }));

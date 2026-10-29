@@ -68,7 +68,11 @@ export interface DriveFile {
   ownedByMe?: boolean;
   sharingUser?: { displayName?: string; emailAddress?: string };
   owners?: { displayName?: string; emailAddress?: string }[];
+  lastModifyingUser?: DriveUser;
 }
+
+/** Someone, as the Drive API names them. `me` is the signed-in user. */
+export interface DriveUser { displayName?: string; emailAddress?: string; me?: boolean }
 
 /** JSON files kept beside a show's project.json on this Mac: the render inbox, and the Drive copy's manifest and base. */
 export type SideFile = "inbox.json" | ".drive.json" | "base.json" | ".remote.json";

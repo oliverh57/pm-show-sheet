@@ -1,4 +1,5 @@
-// The window around a show: sidebar, the read-only banner, and toasts.
+// The window around a show: sidebar, the read-only and offline banners, and toasts.
+import { useEffect, useMemo, useState } from "react";
 import { create } from "zustand";
 import logo from "../assets/logo.png";
 import { backend } from "../backend";
@@ -6,6 +7,8 @@ import { moveOpenShow, openInDrive } from "../library";
 import { showCover } from "../model/ops";
 import { useStore, type View } from "../store";
 import { DriveFolderPicker } from "./DriveFolderPicker";
+import { openClashes } from "../drive/offline";
+import { ClashDialog, OfflineReviewDialog } from "./OfflineReview";
 import { SyncBadge } from "./OtherPages";
 import { Avatar, GoogleDriveMark, Icon, type IconName } from "./icons";
 
@@ -53,6 +56,7 @@ export function Sidebar({ onClose }: { onClose: () => void }) {
   const readOnly = useStore((s) => s.readOnly);
   const saveState = useStore((s) => s.saveState);
   const saveError = useStore((s) => s.saveError);
+  const connection = useStore((s) => s.connection);
   const location = useStore((s) => s.location);
   const canUndo = useStore((s) => s.past.length > 0);
   const canRedo = useStore((s) => s.future.length > 0);
@@ -96,7 +100,7 @@ export function Sidebar({ onClose }: { onClose: () => void }) {
           {readOnly ? <b>View only</b> : <>
             {saveState === "saving" && "Saving…"}
             {saveState === "unsaved" && "Unsaved changes"}
-            {saveState === "offline" && "Saved on this Mac: offline"}
+            {saveState === "offline" && (connection === "back" ? "Saved on this Mac: to approve" : "Saved on this Mac: offline")}
             {saveState === "error" && "Couldn't save"}
             {saveState === "saved" && <>Saved to <b>Google Drive</b></>}
           </>}
@@ -132,6 +136,48 @@ export function ReadOnlyBanner() {
   );
 }
 
+/** Across the top while working offline: that saves stay on this Mac, and wait to be approved once Drive is back. */
+export function OfflineBanner() {
+  const connection = useStore((s) => s.connection);
+  const readOnly = useStore((s) => s.readOnly);
+  const [reviewing, setReviewing] = useState(false);
+  useEffect(() => { if (connection !== "back") setReviewing(false); }, [connection]);
+  if (connection === "online") return null;
+  return (<>
+    <div className={`offline-banner ${connection}`}>
+      <Icon name={connection === "back" ? "cloud" : "alert"} size="sm" />
+      {connection === "offline" && (readOnly
+        ? <span><b>You're working offline.</b> This is the copy of the show on this Mac.</span>
+        : <span><b>You're working offline.</b> Your changes are saved on this Mac. When you're back online you'll need to approve them before they go to Google Drive.</span>)}
+      {connection === "back" && <>
+        <span><b>You're back online.</b> The changes you made offline haven't been uploaded yet. Nobody else sees them until you approve them.</span>
+        <button className="sm primary" onClick={() => setReviewing(true)}>Review changes</button>
+      </>}
+    </div>
+    {reviewing && <OfflineReviewDialog onClose={() => setReviewing(false)} />}
+  </>);
+}
+
+/** Across the top while something clashes with someone else's edit and nobody has picked a version; and the clash dialog. */
+export function ClashBanner() {
+  const show = useStore((s) => s.show);
+  const drive = useStore((s) => s.clashes);
+  const open = useStore((s) => s.clashesOpen);
+  const { setClashesOpen } = useStore.getState();
+  const count = useMemo(() => (show ? openClashes(show, drive).length : 0), [show, drive]);
+  if (!count && !open) return null;
+  return (<>
+    {count > 0 && (
+      <div className="offline-banner">
+        <Icon name="alert" size="sm" />
+        <span><b>Someone else changed {count === 1 ? "something you changed" : `${count} things you changed`}</b> at the same time as you. Yours are kept until you pick.</span>
+        <button className="sm primary" onClick={() => setClashesOpen(true)}>Review</button>
+      </div>
+    )}
+    {open && count > 0 && <ClashDialog onClose={() => setClashesOpen(false)} />}
+  </>);
+}
+
 export function Toasts() {
   const toasts = useStore((s) => s.toasts);
   return <div className="toasts">{toasts.map((t) => <div key={t.id} className="toast"><Icon name="check" />{t.text}</div>)}</div>;
@@ -146,7 +192,8 @@ function JobsProgress() {
   if (!active && !picks) return null;
   const done = jobs.filter((j) => j.status === "done" || j.status === "error").length;
   const running = jobs.find((j) => j.status === "running");
-  const clips = jobs.some((j) => j.kind !== "thumbnail");
+  // Only clips still being cut go to the Media page; finished ones don't stop "Pick N thumbnails" opening the picker.
+  const clips = active && jobs.some((j) => j.kind !== "thumbnail" && (j.status === "queued" || j.status === "running"));
   const fraction = jobs.length ? (done + (running?.progress ?? 0)) / jobs.length : 1;
   return (
     <button className="jobs-progress" onClick={() => (clips ? setView("media") : openPicks())} title={clips ? "See them on the Media page" : "Pick each song's thumbnail"}>

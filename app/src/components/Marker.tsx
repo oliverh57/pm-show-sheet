@@ -1,5 +1,5 @@
 // Mark songs by hand in a show record with no timecode: play or scrub to where each song starts
-// and press [ (or M). Each song ends where the next mark starts, or where ] (or N, "not a song") ends it. The record's
+// and press [ (or M). Each song ends where the next mark starts, or where ] (or N) ends it early. The record's
 // set list may not be the show's: any song (archived, or a new one) can be marked next, in any order.
 // Marks are dragged on the timeline to fix them; zoom in (+ − or pinch) to place them closely. Then cut a clip per song.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -44,7 +44,8 @@ const MIN_LEN = 1;
 const byTime = (a: Start, b: Start) => a.t - b.t;
 
 /** `asked`: what to make was asked when the record was added, so it isn't asked again here. */
-export function Marker({ record, initialMake = "clips", asked, onDone }: { record: SourceRecord; initialMake?: Make; asked?: boolean; onDone: () => void }) {
+/** `more`: other records added with this one are marked next, so it carries on to them rather than back to Media. */
+export function Marker({ record, initialMake = "clips", asked, more, onDone }: { record: SourceRecord; initialMake?: Make; asked?: boolean; more?: boolean; onDone: () => void }) {
   const show = useStore((s) => s.show)!;
   const bundle = useStore((s) => s.bundle)!;
   const { update, toast } = useStore.getState();
@@ -132,11 +133,6 @@ export function Marker({ record, initialMake = "clips", asked, onDone }: { recor
     markAt(next, v.currentTime);
     setArmed(null);
   }, [next]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const markGap = useCallback(() => {
-    const v = video.current;
-    if (v) markAt(GAP, v.currentTime);
-  }, [show]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * Delete region `i`, so nothing is made from it: a song's region becomes a gap (merged with a gap or the lead-in
@@ -262,8 +258,7 @@ export function Marker({ record, initialMake = "clips", asked, onDone }: { recor
       const k = e.key.toLowerCase();
       if (k === " ") toggle();
       else if (k === "m" || k === "[") mark();
-      else if (k === "]") markEnd();
-      else if (k === "n") markGap();
+      else if (k === "]" || k === "n") markEnd();
       else if ((k === "=" || k === "+") && duration) zoomTo(zoom * 2);
       else if (k === "-" && duration) zoomTo(zoom / 2);
       else if (k === "0") zoomTo(1);
@@ -277,7 +272,7 @@ export function Marker({ record, initialMake = "clips", asked, onDone }: { recor
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggle, mark, markEnd, markGap, seek, undo, armed, menu, zoom, zoomTo, reveal, duration]);
+  }, [toggle, mark, markEnd, seek, undo, armed, menu, zoom, zoomTo, reveal, duration]);
 
   useEffect(() => {
     if (video.current) video.current.playbackRate = rate;
@@ -374,6 +369,7 @@ export function Marker({ record, initialMake = "clips", asked, onDone }: { recor
     update((s) => setMarks(s, record.id, marks));
     if (!todo.length) {
       toast(`Saved the marks. Every song already has its ${make === "clips" ? "clip" : "thumbnail"}.`);
+      if (more) return onDone();
       useStore.getState().setView("media");
       return;
     }
@@ -453,12 +449,16 @@ export function Marker({ record, initialMake = "clips", asked, onDone }: { recor
             <button className="primary" style={{ width: 40, padding: 0 }} title="Play / pause (Space)" onClick={toggle}><Icon name={playing ? "pause" : "play"} /></button>
             <button className="icon" title="Forward 30s (⇧→)" onClick={() => seek(t + 30)}><Icon name="skipF" size="sm" /></button>
             <div className="seg" style={{ marginLeft: 6 }}>{RATES.map((r) => <button key={r} className={rate === r ? "on" : ""} onClick={() => setRate(r)}>{r}×</button>)}</div>
-            <button className="sm" onClick={grabStill} disabled={!currentSong} title="Grab a still for the current song"><Icon name="camera" size="sm" /> Grab still</button>
-            <button className="sm" onClick={markEnd} disabled={!currentSong} title={currentSong ? `End ${name(currentSong.song_id)} here (])` : "Play into a song to end it"}>End of song <span className="kbd">]</span></button>
-            <button className="sm" onClick={markGap} title="The song before ends here: a break, crowd or changeover (N)"><Icon name="x" size="sm" /> Not a song</button>
-            {next
-              ? <button className="primary markbtn" onClick={mark}><Icon name="flag" /><span className="who">{marked.has(next) ? "Move start of" : "Start of"} {name(next)}</span><span className="kbd">[</span></button>
-              : <button className="primary markbtn" onClick={create} disabled={!marks.length}><Icon name="check" /> All marked, make {make === "clips" ? "clips" : "thumbnails"}</button>}
+            <button className="sm" onClick={grabStill} disabled={!currentSong} title={currentSong ? `Add this frame to ${name(currentSong.song_id)}'s stills` : "Play into a song to grab a still for it"}><Icon name="camera" size="sm" /> Grab still</button>
+            <div className="marks">
+              <button className="markbtn" onClick={markEnd} disabled={!currentSong}
+                      title={currentSong ? `${name(currentSong.song_id)} ends here: what follows, up to the next song, is a break, crowd or changeover (])` : "Play into a song to end it"}>
+                <span className="who">{currentSong ? `End of ${name(currentSong.song_id)}` : "End of song"}</span><span className="kbd">]</span>
+              </button>
+              {next
+                ? <button className="primary markbtn" onClick={mark} title={`${name(next)} starts here ([)`}><Icon name="flag" /><span className="who">{marked.has(next) ? "Move start of" : "Start of"} {name(next)}</span><span className="kbd">[</span></button>
+                : <button className="primary markbtn" onClick={create} disabled={!marks.length}><Icon name="check" /> All marked, make {make === "clips" ? "clips" : "thumbnails"}</button>}
+            </div>
           </div>
           <div className="timeline">
             <div className="tl-zoom">
@@ -497,8 +497,7 @@ export function Marker({ record, initialMake = "clips", asked, onDone }: { recor
             {menu !== null && regions[menu] && regionMenu(regions[menu])}
           </div>
           <div className="keys">
-            <span><span className="kbd">Space</span> play / pause</span><span><span className="kbd">[</span> song start</span><span><span className="kbd">]</span> song end</span>
-            <span><span className="kbd">N</span> not a song</span>
+            <span><span className="kbd">Space</span> play / pause</span><span><span className="kbd">[</span> start of next song</span><span><span className="kbd">]</span> end of this song</span>
             <span><span className="kbd">←</span><span className="kbd">→</span> 5s</span><span><span className="kbd">⇧</span> + arrows 30s</span>
             <span><span className="kbd">+</span><span className="kbd">−</span> zoom</span><span><span className="kbd">⌫</span> undo</span>
           </div>

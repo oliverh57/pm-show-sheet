@@ -8,7 +8,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { backend } from "../backend";
 import {
-  addReview, clipName, clipTimeAt, deleteReply, deleteReview, deptList, deptName, imageReviews, recordTc, recordTimeAt, replyToReview, reviewsOn, setReviewDone, unplacedReviews,
+  addReview, clipName, clipTimeAt, commentDepts, deleteReply, deleteReview, deptName, editReview, imageReviews, recordTc, recordTimeAt, replyToReview, reviewsOn, setReviewDept, setReviewDone,
+  unplacedReviews, wroteReview,
 } from "../model/ops";
 import type { ReviewComment, Show } from "../model/types";
 import { useStore } from "../store";
@@ -124,7 +125,7 @@ export function Review({ show, songId, target, stage, itemKey, trackHost, light,
   const record = (show.records ?? []).find((r) => r.id === anchor.record_id);
   const comments = isVideo ? reviewsOn(show, anchor.record_id, anchor.from, anchor.to) : imageReviews(show, target.path);
   const unplaced = isVideo ? unplacedReviews(show, songId) : [];
-  const depts = deptList(show).filter((d) => !["CORE", "STATUS", "COLOUR"].includes(d));
+  const depts = commentDepts(show);
 
   const [filter, setFilter] = useState<Filter>("all");
   const [selected, setSelected] = useState<string | null>(focus ?? null);
@@ -333,14 +334,16 @@ export function Review({ show, songId, target, stage, itemKey, trackHost, light,
   );
 }
 
-/** One comment with its replies, and Reply, Resolve and Delete. */
+/** One comment with its replies, its department (changed here), and Reply, Resolve and Delete; Edit too on one you wrote. */
 export function Thread({ c, n, label, selected, replying, onOpen, onReply }: {
   c: ReviewComment; n: number; label: (t: number) => string; selected: boolean; replying: boolean; onOpen: () => void; onReply: () => void;
 }) {
   const show = useStore((s) => s.show)!;
   const user = useStore((s) => s.user);
+  const readOnly = useStore((s) => s.readOnly);
   const update = useStore((s) => s.update);
   const [reply, setReply] = useState("");
+  const [draft, setDraft] = useState<string | null>(null); // the text being edited, while editing
   const colour = avatarColour(c.email ?? c.from);
   const remove = async () => {
     if (await backend.confirm(`Delete ${c.from}'s comment${label(c.t) && ` at ${label(c.t)}`}${c.replies.length ? " and its replies" : ""}?`)) update((s) => deleteReview(s, c.id));
@@ -352,21 +355,49 @@ export function Thread({ c, n, label, selected, replying, onOpen, onReply }: {
     setReply("");
     onReply();
   };
+  const save = () => {
+    const body = draft?.trim();
+    if (!body) return;
+    update((s) => editReview(s, c.id, body));
+    setDraft(null);
+  };
   return (
     <div className={`rv-thread ${selected ? "on" : ""} ${c.done ? "done" : ""}`} data-id={c.id} onClick={onOpen}>
       <div className="rv-top">
         <span className="av" style={{ background: c.done ? undefined : colour }}>{n || initials(c.from)}</span>
         <span className="who">{c.from}</span>
         <span className="when">{when(c.at)}</span>
+        {c.edited_at && <span className="when" title={`Edited ${when(c.edited_at)}`}>· edited</span>}
         <span style={{ flex: 1 }} />
         {label(c.t) && <span className="tc">{label(c.t)}{c.t_out !== undefined && ` → ${label(c.t_out)}`}</span>}
       </div>
-      <div className="rv-text">{c.text}</div>
+      {draft === null ? <div className="rv-text">{c.text}</div> : (
+        <div className="rv-edit" onClick={(e) => e.stopPropagation()}>
+          <textarea autoFocus rows={2} value={draft} aria-label="Edit comment" onChange={(e) => setDraft(e.target.value)}
+                    onFocus={(e) => e.currentTarget.setSelectionRange(draft.length, draft.length)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); save(); }
+                      else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setDraft(null); }
+                    }} />
+          <div className="rv-tools">
+            <span style={{ flex: 1 }} />
+            <button className="sm" onClick={() => setDraft(null)}>Cancel</button>
+            <button className="primary sm" disabled={!draft.trim()} onClick={save}>Save</button>
+          </div>
+        </div>
+      )}
       <div className="rv-meta" onClick={(e) => e.stopPropagation()}>
-        {c.dept && <span className="chip">{deptName(c.dept, show)}</span>}
+        {readOnly ? c.dept && <span className="chip">{deptName(c.dept, show)}</span> : (
+          <select className={`rv-dept ${c.dept ? "" : "none"}`} value={c.dept ?? ""} title="Department" aria-label="Department"
+                  onChange={(e) => update((s) => setReviewDept(s, c.id, e.target.value))}>
+            <option value="">No department</option>
+            {[...new Set([...commentDepts(show), ...(c.dept ? [c.dept] : [])])].map((d) => <option key={d} value={d}>{deptName(d, show)}</option>)}
+          </select>
+        )}
         {c.draw && <span title="Has a drawing"><Icon name="pencil" size="sm" /></span>}
         {c.source === "sheet" && <span className="chip">Sheet</span>}
         <span style={{ flex: 1 }} />
+        {!readOnly && draft === null && wroteReview(c, user) && <button className="link sm" onClick={() => setDraft(c.text)}>Edit</button>}
         <button className="link sm" onClick={onReply}>Reply</button>
         <button className={`link sm ${c.done ? "resolved" : ""}`} onClick={() => update((s) => setReviewDone(s, c.id, !c.done))}>
           <Icon name="check" size="sm" /> {c.done ? "Resolved" : "Resolve"}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import sample from "../model/sample_show.json";
-import { addReview, migrate, placeTc, recordTc, replyToReview, resolvedToTidy, reviewsOn, setReviewDone, songByLabel, tidyResolved, unplacedReviews } from "../model/ops";
+import { addReview, commentDepts, editReview, migrate, placeTc, recordTc, replyToReview, resolvedToTidy, reviewsOn, setReviewDept, setReviewDone, songByLabel, tidyResolved, unplacedReviews, wroteReview } from "../model/ops";
 import type { Show, SourceRecord } from "../model/types";
 import { applyReviewEdits, contentRequests, sheetAuthor, diffReviewTab, formatRuleRequests, HEADER_ROWS, keptCells, mergeUpdateRequests, reviewRows, reviewTab, showTab, snapshot } from "./sheet";
 
@@ -111,7 +111,7 @@ describe("REVIEW tab", () => {
     addReview(show, { song_id: show.set_order[0], record_id: "rec1", t: 50, text: "One", from: "Sam" });
     addReview(show, { song_id: show.set_order[1], record_id: "rec1", t: 250, text: "Two", from: "Sam" });
     const g = reviewTab(show, {});
-    const counter = g.headerRows[1].find((c) => c.formula)!;
+    const counter = g.headerRows[1].find((c) => c.formula?.includes("OPEN COMMENTS"))!;
     expect(counter.formula).toBe(`=SUMPRODUCT((LEN(F5:F)>0)*(J5:J<>TRUE)*(C5:C<>"↳ reply"))&" OPEN COMMENTS"`);
     const ticks = contentRequests(g, 9).flatMap((r) => {
       const v = (r as { setDataValidation?: { range: { startRowIndex: number; endRowIndex?: number }; rule?: { condition: { type: string } } } }).setDataValidation;
@@ -182,8 +182,52 @@ describe("REVIEW tab", () => {
     applyReviewEdits(show, edits, new Map([[v.length - 1, "rev_new"]]));
     const c = show.reviews!.find((x) => x.id === id)!;
     expect(c).toMatchObject({ done: true, text: "Strobe a beat early" });
+    expect(c.edited_at).toBeDefined(); // shown as edited in the app
     expect(c.replies[0]).toMatchObject({ from: "Ria", text: "fixed in V3" });
     expect(show.reviews!.find((x) => x.id === "rev_new")).toMatchObject({ song_id: a, record_id: "rec1", t: 70, tc: "04:01:00:00", dept: "LX", from: "Sam", source: "sheet" });
+  });
+  it("edits a comment's text and marks it edited, only when the text changes", () => {
+    const show = fresh();
+    const id = addReview(show, { song_id: show.set_order[0], record_id: "rec1", t: 50, text: "Strobe early", from: "Sam" });
+    const c = show.reviews![0];
+    editReview(show, id, "Strobe early");
+    expect(c.edited_at).toBeUndefined();
+    editReview(show, id, "Strobe a beat early");
+    expect(c.text).toBe("Strobe a beat early");
+    expect(Date.parse(c.edited_at!)).toBeGreaterThanOrEqual(Date.parse(c.at));
+    editReview(show, "nope", "x"); // a comment deleted meanwhile: nothing happens
+  });
+  it("puts a posted comment in a department, changes it, or takes it out", () => {
+    const show = fresh();
+    const id = addReview(show, { song_id: show.set_order[0], t: 0, text: "Too dark", from: "Sam" });
+    const c = show.reviews![0];
+    setReviewDept(show, id, "LX");
+    expect(c.dept).toBe("LX");
+    setReviewDept(show, id, "VIDEO");
+    expect(c.dept).toBe("VIDEO");
+    setReviewDept(show, id, "");
+    expect("dept" in c).toBe(false);
+    expect(c.edited_at).toBeUndefined(); // the text wasn't changed
+    expect(commentDepts(show)).toContain("LX");
+    expect(commentDepts(show)).not.toContain("CORE"); // the Sheet's own columns aren't departments to comment for
+  });
+  it("lets only the person who wrote a comment edit it", () => {
+    const show = fresh();
+    const [a] = show.set_order;
+    const sam = { name: "Sam", email: "sam@pm.com" };
+    addReview(show, { song_id: a, t: 0, text: "Mine", from: "Sam", email: "Sam@PM.com" });
+    addReview(show, { song_id: a, t: 0, text: "Ria's", from: "Ria", email: "ria@pm.com" });
+    addReview(show, { song_id: a, t: 0, text: "Same name, other email", from: "Sam", email: "sam@other.com" });
+    addReview(show, { song_id: a, t: 0, text: "Signed out", from: "Me" });
+    addReview(show, { song_id: a, t: 0, text: "In the Sheet", from: "Sam", source: "sheet" });
+    const [mine, rias, other, signedOut, sheet] = show.reviews!;
+    expect(wroteReview(mine, sam)).toBe(true);
+    expect(wroteReview(rias, sam)).toBe(false);
+    expect(wroteReview(other, sam)).toBe(false);
+    expect(wroteReview(mine, null)).toBe(false);
+    expect(wroteReview(signedOut, null)).toBe(true);
+    expect(wroteReview(signedOut, sam)).toBe(false);
+    expect(wroteReview(sheet, sam)).toBe(false); // edited in the Sheet
   });
   it("lets the app win when both sides changed, and resolves a thread from a reply row's tick", () => {
     const show = fresh();

@@ -64,7 +64,7 @@ function useSaver() {
  * scroll outside `wrap` and the menu. The menu is drawn into the page body (see MenuPopup), so a container
  * with a transform, like the song drawer while its slide-in animation holds, can't move it off screen.
  */
-function useMenu(wrap: React.RefObject<HTMLElement | null>, button: React.RefObject<HTMLButtonElement | null>, width: number) {
+export function useMenu(wrap: React.RefObject<HTMLElement | null>, button: React.RefObject<HTMLButtonElement | null>, width: number) {
   const [pos, setPos] = useState<MenuPos | null>(null);
   const popup = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -90,7 +90,7 @@ function useMenu(wrap: React.RefObject<HTMLElement | null>, button: React.RefObj
   return { pos, popup, toggle, close: () => setPos(null) };
 }
 
-function MenuPopup({ menu, className, children }: { menu: ReturnType<typeof useMenu>; className?: string; children: ReactNode }) {
+export function MenuPopup({ menu, className, children }: { menu: ReturnType<typeof useMenu>; className?: string; children: ReactNode }) {
   if (!menu.pos) return null;
   return createPortal(<div ref={menu.popup} className={["save-menu", className].filter(Boolean).join(" ")} style={menu.pos}>{children}</div>, document.body);
 }

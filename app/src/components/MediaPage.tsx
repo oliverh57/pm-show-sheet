@@ -1,8 +1,8 @@
 // Media: drop files in (they go to "What is this media?"), see what the show has, and cull
 // renders in the Render inbox tab.
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { backend } from "../backend";
-import { categories, categoryName, clipLength, clipName, fileName, guessRecordLabel, ltcFromName, recordMedia, removeAudio, retagRecord, syncAudioField } from "../model/ops";
+import { categories, categoryName, cleanLabel, clipCategory, clipLength, clipName, fileName, guessRecordLabel, ltcFromName, moveClip, recordMedia, removeAudio, retagRecord, syncAudioField } from "../model/ops";
 import { CategoriesDialog } from "./Categories";
 import { useStore } from "../store";
 import { Icon, type IconName } from "./icons";
@@ -12,12 +12,13 @@ import { MediaViewer } from "./MediaViewer";
 import { formatTime } from "./SongDrawer";
 import { deleteClip, deleteRecordStill, deleteRecordStills, deleteSongImage, removeRecordAndMedia } from "../library";
 import { RenderInbox } from "./RenderInbox";
-import { SaveCopy } from "./SaveCopy";
+import { MenuPopup, SaveCopy, useMenu } from "./SaveCopy";
 import { CloudButton, useFileStates } from "./CloudFiles";
 import { repickStill, repickStills, runClipJobs } from "../jobs";
+import { download, removeDownloads, type FileState } from "../storage";
+import type { Clip, SourceRecord } from "../model/types";
 import { linkWatchFolder, unlinkWatchFolder, useWatchFolders } from "../watchFolders";
 
-/** The category a record's thumbnails are filed under; changing it moves them. "Edit categories…" opens the editor. */
 /**
  * A record or audio file that isn't on this Mac (it was added on another Mac, or its disk isn't plugged in): find it
  * here. Each Mac keeps its own path, so the last one set is what the show has; the other Mac locates it again.
@@ -42,20 +43,97 @@ function Locate({ kind, id, path, onFound }: { kind: "record" | "audio"; id: str
   );
 }
 
-function RecordTag({ recordId, value }: { recordId: string; value: string }) {
+/**
+ * The "⋯" menu on a group of show records: the category their thumbnails are filed under (changing it moves them),
+ * picking stills again, downloads, renaming or moving into another group, and removing them.
+ */
+function RecordMenu({ ids, category, paths, states, refresh, others, onRepick, onRename, onCombine }: {
+  ids: string[]; category: string; paths: string[]; states: Record<string, FileState>; refresh: () => void; others: string[];
+  onRepick?: () => void; onRename: () => void; onCombine: (label: string) => void;
+}) {
   const show = useStore((s) => s.show)!;
-  const update = useStore((s) => s.update);
+  const bundle = useStore((s) => s.bundle)!;
+  const { update, toast } = useStore.getState();
+  const wrap = useRef<HTMLSpanElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  const menu = useMenu(wrap, button, 250);
   const [editing, setEditing] = useState(false);
+  const local = paths.filter((p) => states[p] === "local");
+  const online = paths.filter((p) => states[p] === "online");
+  const act = (fn: () => unknown) => () => { menu.close(); fn(); };
+  async function files(fn: () => Promise<unknown>) {
+    try { await fn(); } catch (e) { toast(String(e).replace(/^Error: /, "")); }
+    refresh();
+  }
   return (
-    <>
-      <select className="sm" style={{ height: 26 }} value={value} title="The category this record's thumbnails are filed under: changing it moves them"
-              onChange={(e) => (e.target.value === "__edit" ? setEditing(true) : update((s) => retagRecord(s, recordId, e.target.value)))}>
-        {!value && <option value="">Category: none</option>}
-        {categories(show).map((c) => <option key={c.id} value={c.id}>Category: {c.name}</option>)}
-        <option value="__edit">Edit categories…</option>
-      </select>
+    <span ref={wrap}>
+      <button ref={button} className={`icon ${menu.pos ? "on" : ""}`} title="More" onClick={menu.toggle}><Icon name="more" /></button>
+      <MenuPopup menu={menu}>
+        <div className="save-group">
+          <div className="save-label">Category</div>
+          {categories(show).map((c) => (
+            <button key={c.id} className="pick" onClick={act(() => update((s) => { for (const id of ids) retagRecord(s, id, c.id); }))}>
+              <span>{c.id === category ? <Icon name="check" size="sm" /> : <i />}{c.name}</span>
+            </button>
+          ))}
+          <button className="pick" onClick={act(() => setEditing(true))}><span><i />Edit categories…</span></button>
+        </div>
+        <div className="save-group">
+          {onRepick && <button onClick={act(onRepick)}><span>Pick best stills</span><small>Each song's sharpest, brightest frame</small></button>}
+          {local.length > 0 && (
+            <button onClick={act(() => files(async () => toast(`Removed ${await removeDownloads(bundle, local)} files from this Mac`)))}>
+              <span>Remove downloads</span><small>The clips stay in Google Drive</small>
+            </button>
+          )}
+          {!local.length && online.length > 0 && <button onClick={act(() => files(() => download(bundle, online)))}><span>Download the clips</span></button>}
+          <button onClick={act(onRename)}><span>Rename…</span></button>
+        </div>
+        {others.length > 0 && (
+          <div className="save-group">
+            <div className="save-label">Move into</div>
+            {others.map((o) => <button key={o} onClick={act(() => onCombine(o))}><span className="nm">{o}</span></button>)}
+          </div>
+        )}
+        <div className="save-group">
+          <button className="danger" onClick={act(() => removeRecordAndMedia(ids))}><span>Remove from the show</span><small>With {ids.length === 1 ? "its" : "their"} clips and stills</small></button>
+        </div>
+      </MenuPopup>
       {editing && <CategoriesDialog onClose={() => setEditing(false)} />}
-    </>
+    </span>
+  );
+}
+
+/** The "⋯" menu on one clip: the category it's in (moving it away from the rest of its record's), and deleting it. */
+function ClipMenu({ songId, clip }: { songId: string; clip: Clip }) {
+  const show = useStore((s) => s.show)!;
+  const { update, toast } = useStore.getState();
+  const wrap = useRef<HTMLSpanElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  const menu = useMenu(wrap, button, 250);
+  const current = clipCategory(show, clip);
+  const act = (fn: () => unknown) => () => { menu.close(); fn(); };
+  function move(id: string, name: string) {
+    if (id === current) return;
+    update((s) => moveClip(s, songId, clip.path, id));
+    toast(`${clipName(show, songId)} moved to ${name}`);
+  }
+  return (
+    <span ref={wrap}>
+      <button ref={button} className={`icon ${menu.pos ? "on" : ""}`} title="More" onClick={menu.toggle}><Icon name="more" size="sm" /></button>
+      <MenuPopup menu={menu}>
+        <div className="save-group">
+          <div className="save-label">Category</div>
+          {categories(show).map((c) => (
+            <button key={c.id} className="pick" onClick={act(() => move(c.id, c.name))}>
+              <span>{c.id === current ? <Icon name="check" size="sm" /> : <i />}{c.name}</span>
+            </button>
+          ))}
+        </div>
+        <div className="save-group">
+          <button className="danger" onClick={act(() => deleteClip(songId, clip.path))}><span>Delete this clip</span><small>The show record isn't touched</small></button>
+        </div>
+      </MenuPopup>
+    </span>
   );
 }
 
@@ -92,7 +170,7 @@ function AddMedia() {
       <h2>Drop media here</h2>
       <p>or <button className="link" onClick={choose}>choose files</button></p>
       <div className="kinds">
-        {kind("film", "var(--tc)", "Show record", "Split into songs by LTC, or mark by hand.")}
+        {kind("film", "var(--tc)", "Show records & Depence renders", "Split into songs by their timecode, or by hand.")}
         {kind("image", "var(--accent)", "Renders & stills", "Assign to songs, or link a folder.")}
         {kind("music", "var(--ok)", "Audio", "Per-song files or full show playback.")}
       </div>
@@ -139,12 +217,53 @@ function Library() {
   const [playing, setPlaying] = useState<string | null>(null);
   const [watching, setWatching] = useState<{ songId: string; path: string } | null>(null); // a song clip in the viewer, with its comments
   const [openClips, setOpenClips] = useState<string | null>(null);
-  const [repicking, setRepicking] = useState<{ id: string; done: number; total: number } | null>(null);
+  const [repicking, setRepicking] = useState<{ id: string; done: number; total: number } | null>(null); // id: the group's key
+  const [renaming, setRenaming] = useState<string | null>(null);
   const [folded, toggleFold] = useFolded();
   const bundle = useStore((s) => s.bundle)!;
   const clipsOf = (recordId: string) => show.set_order.concat(show.archive).flatMap((sid) =>
     (show.songs[sid]?.clips ?? []).filter((c) => c.record_id === recordId).map((c) => ({ ...c, songId: sid })));
   const allClips = records.flatMap((r) => clipsOf(r.id));
+  const order = show.set_order.concat(show.archive);
+  /**
+   * Show records with the same name are one group ("DEPENCE RENDER"): songs recorded one at a time, or a show recorded
+   * in parts, list together. Renaming a record to another's name puts it in that group.
+   */
+  const groups: { key: string; label: string; recs: SourceRecord[] }[] = [];
+  for (const r of records.filter((r) => r.scope === "show")) {
+    const label = cleanLabel(r.label ?? guessRecordLabel(show, r.path));
+    const group = label ? groups.find((g) => g.label === label) : undefined;
+    if (group) group.recs.push(r);
+    else groups.push({ key: r.id, label, recs: [r] });
+  }
+  /** Rename records, joining any group that already has the name, and taking on its category. */
+  function relabel(ids: string[], name: string) {
+    const label = cleanLabel(name);
+    if (!label) return;
+    const into = groups.find((g) => g.label === label && !g.recs.some((r) => ids.includes(r.id)));
+    const cols = [...new Set(into?.recs.map((r) => r.image_col ?? "hero"))];
+    update((s) => {
+      for (const id of ids) {
+        const r = s.records?.find((x) => x.id === id);
+        if (!r) continue;
+        r.label = label;
+        if (cols.length === 1 && (r.image_col ?? "hero") !== cols[0]) retagRecord(s, id, cols[0]);
+      }
+    });
+    if (into) useStore.getState().toast(`Moved into ${label}`);
+  }
+  /** Pick each song's still again, one record of the group after another. */
+  async function repickGroup(key: string, recs: SourceRecord[]) {
+    const todo = recs.filter((r) => states[r.path] !== "missing" && clipsOf(r.id).length);
+    const total = todo.reduce((n, r) => n + clipsOf(r.id).length, 0);
+    let base = 0, n = 0;
+    for (const r of todo) {
+      n += await repickStills(bundle, r, (done) => setRepicking({ id: key, done: base + done, total }));
+      base += clipsOf(r.id).length;
+    }
+    setRepicking(null);
+    useStore.getState().toast(`Picked new stills for ${n} song${n === 1 ? "" : "s"}`);
+  }
   const inBundle = (p: string) => (p.startsWith("/") ? p : `${bundle}/${p}`);
   /** Stills made from each show record: they're listed (and deleted) with their record. */
   const recordStills = new Map(records.filter((r) => r.scope === "show").map((r) => [r.id, recordMedia(show, r.id).stills]));
@@ -172,6 +291,11 @@ function Library() {
       </button>
     );
   };
+  /** A clip's category, when it was moved out of its record's (`cols`, the categories its group is in). */
+  const movedTo = (c: Clip, cols: string[]) => {
+    const col = c.category && !cols.includes(c.category) ? show.columns.find((x) => x.id === c.category) : undefined;
+    return col ? ` · ${categoryName(col, show)}` : "";
+  };
   const playButton = (id: string) => (
     <button className="sm" onClick={() => setPlaying(playing === id ? null : id)}>{playing === id ? "Hide" : <><Icon name="play" size="sm" /> Play</>}</button>
   );
@@ -186,51 +310,61 @@ function Library() {
     <div className="lib">
       <div className="section-head"><h2>In this show</h2><button className="sm" onClick={linkFolder}><Icon name="folder" size="sm" /> Link a render folder…</button></div>
       <div className="lib-list">
-        {records.filter((r) => r.scope === "show").map((r) => {
-          const marks = r.song_marks?.length ?? 0;
-          const clips = clipsOf(r.id);
-          const missing = missingClips(r);
+        {groups.map(({ key, label, recs }) => {
+          const ids = recs.map((r) => r.id);
+          const one = recs.length === 1 ? recs[0] : null;
+          const clips = recs.flatMap((r) => clipsOf(r.id)).sort((a, b) => order.indexOf(a.songId) - order.indexOf(b.songId));
+          const marks = recs.reduce((n, r) => n + (r.song_marks?.length ?? 0), 0);
           const clipPaths = clips.map((c) => `${bundle}/${c.path}`);
-          const here = states[r.path] !== "missing"; // the record file is only on the Mac it was added on
-          const label = r.label ?? guessRecordLabel(show, r.path);
-          const stills = recordStills.get(r.id) ?? [];
+          const here = (r: SourceRecord) => states[r.path] !== "missing"; // a record file is only on the Mac it was added on
+          const away = recs.filter((r) => !here(r)).length;
+          const stills = recs.flatMap((r) => (recordStills.get(r.id) ?? []).map((p) => ({ p, r, sid: stillSong(p) })))
+            .sort((a, b) => order.indexOf(a.sid ?? "") - order.indexOf(b.sid ?? ""));
           const stillsText = stills.length ? `${stills.length} still${stills.length === 1 ? "" : "s"}` : "";
-          const headline = clips.length ? [`${clips.length} clip${clips.length === 1 ? "" : "s"}${marks > clips.length ? ` of ${marks}` : ""}`, stillsText].filter(Boolean).join(" · ")
-            : stills.length ? `${stillsText} · no clips` : marks ? `${marks} song${marks === 1 ? "" : "s"} marked, no clips yet` : r.ltc?.blocks.length ? `${r.ltc.blocks.length} TC blocks, not split yet` : "Not split yet";
-          const category = show.columns.find((c) => c.id === (r.image_col ?? "hero"));
-          const recJobs = jobs.filter((j) => j.recordId === r.id);
+          const unsplit = recs.filter((r) => !clipsOf(r.id).length && !recordStills.get(r.id)?.length).length;
+          const cols = [...new Set(recs.map((r) => r.image_col ?? "hero"))];
+          const category = cols.length === 1 ? show.columns.find((c) => c.id === cols[0]) : undefined;
+          const categoryText = cols.length > 1 ? "Mixed categories" : category ? categoryName(category, show) : "";
+          const headline = [
+            one ? "Show record" : `${recs.length} recordings`,
+            clips.length ? `${clips.length} clip${clips.length === 1 ? "" : "s"}${marks > clips.length ? ` of ${marks}` : ""}` : "",
+            stillsText,
+            one && unsplit ? (marks ? `${marks} song${marks === 1 ? "" : "s"} marked, no clips yet` : one.ltc?.blocks.length ? `${one.ltc.blocks.length} TC blocks, not split yet` : "Not split yet") : "",
+            !one && unsplit ? `${unsplit} not split yet` : "",
+            categoryText,
+            away ? (one ? "On another Mac" : `${away} on another Mac`) : "",
+          ].filter(Boolean).join(" · ");
+          const recJobs = jobs.filter((j) => ids.includes(j.recordId ?? ""));
           const runningJob = recJobs.find((j) => j.status === "running");
           const doneJobs = recJobs.filter((j) => j.status === "done").length;
           const showProgress = recJobs.some((j) => j.status === "queued" || j.status === "running");
-          const open = !folded.has(r.id);
+          const canRepick = !cutting && !repicking && recs.some((r) => here(r) && clipsOf(r.id).length > 0);
+          const open = !folded.has(key);
           return (
-            <div key={r.id} className="rec-group">
+            <div key={key} className="rec-group">
               <div className="lib-row">
-                <GroupHead icon="film" open={open} onToggle={() => toggleFold(r.id)}>
-                  {label ? `${label} · ` : ""}Show record<div className="muted small" style={{ fontWeight: 400 }}>{headline}</div>
+                <GroupHead icon="film" open={open} onToggle={() => renaming !== key && toggleFold(key)}>
+                  {renaming === key
+                    ? <input className="rename" autoFocus defaultValue={label} list="record-labels" onFocus={(e) => e.currentTarget.select()} onClick={(e) => e.stopPropagation()}
+                             onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") { e.currentTarget.value = label; e.currentTarget.blur(); } }}
+                             onBlur={(e) => { relabel(ids, e.currentTarget.value); setRenaming(null); }} />
+                    : label || one?.name}
+                  <div className="muted small" style={{ fontWeight: 400 }}>{headline}</div>
                 </GroupHead>
                 <span className="acts">
-                  {!here && <Locate kind="record" id={r.id} path={r.path} onFound={refreshStates} />}
-                  {(clips.length > 0 || stills.length > 0) && <RecordTag recordId={r.id} value={r.image_col ?? ""} />}
-                  {here && clips.length > 0 && !cutting && (
-                    <button className="sm" disabled={Boolean(repicking)} title="Choose each song's still again: the brightest, sharpest, most colourful frame"
-                            onClick={async () => {
-                              const n = await repickStills(bundle, r, (done, total) => setRepicking({ id: r.id, done, total }));
-                              setRepicking(null);
-                              useStore.getState().toast(`Picked new stills for ${n} song${n === 1 ? "" : "s"}`);
-                            }}>
-                      <Icon name="image" size="sm" /> {repicking?.id === r.id ? `Picking stills ${repicking.done + 1}/${repicking.total}…` : "Pick best stills"}
-                    </button>
-                  )}
-                  {clips.length > 1 && <CloudButton all paths={clipPaths} states={states} refresh={refreshStates} />}
-                  <button className="icon" title="Remove these clips and stills from the show" onClick={() => removeRecordAndMedia(r.id)}><Icon name="x" size="sm" /></button>
+                  <RecordMenu ids={ids} category={cols.length === 1 ? cols[0] : ""} paths={clipPaths} states={states} refresh={refreshStates}
+                              others={groups.filter((g) => g.key !== key && g.label).map((g) => g.label)}
+                              onRepick={canRepick ? () => repickGroup(key, recs) : undefined}
+                              onRename={() => setRenaming(key)} onCombine={(to) => relabel(ids, to)} />
                 </span>
               </div>
-              {showProgress && (
+              {(showProgress || repicking?.id === key) && (
                 <div className="rec-progress">
                   <span className="spinner" style={{ width: 12, height: 12, borderWidth: 1.5 }} />
-                  <span>Cutting clip {Math.min(doneJobs + 1, recJobs.length)} of {recJobs.length}{runningJob ? ` · ${runningJob.label}` : ""}</span>
-                  <span className="bar"><span style={{ width: `${Math.round((runningJob?.progress ?? 0) * 100)}%` }} /></span>
+                  {repicking?.id === key
+                    ? <span>Picking stills {Math.min(repicking.done + 1, repicking.total)} of {repicking.total}</span>
+                    : <span>Cutting clip {Math.min(doneJobs + 1, recJobs.length)} of {recJobs.length}{runningJob ? ` · ${runningJob.label}` : ""}</span>}
+                  <span className="bar"><span style={{ width: `${Math.round((repicking?.id === key ? repicking.done / (repicking.total || 1) : runningJob?.progress ?? 0) * 100)}%` }} /></span>
                 </div>
               )}
               {open && clips.length > 0 && (
@@ -239,11 +373,11 @@ function Library() {
                     <div key={c.path}>
                       <div className="clip-item">
                         <Icon name="film" size="sm" />
-                        <span className="nm" title={c.path.split("/").pop()}>{clipName(show, c.songId)}<span className="muted small"> · {formatTime(clipLength(c))}</span></span>
+                        <span className="nm" title={c.path.split("/").pop()}>{clipName(show, c.songId)}<span className="muted small"> · {formatTime(clipLength(c))}{movedTo(c, cols)}</span></span>
                         <CloudButton compact paths={[`${bundle}/${c.path}`]} states={states} refresh={refreshStates} />
                         <SaveCopy path={`${bundle}/${c.path}`} video compact />
                         <button className="icon" title="Play full screen, with its comments" onClick={() => setWatching({ songId: c.songId, path: c.path })}><Icon name="play" size="sm" /></button>
-                        <button className="icon" title="Delete this clip from the show" onClick={() => deleteClip(c.songId, c.path)}><Icon name="trash" size="sm" /></button>
+                        <ClipMenu songId={c.songId} clip={c} />
                       </div>
                     </div>
                   ))}
@@ -252,14 +386,13 @@ function Library() {
               {open && stills.length > 0 && (
                 <div className="rec-stills">
                   <div className="rs-head">
-                    <span><Icon name="image" size="sm" /> {stillsText}{category ? ` · ${categoryName(category, show)}` : ""}</span>
-                    <button className="sm ghost" onClick={() => deleteRecordStills(r.id)}><Icon name="trash" size="sm" /> Delete all stills</button>
+                    <span><Icon name="image" size="sm" /> {stillsText}{categoryText ? ` · ${categoryText}` : ""}</span>
+                    <button className="sm ghost" onClick={() => deleteRecordStills(ids)}><Icon name="trash" size="sm" /> Delete all stills</button>
                   </div>
                   <div className="rs-strip">
-                    {stills.map((p) => {
-                      const sid = stillSong(p);
+                    {stills.map(({ p, r, sid }) => {
                       // Pick another frame from the record on the Mac that has it, else from the song's clip of it.
-                      const canPick = sid && ((here && (r.song_marks ?? []).some((m) => m.song_id === sid)) || clips.some((c) => c.songId === sid));
+                      const canPick = sid && ((here(r) && (r.song_marks ?? []).some((m) => m.song_id === sid)) || clipsOf(r.id).some((c) => c.songId === sid));
                       return (
                         <figure key={p} title={sid ? (canPick ? `${clipName(show, sid)}: click to pick another frame` : clipName(show, sid)) : fileName(p)}
                                 className={canPick ? "pickable" : ""} onClick={canPick ? () => repickStill(bundle, r, sid, p) : undefined}>
@@ -273,25 +406,42 @@ function Library() {
                   </div>
                 </div>
               )}
-              {open && <div className="rec-source">
-                <Icon name="link" size="sm" />
-                {here ? (
-                  <>
-                    <span className="src" title={r.path}>Cut from {r.name} · only on this Mac{r.info ? ` · ${infoLine(r.info)}` : ""}</span>
-                    {missing.length > 0 && clips.length > 0 && !cutting && (
-                      <button className="sm" title="Some songs were marked but their clips weren't made" onClick={() => runClipJobs(bundle, r, missing, true)}>Make {missing.length} missing clip{missing.length === 1 ? "" : "s"}</button>
-                    )}
-                    <button className="sm ghost" onClick={() => setPlaying(playing === r.id ? null : r.id)}>{playing === r.id ? "Hide" : "Play original"}</button>
-                    <SaveCopy path={r.path} ltc={r.ltc?.channel} video />
-                    {recutButton(r, clips)}
-                    <button className="sm ghost" onClick={() => startImport([], { kind: "record", id: r.id })}><Icon name="scissors" size="sm" /> {marks ? "Split again" : "Split into songs"}</button>
-                  </>
-                ) : <span className="src">Cut from a show record on another Mac. Only the clips are shared.</span>}
-              </div>}
-              {open && playing === r.id &&<div className="lib-player"><MediaPlayer path={r.path} video ltc={r.ltc?.channel} channels={r.info?.audio_channels} autoPlay /></div>}
+              {open && recs.map((r) => {
+                const recClips = clipsOf(r.id);
+                const missing = missingClips(r);
+                const rMarks = r.song_marks?.length ?? 0;
+                const count = one ? "" : recClips.length ? ` · ${recClips.length} clip${recClips.length === 1 ? "" : "s"}` : " · not split yet";
+                return (
+                  <div key={r.id}>
+                    <div className="rec-source">
+                      <Icon name="link" size="sm" />
+                      {here(r) ? (
+                        <>
+                          <span className="src" title={r.path}>{one ? "Cut from " : ""}{r.name}{count} · only on this Mac{r.info ? ` · ${infoLine(r.info)}` : ""}</span>
+                          {missing.length > 0 && recClips.length > 0 && !cutting && (
+                            <button className="sm" title="Some songs were marked but their clips weren't made" onClick={() => runClipJobs(bundle, r, missing, true)}>Make {missing.length} missing clip{missing.length === 1 ? "" : "s"}</button>
+                          )}
+                          {recutButton(r, recClips)}
+                          <button className="sm ghost" onClick={() => setPlaying(playing === r.id ? null : r.id)}>{playing === r.id ? "Hide" : "Play"}</button>
+                          <SaveCopy path={r.path} ltc={r.ltc?.channel} video compact />
+                          <button className="sm ghost" onClick={() => startImport([], { kind: "record", id: r.id })}><Icon name="scissors" size="sm" /> {rMarks ? "Split again" : "Split into songs"}</button>
+                        </>
+                      ) : (
+                        <>
+                          <span className="src" title={r.path}>{one ? "Cut from a show record on another Mac. Only the clips are shared." : `${r.name}${count} · on another Mac`}</span>
+                          <Locate kind="record" id={r.id} path={r.path} onFound={refreshStates} />
+                        </>
+                      )}
+                      {!one && <button className="icon" title="Remove this recording, with its clips and stills" onClick={() => removeRecordAndMedia(r.id)}><Icon name="x" size="sm" /></button>}
+                    </div>
+                    {playing === r.id && <div className="lib-player"><MediaPlayer path={r.path} video ltc={r.ltc?.channel} channels={r.info?.audio_channels} autoPlay /></div>}
+                  </div>
+                );
+              })}
             </div>
           );
         })}
+        <datalist id="record-labels">{groups.filter((g) => g.label).map((g) => <option key={g.key} value={g.label} />)}</datalist>
         {images.length > 0 && (
           <div className="rec-group">
             <div className="lib-row">
@@ -362,11 +512,11 @@ function Library() {
                   <div key={c.path}>
                     <div className="clip-item">
                       <Icon name="film" size="sm" />
-                      <span className="nm">{songName(c.songId)}<span className="muted small"> · {formatTime(c.in)} – {formatTime(c.out)}</span></span>
+                      <span className="nm">{songName(c.songId)}<span className="muted small"> · {formatTime(c.in)} – {formatTime(c.out)}{movedTo(c, [r.image_col ?? "hero"])}</span></span>
                       <CloudButton compact paths={[`${bundle}/${c.path}`]} states={states} refresh={refreshStates} />
                       <SaveCopy path={`${bundle}/${c.path}`} video compact />
                       <button className="icon" title="Play full screen, with its comments" onClick={() => setWatching({ songId: c.songId, path: c.path })}><Icon name="play" size="sm" /></button>
-                      <button className="icon" title="Delete this clip from the show" onClick={() => deleteClip(c.songId, c.path)}><Icon name="trash" size="sm" /></button>
+                      <ClipMenu songId={c.songId} clip={c} />
                     </div>
                   </div>
                 ))}

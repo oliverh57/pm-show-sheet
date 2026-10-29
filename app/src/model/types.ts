@@ -61,6 +61,7 @@ export interface Clip {
   still?: string; // the still grabbed with it (bundle-relative), if any
   burn_tc?: boolean; // cut with the record's TC drawn in the bottom-right corner
   cuts?: [number, number][]; // long pauses cut out of it, in seconds into the record (see SongMark)
+  category?: string; // the category (image column id) it was moved into, when not its record's
 }
 
 /** One continuous run of LTC in a file: a TC block, usually one song. */
@@ -111,6 +112,7 @@ export interface ReviewComment {
   from: string;
   email?: string;
   at: string; // ISO time it was written
+  edited_at?: string; // ISO time its text was last changed, after it was written
   draw?: string; // SVG path drawn on the frame, in a 0–1000 square stretched over the picture
   still?: string; // the frame at t (bundle-relative, media/grabs/), shown in the Sheet
   done: boolean;
@@ -253,4 +255,12 @@ export interface GoogleSync {
   clips?: Record<string, string>; // bundle-relative clip path → Drive file id (the app uploads them with the show: src/drive/media.ts)
   named?: string; // the show name the Sheet and deck were last titled with
   app_editors?: string[]; // everyone who uses the show in the app: they can edit the Sheet's locked columns (their sync writes them)
+  sheet_pull?: SheetPull; // what the last pull of the Sheet brought in, so every Mac can say who typed it
+}
+
+/** Edits a pull brought in from the Google Sheet: who typed them (as near as the Sheet's history tells), and where. */
+export interface SheetPull {
+  at: number; // ms
+  by: { name: string; email?: string };
+  songs: Record<string, string[]>; // song id → what changed on it (keys, as in drive/edits.ts)
 }

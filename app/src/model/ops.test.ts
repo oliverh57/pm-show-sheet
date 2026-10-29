@@ -450,6 +450,43 @@ describe("BPM", () => {
     expect(cellValue(show, clipCol(deptCategory("LX"))!, song)).toBe("NYC");
     expect(cellValue(show, clipCol(GENERAL)!, song)).toBe("");
   });
+  it("one clip moves into another category, with its still, while the record's other clips stay", async () => {
+    const { addClip, cellValue, deptCategory, GENERAL, migrate, moveClip, retagRecord, songImage, deleteCategory, imageColumnFor } = await import("./ops");
+    const show = migrate(fresh());
+    const cams = imageColumnFor(show, "Cameras");
+    const clipCol = (category: string) => show.columns.find((c) => c.type === "clip" && c.category === category);
+    show.records = [{ id: "r1", path: "/x/NYC.mov", name: "NYC.mov", label: "NYC", scope: "show", added_at: "", image_col: cams }];
+    const [a, b] = show.set_order.map((id) => show.songs[id]);
+    addClip(show, a.id, { path: "media/clips/a.mp4", record_id: "r1", in: 0, out: 10, source: "manual", still: "media/grabs/a.jpg" });
+    addClip(show, b.id, { path: "media/clips/b.mp4", record_id: "r1", in: 10, out: 20, source: "manual" });
+    a.gallery = ["media/grabs/a.jpg"];
+    (a.images ??= {})[cams] = "media/grabs/a.jpg";
+
+    moveClip(show, a.id, "media/clips/a.mp4", GENERAL);
+    expect(cellValue(show, clipCol(GENERAL)!, a)).toBe("NYC");
+    expect(cellValue(show, clipCol(cams)!, a)).toBe("");
+    expect(cellValue(show, clipCol(cams)!, b)).toBe("NYC");
+    expect(a.hero).toBe("media/grabs/a.jpg");
+    expect(songImage(a, cams)).toBeUndefined();
+
+    // Cut again, it stays moved; refiling the record leaves it where it was put.
+    addClip(show, a.id, { path: "media/clips/a2.mp4", record_id: "r1", in: 0, out: 10, source: "manual" });
+    expect(a.clips![0].category).toBe(GENERAL);
+    retagRecord(show, "r1", deptCategory("LX"));
+    expect(cellValue(show, clipCol(GENERAL)!, a)).toBe("NYC");
+    expect(cellValue(show, clipCol(deptCategory("LX"))!, b)).toBe("NYC");
+
+    // Moved back to the record's category, it's the record's again.
+    moveClip(show, a.id, "media/clips/a2.mp4", deptCategory("LX"));
+    expect(a.clips![0].category).toBeUndefined();
+
+    // Deleting the category it was moved into puts it back with its record.
+    const lasers = imageColumnFor(show, "Lasers");
+    moveClip(show, b.id, "media/clips/b.mp4", lasers);
+    deleteCategory(show, lasers);
+    expect(b.clips![0].category).toBeUndefined();
+    expect(cellValue(show, clipCol(deptCategory("LX"))!, b)).toBe("NYC");
+  });
   it("deleting a category takes its clip column; its records' clips are General's", async () => {
     const { addClip, cellValue, deleteCategory, GENERAL, imageColumnFor, migrate } = await import("./ops");
     const show = migrate(fresh());
@@ -573,6 +610,17 @@ describe("show records and their clips", () => {
     const id = addSongWith(s, "INTRO");
     const rec = addRecord(s, { path: "/x/OVERMONO - NYC T5 - FULL SHOW & TC.mp4", scope: "show", label: "NYC T5" });
     expect(recordClipName(s, s.records!.find((r) => r.id === rec)!, id)).toBe("NYC T5_SHOW RECORD_CLIPPED 01 INTRO");
+  });
+
+  it("names records added together, or joining ones in the show, alike", async () => {
+    const { guessRecordsLabel, addRecord } = await import("./ops");
+    const s = newShow("OVERMONO 2026");
+    expect(guessRecordsLabel(s, ["/x/DEPENCE RENDER 04.mov", "/x/DEPENCE RENDER 05.mov"])).toBe("DEPENCE RENDER");
+    expect(guessRecordsLabel(s, ["/x/NYC T5.mov", "/x/LA.mov"])).toBe("NYC T5"); // nothing in common: the first one's
+    expect(guessRecordsLabel(s, ["/x/DEPENCE RENDER 06.mov"])).toBe("DEPENCE RENDER 06");
+    addRecord(s, { path: "/x/a.mov", scope: "show", label: "DEPENCE RENDER" });
+    expect(guessRecordsLabel(s, ["/x/DEPENCE RENDER 06.mov"])).toBe("DEPENCE RENDER");
+    expect(guessRecordsLabel(s, ["/x/DEPENCE RENDERS.mov"])).toBe("DEPENCE RENDERS"); // a whole-word match only
   });
 
   it("removing a record takes its clips and stills, including older numbered stills", async () => {

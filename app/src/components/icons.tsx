@@ -3,6 +3,7 @@ const PATHS: Record<string, string> = {
   plus: "M12 5v14M5 12h14",
   minus: "M5 12h14",
   search: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-3.5-3.5",
+  more: "M5 11a1 1 0 1 0 0 2 1 1 0 0 0 0-2zM12 11a1 1 0 1 0 0 2 1 1 0 0 0 0-2zM19 11a1 1 0 1 0 0 2 1 1 0 0 0 0-2z",
   grip: "M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01",
   trash: "M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6",
   pencil: "M17 3a2.85 2.85 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5zM15 5l4 4",

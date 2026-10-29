@@ -2,7 +2,7 @@
 // reading collaborator edits back. Both tabs have the same columns. The REVIEW tab lists the comments on videos.
 // Ported from prototypes/google-sheets (layout.py, sync_logic.py, model.py). Pure: no network here.
 import {
-  addReview, cellValue, clipLabel, clipTimeAt, columnClips, deptColour, deptLabel, deptList, deptName, findReview, parseTc, placeTc, recordTc, replyToReview, setReviewDone, sheetEditable,
+  addReview, cellValue, clipLabel, clipTimeAt, columnClips, commentDepts, deptColour, deptLabel, deptList, deptName, editReview, findReview, parseTc, placeTc, recordTc, replyToReview, setReviewDone, sheetEditable,
   songByLabel, songImage, songNumber,
 } from "../model/ops";
 import { GELS } from "../model/gels";
@@ -21,6 +21,12 @@ const FONT_HEAD = "Lexend";
 const FONT_BODY = "Roboto";
 const FONT_MONO = "Roboto Mono";
 const BLACK = "#000000", WHITE = "#FFFFFF", GREY = "#8C8C8C";
+/**
+ * The Pixelmappers logo (white, 512 × 188) where Google can fetch it: Slides copies it in, and the Sheet's =IMAGE()
+ * loads it every time the Sheet opens, so it must stay at this path on main.
+ */
+export const LOGO_URL = "https://raw.githubusercontent.com/oliverh57/pm-show-sheet/main/app/src/assets/logo.png";
+const logoCell = (): Cell => ({ formula: `=IMAGE("${LOGO_URL}", 4, 44, 120)`, bg: BLACK }); // 44 px high, in the 64 px banner
 const LABEL_BG = "#1A1A1A";
 const EDITABLE_LABEL_BG = "#FFD84D";
 const EDITABLE_CELL_BG = "#FFF8DC";
@@ -149,7 +155,7 @@ export function showTab(show: Show, imageUrls: Record<string, string>, clipUrls:
   const frozen = nameCi + 1;
 
   const banner: Cell[] = Array.from({ length: n }, () => ({ bg: BLACK }));
-  banner[1] = { value: "PIXELMAPPERS", bg: BLACK, fg: WHITE, bold: true, font: FONT_HEAD, size: 16 };
+  banner[1] = logoCell();
   banner[frozen] = { value: `${show.name}  |  ${title}`, bg: BLACK, fg: WHITE, bold: true, font: FONT_HEAD, size: 18 };
   const merges: TabGrid["merges"] = [[1, 2, 1, frozen], [1, 2, frozen, n]];
 
@@ -663,7 +669,7 @@ export function reviewTab(show: Show, imageUrls: Record<string, string>, clipUrl
   const n = colIds.length;
   const frozen = colIds.indexOf("song") + 1;
   const banner: Cell[] = Array.from({ length: n }, () => ({ bg: BLACK }));
-  banner[1] = { value: "PIXELMAPPERS", bg: BLACK, fg: WHITE, bold: true, font: FONT_HEAD, size: 16 };
+  banner[1] = logoCell();
   banner[frozen] = { value: `${show.name}  |  ${REVIEW_TAB}`, bg: BLACK, fg: WHITE, bold: true, font: FONT_HEAD, size: 18 };
   const band = DEPT_COLOURS.VIDEO;
   // The open-comment count, worked out by the Sheet so ticking RESOLVED there changes it at once: rows with a comment
@@ -733,7 +739,7 @@ export function reviewTab(show: Show, imageUrls: Record<string, string>, clipUrl
     };
     return [idCell(row.id), ...REVIEW_COLS.map((col) => cells[col.id])];
   }
-  const depts = deptList(show).filter((d) => !["CORE", "STATUS", "COLOUR"].includes(d)).map((d) => deptName(d, show));
+  const depts = commentDepts(show).map((d) => deptName(d, show));
   return {
     title: REVIEW_TAB,
     tabColour: band,
@@ -885,7 +891,7 @@ export function applyReviewEdits(show: Show, edits: ReviewEdit[], ids: Map<numbe
       else if (e.col === "from") reply.from = value || REPLY_FROM;
       continue; // a reply row's song, TC and department are its comment's
     }
-    if (e.col === "comment" && value) c.text = value;
+    if (e.col === "comment" && value) editReview(show, c.id, value);
     else if (e.col === "from") c.from = value || REPLY_FROM;
     else if (e.col === "dept") { const d = deptFrom(show, value); if (d) c.dept = d; else if (!value) delete c.dept; }
     else if (e.col === "song") { const sid = songByLabel(show, value); if (sid) c.song_id = sid; }

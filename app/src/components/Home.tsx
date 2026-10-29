@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import logo from "../assets/logo.png";
 import { backend, type ShowSummary } from "../backend";
+import { isOffline } from "../drive/live";
 import { cachedShows, createShow, type DriveFolder, newShowFolder, openShow, rememberNewShowFolder, scanShows, timeAgo } from "../library";
 import { bundleName } from "../model/ops";
 import { downloadShow, showOnlineOnly } from "../storage";
@@ -10,6 +11,9 @@ import { DriveFolderPicker } from "./DriveFolderPicker";
 import { Avatar, GoogleDriveMark, Icon } from "./icons";
 import { VersionLine } from "./UpdateBar";
 
+/** An error, said plainly: Drive not being reachable says so, rather than the request that failed. */
+const why = (e: unknown) => isOffline(e) ? "Google Drive can't be reached" : String(e).replace(/^Error: /, "");
+
 export function Home() {
   const [shows, setShows] = useState<ShowSummary[]>(cachedShows);
   const [scanning, setScanning] = useState(true);
@@ -17,6 +21,7 @@ export function Home() {
   const [creating, setCreating] = useState(false);
   const [opening, setOpening] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [offline, setOffline] = useState(false); // Drive couldn't be reached: the shows are the ones found last time
   const [media, setMedia] = useState<{ path: string; text: string } | null>(null); // a show whose media is downloading or being removed
 
   async function refresh() {
@@ -26,10 +31,18 @@ export function Home() {
       setShows((cur) => [s, ...cur.filter((x) => x.path !== s.path)].sort((a, b) => b.modified_ms - a.modified_ms));
     });
     setShows(found);
+    setOffline(false);
     setScanning(false);
   }
+  const look = () => refresh().catch((e) => {
+    if (isOffline(e)) setOffline(true);
+    else setError(why(e));
+    setScanning(false);
+  });
   useEffect(() => {
-    refresh().catch((e) => { setError(String(e)); setScanning(false); });
+    look();
+    window.addEventListener("online", look); // back online: look again
+    return () => window.removeEventListener("online", look);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function open(path: string) {
@@ -38,7 +51,7 @@ export function Home() {
     try {
       await openShow(path);
     } catch (e) {
-      setError(`Couldn't open that show: ${String(e).replace(/^Error: /, "")}`);
+      setError(isOffline(e) ? "Couldn't open that show: Google Drive can't be reached, and it hasn't been opened on this Mac before." : `Couldn't open that show: ${why(e)}`);
     }
     setOpening(null);
   }
@@ -50,7 +63,7 @@ export function Home() {
       const n = await downloadShow(s.path, (done, total) => setMedia({ path: s.path, text: `Downloading ${done} of ${total}` }));
       useStore.getState().toast(n ? `Downloaded ${n} file${n === 1 ? "" : "s"} of ${s.name}` : `All of ${s.name}'s media is already on this Mac`);
     } catch (e) {
-      setError(`Couldn't download all of ${s.name}: ${String(e).replace(/^Error: /, "")}`);
+      setError(`Couldn't download all of ${s.name}: ${why(e)}`);
     }
     setMedia(null);
   }
@@ -62,7 +75,7 @@ export function Home() {
       const n = await showOnlineOnly(s.path);
       useStore.getState().toast(n ? `Removed ${n} file${n === 1 ? "" : "s"} of ${s.name} from this Mac: they download again when they're shown` : `None of ${s.name}'s media is on this Mac`);
     } catch (e) {
-      setError(`Couldn't remove ${s.name}'s downloads: ${String(e).replace(/^Error: /, "")}`);
+      setError(`Couldn't remove ${s.name}'s downloads: ${why(e)}`);
     }
     setMedia(null);
   }
@@ -84,9 +97,16 @@ export function Home() {
         <div className="home-hero">
           <div>
             <h1>All shows</h1>
-            <p className="scan-line">{scanning ? <><span className="spinner" style={{ width: 12, height: 12, borderWidth: 1.5 }} />Looking in Google Drive…</> : `${shows.length} show${shows.length === 1 ? "" : "s"} in Google Drive`}</p>
+            <p className="scan-line">{scanning ? <><span className="spinner" style={{ width: 12, height: 12, borderWidth: 1.5 }} />Looking in Google Drive…</> : `${shows.length} show${shows.length === 1 ? "" : "s"} ${offline ? "from the last time Google Drive could be reached" : "in Google Drive"}`}</p>
           </div>
         </div>
+        {offline && (
+          <p className="offline-note home-offline">
+            <Icon name="alert" size="sm" />
+            <span><b>You're working offline.</b> Google Drive can't be reached, so these are the shows from the last time it could be.
+              Shows you've opened on this Mac before still open. Changes you make are saved on this Mac, and you approve them before they upload when you're back online.</span>
+          </p>
+        )}
         {error && <p className="error">{error}</p>}
         <div className="projects">
           <button className="pcard new-card" onClick={() => setCreating(true)}><div><Icon name="plus" size="lg" />New show</div></button>
@@ -118,9 +138,9 @@ export function Home() {
           ))}
         </div>
         {!scanning && q && list.length === 0 && <p className="muted">No shows match “{query}”.</p>}
-        {!scanning && !q && shows.length === 0 && <p className="muted">No shows in Google Drive yet, and none shared with you.</p>}
+        {!scanning && !offline && !q && shows.length === 0 && <p className="muted">No shows in Google Drive yet, and none shared with you.</p>}
         <div className="home-foot">
-          <span><button className="link" onClick={() => refresh().catch((e) => { setError(String(e)); setScanning(false); })} disabled={scanning}>Look again</button></span>
+          <span><button className="link" onClick={look} disabled={scanning}>Look again</button></span>
         </div>
         <div className="home-foot"><VersionLine /></div>
       </div>

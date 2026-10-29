@@ -4,7 +4,7 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { backend } from "../backend";
 import { pickTopStills, runClipJobs } from "../jobs";
 import {
-  addAudio, addImages, addRecord, addSong, categories, deptCategory, ensureCategory, GENERAL, addSongWith, AUDIO_EXTENSIONS, cleanLabel, guessRecordLabel, recordClipName, extension, fileName, guessSong, guessVersion,
+  addAudio, addImages, addRecord, addSong, categories, deptCategory, ensureCategory, GENERAL, addSongWith, AUDIO_EXTENSIONS, cleanLabel, guessRecordLabel, guessRecordsLabel, recordClipName, extension, fileName, guessSong, guessVersion,
   clipLength, type Cut, cutPauses, joinPauses, marksToMake, MAX_PAUSE, MAX_REWIND, parseTc, type RunPart, setHero, setMarks, splitRuns, syncAudioField, tcInRun, timeAtTcInRun, VIDEO_EXTENSIONS,
 } from "../model/ops";
 import type { AudioFile, LtcResult, MediaInfo, Show, SongMark, SourceRecord } from "../model/types";
@@ -43,18 +43,22 @@ function guessWhat(paths: string[]): What {
 const sourceFile = (show: Show, src: Source): SourceRecord | AudioFile | undefined =>
   src.kind === "record" ? show.records?.find((r) => r.id === src.id) : show.audio?.find((a) => a.id === src.id);
 
+/** Where splitting a record or show audio starts: reading it for timecode, or on from what that found. */
+function stepFor(show: Show, src: Source): Step {
+  const f = sourceFile(show, src);
+  if (!f?.ltc) return "scan";
+  return f.ltc.blocks.length ? "ltc" : src.kind === "record" ? "manual" : "done";
+}
+
 export function ImportPage() {
   const show = useStore((s) => s.show)!;
   const files = useStore((s) => s.importFiles);
   const initialSource = useStore((s) => s.importSource);
   const { setView } = useStore.getState();
   const [source, setSource] = useState<Source | null>(initialSource);
-  const [step, setStep] = useState<Step>(() => {
-    if (!initialSource) return files?.length ? "what" : "done";
-    const f = sourceFile(show, initialSource);
-    if (!f?.ltc) return "scan";
-    return f.ltc.blocks.length ? "ltc" : initialSource.kind === "record" ? "manual" : "done";
-  });
+  const [step, setStep] = useState<Step>(() => (initialSource ? stepFor(show, initialSource) : files?.length ? "what" : "done"));
+  const [queue, setQueue] = useState<Source[]>([]); // records added together, to split after this one
+  const [batch, setBatch] = useState(1); // how many were added together
   const [assignPaths, setAssignPaths] = useState<string[]>([]);
   const [assignCategory, setAssignCategory] = useState(""); // the category the images being assigned go in
   const [make, setMake] = useState<Make>("clips"); // asked when the video is added, used when the songs are marked
@@ -67,21 +71,33 @@ export function ImportPage() {
   const thumbs = picking || picked;
   const title = { what: "What is this?", scan: "Reading the file", ltc: "Split by timecode", manual: "Mark the songs", assign: "Assign images", done: thumbs ? "Pick each song's thumbnail" : "Making clips" }[step];
   const back = () => setView("media");
+  /** On to the next record added with this one, or to the clips being made. */
+  function finished() {
+    const [next, ...rest] = queue;
+    if (!next) return setStep("done");
+    setQueue(rest);
+    setSource(next);
+    setStep(stepFor(useStore.getState().show!, next));
+  }
+  const splitting = step === "scan" || step === "ltc" || step === "manual";
 
   return (
     <div className="page">
       <div className="page-head">
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <button className="icon back-btn" onClick={back} title="Back to Media"><Icon name="arrowL" /></button>
-          <div><div className="faint small" style={{ letterSpacing: ".06em", textTransform: "uppercase" }}>Add media</div><h1>{title}</h1></div>
+          <div>
+            <div className="faint small" style={{ letterSpacing: ".06em", textTransform: "uppercase" }}>Add media{splitting && batch > 1 ? ` · Recording ${batch - queue.length} of ${batch}` : ""}</div>
+            <h1>{title}</h1>
+          </div>
         </div>
       </div>
       {step === "what" && files && (
-        <WhatStep files={files} onNext={(next, src, paths, m, cat) => { if (src) setSource(src); if (paths) setAssignPaths(paths); if (m) setMake(m); if (cat) setAssignCategory(cat); setStep(next); }} />
+        <WhatStep files={files} onNext={(next, srcs, paths, m, cat) => { if (srcs?.length) { setSource(srcs[0]); setQueue(srcs.slice(1)); setBatch(srcs.length); } if (paths) setAssignPaths(paths); if (m) setMake(m); if (cat) setAssignCategory(cat); setStep(next); }} />
       )}
-      {step === "scan" && file && source && <ScanStep file={file} source={source} onDone={(r) => setStep(r.blocks.length ? "ltc" : source.kind === "record" ? "manual" : "done")} />}
-      {step === "ltc" && file?.ltc && source && <LtcStep file={file} source={source} initialMake={make} asked={asked} onManual={() => setStep("manual")} onDone={() => setStep("done")} />}
-      {step === "manual" && source?.kind === "record" && file && <Marker record={file as SourceRecord} initialMake={make} asked={asked} onDone={() => setStep("done")} />}
+      {step === "scan" && file && source && <ScanStep key={source.id} file={file} source={source} onDone={(r) => setStep(r.blocks.length ? "ltc" : source.kind === "record" ? "manual" : "done")} />}
+      {step === "ltc" && file?.ltc && source && <LtcStep key={source.id} file={file} source={source} initialMake={make} asked={asked} more={queue.length > 0} onManual={() => setStep("manual")} onDone={finished} />}
+      {step === "manual" && source?.kind === "record" && file && <Marker key={source.id} record={file as SourceRecord} initialMake={make} asked={asked} more={queue.length > 0} onDone={finished} />}
       {step === "assign" && <AssignStep paths={assignPaths} initialCategory={assignCategory} />}
       {step === "done" && (source?.kind === "audio" ? <NoTimecode /> : <DoneStep thumbs={thumbs} />)}
     </div>
@@ -119,11 +135,15 @@ function ClipLabel({ value, onChange, asked }: { value: string; onChange: (v: st
   const show = useStore((s) => s.show)!;
   const first = show.set_order[0];
   const sample = first ? recordClipName(show, { label: value } as SourceRecord, first) : "";
+  // Records with the same name list together on the Media page (songs recorded one at a time, say).
+  const names = [...new Set((show.records ?? []).filter((r) => r.scope === "show").map((r) => cleanLabel(r.label ?? guessRecordLabel(show, r.path))).filter(Boolean))];
   return (
     <label className="field" style={{ marginTop: asked ? 0 : 16, maxWidth: 520 }}>
       {!asked && <span className="field-label">What is this record?</span>}
-      <input autoFocus={asked} value={value} onChange={(e) => onChange(e.target.value)} />
+      <input autoFocus={asked} value={value} list="import-record-names" onChange={(e) => onChange(e.target.value)} />
+      <datalist id="import-record-names">{names.map((n) => <option key={n} value={n} />)}</datalist>
       {sample && <span className="muted small" style={{ marginTop: 4 }}>Clips are named like <span className="mono">{sample}.mp4</span></span>}
+      {names.length > 0 && <span className="muted small" style={{ marginTop: 2 }}>Give it the name of one already in the show ({names.slice(0, 3).join(", ")}{names.length > 3 ? "…" : ""}) to list them together.</span>}
     </label>
   );
 }
@@ -143,7 +163,7 @@ function BurnSample({ fps = 25, tc = "09:01:42:19" }: { fps?: number; tc?: strin
 /** Renders go in Content by default, or General if the show has no Content category. */
 const renderCategory = (show: Show) => categories(show).find((c) => c.id === deptCategory("CONTENT"))?.id ?? GENERAL;
 
-function WhatStep({ files, onNext }: { files: string[]; onNext: (step: Step, source?: Source, paths?: string[], make?: Make, category?: string) => void }) {
+function WhatStep({ files, onNext }: { files: string[]; onNext: (step: Step, sources?: Source[], paths?: string[], make?: Make, category?: string) => void }) {
   const show = useStore((s) => s.show)!;
   const { update, endImport, focusSong, setView, setMediaTab, toast } = useStore.getState();
   const songIds = [...show.set_order, ...show.archive];
@@ -151,12 +171,11 @@ function WhatStep({ files, onNext }: { files: string[]; onNext: (step: Step, sou
   const [audioScope, setAudioScope] = useState<"show" | "song">(() => (guessSong(show, files[0]) ? "song" : "show"));
   const [songId, setSongId] = useState(() => guessSong(show, files[0]) ?? songIds[0] ?? "");
   const [version, setVersion] = useState(() => guessVersion(files[0]));
-  const [label, setLabel] = useState(() => guessRecordLabel(show, files[0]));
+  const [label, setLabel] = useState(() => guessRecordsLabel(show, files));
   const [tag, setTag] = useState(GENERAL); // the category (image column id) its thumbnails go in
   const [renderTag, setRenderTag] = useState(() => renderCategory(show)); // the category renders and stills go in
   const folders = files.filter((p) => kindOf(p) === "folder");
   const [folderSong, setFolderSong] = useState(() => (folders[0] && guessSong(show, folders[0])) || ""); // "": different songs
-  const [hasLtc, setHasLtc] = useState<"yes" | "no" | "unsure" | null>(null);
   const [burn, setBurn] = useState(false);
   const [make, setMake] = useState<Make>("clips");
   const [info, setInfo] = useState<MediaInfo | undefined>();
@@ -167,12 +186,18 @@ function WhatStep({ files, onNext }: { files: string[]; onNext: (step: Step, sou
   }, [files]);
 
   // One question at a time: answering moves on, answered ones fold into a line above (with Change).
-  type Q = "what" | "ltc" | "make" | "burn" | "name" | "category" | "audio" | "song" | "folderSong";
-  // Burned-in TC is offered for clips of a record that may have LTC.
-  const offerBurn = make === "clips" && hasLtc !== "no";
-  const questions: Q[] = what === "show" ? ["what", "ltc", "make", ...(offerBurn ? ["burn" as const] : []), "name", "category"] : what === "song" ? ["what", "song", "category"]
-    : what === "audio" ? ["what", "audio", ...(audioScope === "song" ? ["song" as const] : [])]
-    : ["what", ...(folders.length ? ["folderSong" as const] : []), "category"];
+  type Q = "what" | "make" | "burn" | "name" | "category" | "audio" | "song" | "folderSong";
+  // Burned-in TC is offered for clips (it's drawn where the record has LTC).
+  const offerBurn = make === "clips";
+  // What the files are is only asked when it isn't plain: videos are split into songs or go to one song; audio and
+  // images are what they are. The record is read for timecode next, so there's no asking whether it has any.
+  const kinds = new Set(files.map(kindOf));
+  const videos = [...kinds].every((k) => k === "video");
+  const plain = !kinds.has("video") && (kinds.size === 1 || !kinds.has("audio"));
+  const head: Q[] = plain ? [] : ["what"];
+  const questions: Q[] = what === "show" ? [...head, "make", ...(offerBurn ? ["burn" as const] : []), "name", "category"] : what === "song" ? [...head, "song", "category"]
+    : what === "audio" ? [...head, "audio", ...(audioScope === "song" ? ["song" as const] : [])]
+    : [...head, ...(folders.length ? ["folderSong" as const] : []), "category"];
   // Renders have their own category (Content by default); a record's or song clip's stills go in `tag`.
   const [cat, setCat] = what === "renders" ? [renderTag, setRenderTag] : [tag, setTag];
   const [at, setAt] = useState(0);
@@ -185,17 +210,17 @@ function WhatStep({ files, onNext }: { files: string[]; onNext: (step: Step, sou
       <div><div className="t">{t}</div><div className="d">{d}</div></div>
     </button>
   );
-  const WHAT: Record<What, string> = { show: "Show record", song: "Song clip", renders: "Renders & stills", audio: "Audio" };
-  const LTC = { yes: "Yes", no: "No", unsure: "Not sure" };
+  const WHAT: Record<What, string> = { show: "Split into songs", song: "One song's video", renders: "Renders & stills", audio: "Audio" };
   const songLabel = (id: string) => (show.set_order.includes(id) ? `${String(show.set_order.indexOf(id) + 1).padStart(2, "0")} · ` : "Archive · ") + (show.songs[id]?.fields.name || "Untitled");
   const ask: Record<Q, string> = {
-    what: "What is this media?", ltc: "Does this video have striped LTC?", make: "What would you like to do?", burn: "Burn the timecode into the clips?", name: "What is this record?",
+    what: videos ? `What should happen to ${files.length === 1 ? "this video" : `these ${files.length} videos`}?` : "What is this media?", make: "What would you like to do?", burn: "Burn the timecode into the clips?",
+    name: files.length === 1 ? "What is this record?" : "What are these recordings?",
     category: what === "renders" ? `Which category ${files.length === 1 && !folders.length ? "does it" : "do they"} go in?` : what === "song" ? "Which category do its stills go in?" : "Which category do its thumbnails go in?",
     audio: "Whole show or one song?", song: "Which song?",
     folderSong: `Which song are the renders in ${folders.length === 1 ? "this folder" : "these folders"} for?`,
   };
   const answer: Record<Q, string> = {
-    what: WHAT[what], ltc: hasLtc ? LTC[hasLtc] : "", make: make === "clips" ? "Video clips & thumbnails" : "Thumbnails only", burn: burn ? "Yes, bottom right" : "No", name: label,
+    what: WHAT[what], make: make === "clips" ? "Video clips & thumbnails" : "Thumbnails only", burn: burn ? "Yes, bottom right" : "No", name: label,
     category: categories(show).find((c) => c.id === cat)?.name ?? "",
     folderSong: folderSong ? songLabel(folderSong) : "Different songs", audio: `${audioScope === "show" ? "Whole show" : "One song"}${version.trim() ? ` · ${version.trim()}` : ""}`, song: songId ? songLabel(songId) : "",
   };
@@ -206,18 +231,16 @@ function WhatStep({ files, onNext }: { files: string[]; onNext: (step: Step, sou
     try {
       const infos = await Promise.all(files.map((p) => (["video", "audio"].includes(kindOf(p)) ? backend.probe(p) : Promise.resolve(undefined))));
       if (what === "show") {
-        let first = "";
+        // Each is read for timecode and split in turn, all under the one name.
+        const ids: string[] = [];
         update((s) => {
           const image_col = ensureCategory(s, tag);
           files.forEach((p, i) => {
-            // No LTC: don't read the audio for it, go straight to marking songs by hand.
-            const ltc = hasLtc === "no" ? { channel: null, fps: null, blocks: [], duration: infos[i]?.duration ?? 0 } : undefined;
-            const id = addRecord(s, { path: p, scope: "show", info: infos[i], label: cleanLabel(label), image_col, ...(ltc ? { ltc } : {}), ...(offerBurn && burn ? { burn_tc: true } : {}) });
-            if (i === 0) first = id;
+            ids.push(addRecord(s, { path: p, scope: "show", info: infos[i], label: cleanLabel(label), image_col, ...(offerBurn && burn ? { burn_tc: true } : {}) }));
           });
         });
         endImport();
-        onNext(hasLtc === "no" ? "manual" : "scan", { kind: "record", id: first }, undefined, make);
+        onNext("scan", ids.map((id) => ({ kind: "record", id })), undefined, make);
       } else if (what === "song") {
         update((s) => { const image_col = ensureCategory(s, tag); files.forEach((p, i) => addRecord(s, { path: p, scope: "song", song_id: songId, info: infos[i], image_col })); });
         toast(`Added to ${show.songs[songId]?.fields.name || "the song"}`);
@@ -245,7 +268,7 @@ function WhatStep({ files, onNext }: { files: string[]; onNext: (step: Step, sou
         let id = "";
         update((s) => { id = addAudio(s, { path: files[0], scope: "show", version: version.trim(), info: infos[0] }); });
         endImport();
-        onNext("scan", { kind: "audio", id });
+        onNext("scan", [{ kind: "audio", id }]);
       }
     } finally {
       setBusy(false);
@@ -266,17 +289,10 @@ function WhatStep({ files, onNext }: { files: string[]; onNext: (step: Step, sou
       <div className="label">{ask[current]}</div>
       {current === "what" && (
         <div className="question">
-          {card(what === "show", () => setWhat("show"), "Show record", "Whole show. Split into songs.", "film", "var(--tc)")}
-          {card(what === "song", () => setWhat("song"), "Song clip", "One song's video.", "film", "var(--accent)")}
-          {card(what === "renders", () => setWhat("renders"), "Renders & stills", "Assign to songs.", "image", "var(--accent)")}
-          {card(what === "audio", () => setWhat("audio"), "Audio", "Playback or song audio.", "music", "var(--ok)")}
-        </div>
-      )}
-      {current === "ltc" && (
-        <div className="question three">
-          {card(hasLtc === "yes", () => setHasLtc("yes"), "Yes", "Split it into songs by its timecode.")}
-          {card(hasLtc === "no", () => setHasLtc("no"), "No", "Mark where each song starts by hand.")}
-          {card(hasLtc === "unsure", () => setHasLtc("unsure"), "Not sure", "Check the audio for timecode (you can skip it).")}
+          {card(what === "show", () => setWhat("show"), "Split into songs", "A clip and thumbnail for each song, found by its timecode (or marked by hand). Show records and Depence renders, one song or the whole show.", "film", "var(--tc)")}
+          {card(what === "song", () => setWhat("song"), "One song's video", "Linked to a song as it is: not cut, no timecode needed.", "film", "var(--accent)")}
+          {!videos && card(what === "renders", () => setWhat("renders"), "Renders & stills", "Assign to songs.", "image", "var(--accent)")}
+          {!videos && card(what === "audio", () => setWhat("audio"), "Audio", "Playback or song audio.", "music", "var(--ok)")}
         </div>
       )}
       {current === "make" && (
@@ -318,7 +334,7 @@ function WhatStep({ files, onNext }: { files: string[]; onNext: (step: Step, sou
         {at > 0 && <button className="ghost" onClick={() => setAt(at - 1)}><Icon name="arrowL" /> Back</button>}
         {last ? (
           <button className="primary lg" onClick={next} disabled={!ready}>{busy ? "Adding…" : "Continue"} <Icon name="arrowR" /></button>
-        ) : !["what", "ltc", "make"].includes(current) && (
+        ) : !["what", "make"].includes(current) && (
           <button className="primary lg" onClick={advance} disabled={!ready}>Next <Icon name="arrowR" /></button>
         )}
       </div>
@@ -332,11 +348,13 @@ function ScanStep({ file, source, onDone }: { file: SourceRecord | AudioFile; so
   const [result, setResult] = useState<LtcResult | null>(file.ltc ?? null);
   const [error, setError] = useState<string | null>(null);
   const started = useRef(false);
+  const skipped = useRef(false);
 
   useEffect(() => {
     if (started.current || file.ltc) return;
     started.current = true;
     backend.ltcScan(file.path, setProgress).then((r) => {
+      if (skipped.current) return;
       update((s) => { const f = sourceFile(s, source); if (f) f.ltc = r; });
       setResult(r);
       setTimeout(() => onDone(r), 700);
@@ -350,6 +368,13 @@ function ScanStep({ file, source, onDone }: { file: SourceRecord | AudioFile; so
     </div>
   );
   const found = result && result.channel !== null;
+  /** No timecode in it: mark the songs by hand without waiting for the scan. */
+  function skip() {
+    skipped.current = true;
+    const none: LtcResult = { channel: null, fps: null, blocks: [], duration: file.info?.duration ?? 0 };
+    update((s) => { const f = sourceFile(s, source); if (f) f.ltc = none; });
+    onDone(none);
+  }
   return (
     <>
       <FileCard paths={[file.path]} info={file.info} />
@@ -361,6 +386,12 @@ function ScanStep({ file, source, onDone }: { file: SourceRecord | AudioFile; so
         {result && found && row("done", "Timecode blocks", `${result.blocks.length} block${result.blocks.length === 1 ? "" : "s"}`)}
       </div>
       {error && <p className="error" style={{ textAlign: "center" }}>{error}</p>}
+      {source.kind === "record" && !found && (
+        <div className="flow-foot">
+          <span className="hint">{result ? "" : "Reading the audio for timecode, to split it into songs."}</span>
+          <button className={error ? "primary" : "ghost"} onClick={skip}><Icon name="hand" /> {error ? "Mark the songs by hand" : "No timecode: mark the songs by hand"}</button>
+        </div>
+      )}
     </>
   );
 }
@@ -380,7 +411,8 @@ interface Segment {
 
 const segmentOf = (p: RunPart): Segment => ({ block: p.run, start: p.start, song: p.song ?? (p.shorter_of ? "__skip" : "") });
 
-function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file: SourceRecord | AudioFile; source: Source; initialMake: Make; asked: boolean; onManual: () => void; onDone: () => void }) {
+/** `more`: other records added with this one are split next, so it carries on to them rather than back to the songs. */
+function LtcStep({ file, source, initialMake, asked, more, onManual, onDone }: { file: SourceRecord | AudioFile; source: Source; initialMake: Make; asked: boolean; more?: boolean; onManual: () => void; onDone: () => void }) {
   const show = useStore((s) => s.show)!;
   const bundle = useStore((s) => s.bundle)!;
   const { update, toast, setView, focusSong } = useStore.getState();
@@ -600,6 +632,7 @@ function LtcStep({ file, source, initialMake, asked, onManual, onDone }: { file:
       onDone();
     } else {
       toast(make !== "none" && marks.length ? `Marked ${marks.length} songs. Every song already has its ${makeClips ? "clip" : "thumbnail"}.` : `Marked ${marks.length} songs`);
+      if (more) return onDone();
       setView("songs");
       if (marks[0]) focusSong(marks[0].song_id, "media");
     }

@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { backend } from "../backend";
 import { LOCKED_OUT, syncNow, useSyncStatus } from "../google/sync";
 import { deleteOpenShow, openInDrive, renameOpenShow, timeAgo } from "../library";
-import { applySheetValue, bundleName, clipName, keepResolvedDays, showCover, showImages } from "../model/ops";
+import { bundleName, clipName, keepResolvedDays, showCover, showImages } from "../model/ops";
 import { DraftInput } from "./fields";
 import { useStore } from "../store";
 import { chooseAndMove } from "./Shell";
@@ -15,19 +15,7 @@ export function SharePage() {
   const show = useStore((s) => s.show)!;
   const location = useStore((s) => s.location);
   const sync = useSyncStatus();
-  const { update, updateQuiet } = useStore.getState();
   const gs = show.google ?? {};
-  const conflicts = Object.entries((show.conflicts ?? {}) as Record<string, { sheet: string | boolean; app: string | boolean }>)
-    .map(([key, c]) => { const [, songId, colId] = key.split("|"); return { key, songId, colId, ...c }; })
-    .filter((c) => show.songs[c.songId] && show.columns.some((col) => col.id === c.colId));
-  const dropConflict = (key: string) => updateQuiet((s) => { const next = { ...(s.conflicts ?? {}) }; delete next[key]; s.conflicts = next; });
-  const useSheet = (c: (typeof conflicts)[number]) => {
-    update((s) => {
-      const col = s.columns.find((x) => x.id === c.colId);
-      if (col) applySheetValue(s, c.songId, col, c.sheet);
-    });
-    dropConflict(c.key);
-  };
   async function signInAgain() {
     try {
       useStore.getState().setUser(await backend.signIn());
@@ -63,21 +51,8 @@ export function SharePage() {
       {sync.state === "error" && <div className="missing-box" style={{ marginTop: 0, marginBottom: 12 }}><Icon name="alert" /><div><strong style={{ fontWeight: 500 }}>Sync stopped:</strong> {sync.message}
         {sync.message?.startsWith("Sign in to Google again")
           ? <div style={{ marginTop: 8 }}><button className="sm primary" onClick={signInAgain}>Sign in again</button></div>
-          : <div className="muted small">It tries again every 30 seconds.</div>}</div></div>}
+          : sync.retryAt && <div className="muted small">It tries again at {new Date(sync.retryAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}.</div>}</div></div>}
       {sync.state === "ok" && sync.message === LOCKED_OUT && <p className="muted small" style={{ marginTop: 0, marginBottom: 12 }}><Icon name="clock" size="sm" /> {LOCKED_OUT}</p>}
-      {conflicts.length > 0 && (
-        <div className="panel">
-          <div className="label">Sheet edits that clashed</div>
-          <p className="muted small" style={{ marginTop: 0 }}>Someone changed these in the Sheet while they were also changed here. The app's version is in the Sheet for now.</p>
-          {conflicts.map((c) => (
-            <div key={c.key} className="conflict">
-              <div className="what"><strong>{show.songs[c.songId].fields.name}</strong> · {show.columns.find((x) => x.id === c.colId)!.label}</div>
-              <div className="vals"><span><span className="muted small">Sheet</span> {String(c.sheet) || "—"}</span><span><span className="muted small">App</span> {String(c.app) || "—"}</span></div>
-              <div className="acts"><button className="sm" onClick={() => useSheet(c)}>Use Sheet's</button><button className="sm ghost" onClick={() => dropConflict(c.key)}>Keep app's</button></div>
-            </div>
-          ))}
-        </div>
-      )}
       <div className="panel">
         <div className="label">Sync</div>
         <p style={{ margin: 0 }}>Collaborators can edit the ✎ columns in the Sheet; their changes come into the app within a minute.{gs.folder_id && <> <button className="link" onClick={() => backend.openWeb(`https://drive.google.com/drive/folders/${gs.folder_id}`)}>Open the Drive folder</button></>}</p>
@@ -95,14 +70,14 @@ export function SharePage() {
   );
 }
 
-/** "Synced 12s ago" / "Syncing…" / "Sync stopped". */
+/** "Synced 12s ago" / "Updating the Sheet…" / "Sync stopped". */
 export function SyncBadge() {
   const sync = useSyncStatus();
   const [, tick] = useState(0);
   useEffect(() => { const t = window.setInterval(() => tick((n) => n + 1), 10000); return () => window.clearInterval(t); }, []);
   const signIn = sync.state === "error" && sync.message?.startsWith("Sign in to Google again");
-  const label = signIn ? "Sign in to Google again" : { off: sync.message ?? "Sync off", syncing: "Syncing…", error: "Sync stopped", ok: sync.message === LOCKED_OUT ? "Waiting for the Sheet" : sync.lastSync ? `Synced ${timeAgo(sync.lastSync)}` : "Synced" }[sync.state];
-  return <span className={`sync-badge ${sync.state}`} title={sync.message ?? undefined}><span className="dot" />{label}</span>;
+  const label = signIn ? "Sign in to Google again" : { off: sync.message ?? "Sync off", syncing: `${sync.step ?? "Syncing"}…`, error: "Sync stopped", ok: sync.message === LOCKED_OUT ? "Waiting for the Sheet" : sync.lastSync ? `Synced ${timeAgo(sync.lastSync)}` : "Synced" }[sync.state];
+  return <span className={`sync-badge ${sync.state}`} title={sync.message ?? label}><span className="dot" /><span className="txt">{label}</span></span>;
 }
 
 /** Show settings: name, venue, date, where it's saved and its Google files. Opened from the show name in the sidebar. */

@@ -4,7 +4,7 @@
 import { backend, previewShows, type ShowSummary } from "./backend";
 import { createFolder, FOLDER, getFile, patchFile, search, trashFile } from "./drive/api";
 import { findShows, SHOW_EXT, summaryProps } from "./drive/list";
-import { openFromDrive } from "./drive/live";
+import { checkBack, openFromDrive } from "./drive/live";
 import { refreshManifest, trashMedia } from "./drive/media";
 import { readManifest, showDir, syncShow, updateManifest } from "./drive/show";
 import { bundleName, clipName, fileName, migrate, newShow, orphanRecordIds, recordMedia, removeImage, removeRecord, removeRecordStill, removeRecordStills } from "./model/ops";
@@ -81,7 +81,7 @@ async function defaultFolderId(): Promise<string> {
 export async function openShow(path: string) {
   const opened = backend.isDesktop ? await openFromDrive(path) : { show: await backend.open(path), readOnly: null, offline: false };
   const show = migrate(opened.show);
-  const { load, toast } = useStore.getState();
+  const { load, setConnection } = useStore.getState();
   const readOnly = opened.readOnly;
   // Clips and stills left behind by a record that was removed before removing took them with it.
   const leftovers = readOnly ? [] : orphanRecordIds(show).flatMap((id) => {
@@ -90,7 +90,11 @@ export async function openShow(path: string) {
     return [...clips, ...stills];
   });
   load(show, path, readOnly);
-  if (opened.offline) toast("Google Drive can't be reached, so this is the copy on this Mac. Your changes upload when it's back.");
+  if ("clashes" in opened && opened.clashes) useStore.getState().addClashes(opened.clashes); // saved here last time, changed elsewhere since
+  if (opened.offline) {
+    setConnection("offline");
+    checkBack(path).catch(() => {}); // edits held from last time, and Drive's there: they wait to be approved
+  }
   if (!backend.isDesktop) return;
   (async () => {
     await refreshManifest(path);
@@ -118,15 +122,17 @@ async function binUnusedMedia(bundle: string, show: Show) {
   await trashMedia(bundle, [...unused]);
 }
 
-/** Remove a record from the open show, binning the clips and stills made from it (after asking). */
-export async function removeRecordAndMedia(id: string): Promise<void> {
+/** Remove records from the open show (one, or a group of them), binning the clips and stills made from them (after asking). */
+export async function removeRecordAndMedia(ids: string | string[]): Promise<void> {
   const { show, bundle, update, toast } = useStore.getState();
-  const record = show?.records?.find((r) => r.id === id);
-  if (!show || !bundle || !record) return;
-  const { clips, stills } = recordMedia(show, id);
-  const made = [clips.length && `${clips.length} clip${clips.length === 1 ? "" : "s"}`, stills.length && `${stills.length} still${stills.length === 1 ? "" : "s"}`].filter(Boolean).join(" and ");
-  if (made && !(await backend.confirm(`Remove ${record.name}? Its ${made} will be deleted from the show too. The record itself stays where it is.`))) return;
-  update((s) => removeRecord(s, id));
+  const records = (show?.records ?? []).filter((r) => [ids].flat().includes(r.id));
+  if (!show || !bundle || !records.length) return;
+  const made = records.map((r) => recordMedia(show, r.id));
+  const clips = made.flatMap((m) => m.clips), stills = made.flatMap((m) => m.stills);
+  const what = [clips.length && `${clips.length} clip${clips.length === 1 ? "" : "s"}`, stills.length && `${stills.length} still${stills.length === 1 ? "" : "s"}`].filter(Boolean).join(" and ");
+  const name = records.length === 1 ? records[0].name : `these ${records.length} recordings`;
+  if (what && !(await backend.confirm(`Remove ${name}? ${records.length === 1 ? "Its" : "Their"} ${what} will be deleted from the show too. The ${records.length === 1 ? "record itself stays" : "recordings themselves stay"} where ${records.length === 1 ? "it is" : "they are"}.`))) return;
+  update((s) => { for (const r of records) removeRecord(s, r.id); });
   try {
     await trashMedia(bundle, [...clips, ...stills]);
   } catch (e) {
@@ -134,14 +140,15 @@ export async function removeRecordAndMedia(id: string): Promise<void> {
   }
 }
 
-/** Delete the stills made from a record (after asking): off every song, and to the bin. Its clips stay. */
-export async function deleteRecordStills(id: string): Promise<void> {
+/** Delete the stills made from records (one, or a group of them; after asking): off every song, and to the bin. Their clips stay. */
+export async function deleteRecordStills(ids: string | string[]): Promise<void> {
   const { show, bundle, update, toast } = useStore.getState();
-  const record = show?.records?.find((r) => r.id === id);
-  if (!show || !bundle || !record) return;
-  const { stills } = recordMedia(show, id);
-  if (!stills.length || !(await backend.confirm(`Delete the ${stills.length} still${stills.length === 1 ? "" : "s"} made from ${record.label || record.name}? Its clips stay.`))) return;
-  update((s) => { removeRecordStills(s, id); });
+  const records = (show?.records ?? []).filter((r) => [ids].flat().includes(r.id));
+  if (!show || !bundle || !records.length) return;
+  const stills = records.flatMap((r) => recordMedia(show, r.id).stills);
+  const from = records.length === 1 ? records[0].label || records[0].name : `these ${records.length} recordings`;
+  if (!stills.length || !(await backend.confirm(`Delete the ${stills.length} still${stills.length === 1 ? "" : "s"} made from ${from}? ${records.length === 1 ? "Its" : "Their"} clips stay.`))) return;
+  update((s) => { for (const r of records) removeRecordStills(s, r.id); });
   try {
     await trashMedia(bundle, stills);
   } catch (e) {

@@ -12,7 +12,8 @@ import { ImportPage } from "./components/ImportPage";
 import { MediaPage } from "./components/MediaPage";
 import { CommentsPage } from "./components/Comments";
 import { SettingsPage, SharePage, SheetPage } from "./components/OtherPages";
-import { ReadOnlyBanner, Sidebar, Toasts } from "./components/Shell";
+import { ClashBanner, OfflineBanner, ReadOnlyBanner, Sidebar, Toasts } from "./components/Shell";
+import { RemoteEditsNotice } from "./components/RemoteEdits";
 import { SignIn } from "./components/SignIn";
 import { SongDrawer } from "./components/SongDrawer";
 import { SongsPage } from "./components/SongsPage";
@@ -23,7 +24,8 @@ import { useStore, type View } from "./store";
 import { useAutoUpdate } from "./updates";
 import { applyCacheLimit } from "./storage";
 import { useGoogleSync } from "./google/sync";
-import { isOffline, pushShow, useDriveLive } from "./drive/live";
+import { goOffline, isOffline, pushShow, useDriveLive } from "./drive/live";
+import { holdEdits } from "./drive/show";
 
 const SAVE_DELAY_MS = 600;
 
@@ -62,12 +64,15 @@ export default function App() {
         <Sidebar onClose={closeShow} />
         <section className="main">
           <ReadOnlyBanner />
+          <OfflineBanner />
+          <ClashBanner />
           <div className="main-scroll" id="main-scroll">{page}</div>
         </section>
       </div>
       {drawerSongId && show.songs[drawerSongId] && <SongDrawer key={drawerSongId} />}
       {columnsOpen && <ColumnsDialog />}
       {dragging && <div className="drop-overlay">Drop to add media</div>}
+      <RemoteEditsNotice />
       <Toasts />
     </div>
   );
@@ -118,18 +123,27 @@ function useAutosave() {
   }, [version]);
 }
 
-/** Save the show on this Mac (so nothing's lost offline), then upload it to Google Drive, merging anyone else's save. */
+/**
+ * Save the show on this Mac (so nothing's lost offline), then upload it to Google Drive, merging anyone else's save.
+ * Offline, the save stays on this Mac, held until it's approved once Drive is back.
+ */
 async function saveNow() {
-  const { show, bundle, setSaveState, readOnly } = useStore.getState();
+  const { show, bundle, setSaveState, readOnly, connection } = useStore.getState();
   if (!show || !bundle || readOnly || useStore.getState().saveState === "saved") return;
+  const offline = backend.isDesktop && connection !== "online";
   setSaveState("saving");
   try {
     await backend.save(bundle, show);
-    if (backend.isDesktop) await pushShow(bundle, show);
+    if (offline) await holdEdits(bundle);
+    else if (backend.isDesktop) await pushShow(bundle, show);
     // An edit while saving made it "unsaved" again, and saves again in a moment.
-    if (useStore.getState().saveState === "saving") setSaveState("saved");
+    if (useStore.getState().saveState === "saving") setSaveState(offline ? "offline" : "saved");
   } catch (e) {
-    if (useStore.getState().saveState === "saving") setSaveState(isOffline(e) ? "offline" : "error", String(e));
+    if (isOffline(e)) {
+      await holdEdits(bundle).catch(() => {});
+      goOffline();
+    }
+    if (useStore.getState().saveState === "saving") setSaveState(isOffline(e) ? "offline" : "error", isOffline(e) ? null : String(e));
   }
 }
 

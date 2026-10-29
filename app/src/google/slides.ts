@@ -2,13 +2,13 @@
 // Ported from prototypes/google-sheets/slides_layout.py. Pure: no network here.
 import { cellValue, clipLabel, columnClips, deptColour as customColour, fieldSwatches, onSlide, songImage } from "../model/ops";
 import type { ColourSwatch, ColumnDef, Show, Song } from "../model/types";
-import { DEPT_COLOURS, rgb } from "./sheet";
+import { DEPT_COLOURS, LOGO_URL, rgb } from "./sheet";
 
 const W = 720; // default 16:9 page, points
 const FONT_HEAD = "Lexend", FONT_BODY = "Roboto", FONT_MONO = "Roboto Mono";
 const BLACK = "#000000", WHITE = "#FFFFFF", MUTED = "#9A9A9A";
 export const SLIDE_PREFIX = "pm_slide_";
-const LAYOUT = 5; // bump when the slide layout changes, so open decks redraw on the next sync
+const LAYOUT = 6; // bump when the slide layout changes, so open decks redraw on the next sync
 
 interface Style { font: string; size: number; colour: string; bold: boolean; link?: string }
 const style = (font = FONT_BODY, size = 10, colour = WHITE, bold = false, link?: string): Style => ({ font, size, colour, bold, link });
@@ -16,6 +16,7 @@ const colour = (hex: string) => ({ rgbColor: rgb(hex) });
 const utf16Len = (s: string) => s.length; // JS strings are UTF-16 already
 /** Where a Drive file plays in the browser. */
 export const playUrl = (fileId: string) => `https://drive.google.com/file/d/${fileId}/view`;
+const LOGO_ASPECT = 512 / 188;
 
 function element(page: string, x: number, y: number, w: number, h: number) {
   return { pageObjectId: page, size: { width: { magnitude: w, unit: "PT" }, height: { magnitude: h, unit: "PT" } },
@@ -196,7 +197,7 @@ const tcText = (show: Show, song: Song) => {
 
 function cover(show: Show, b: SlideBuilder, today: string) {
   b.background(BLACK);
-  b.text(40, 150, W - 80, 40, [["PIXELMAPPERS", style(FONT_HEAD, 28, WHITE, true)]], "CENTER");
+  b.image((W - 200) / 2, 140, 200, 200 / LOGO_ASPECT, LOGO_URL);
   b.text(40, 245, W - 80, 44, [[show.name, style(FONT_HEAD, 24, WHITE, true)]], "CENTER");
   const sub = [show.venue, show.date].filter(Boolean).join("  ·  ");
   b.text(40, 292, W - 80, 20, [[`SHOW DECK  ·  ${sub ? `${sub}  ·  ` : ""}${today}`, style(FONT_MONO, 10, MUTED)]], "CENTER");
@@ -284,7 +285,7 @@ function songSlide(show: Show, song: Song, position: number, b: SlideBuilder, im
     ]));
     cy += 34;
   });
-  b.text(28, 383, 120, 12, [["PIXELMAPPERS", style(FONT_HEAD, 7, MUTED, true)]]);
+  b.image(28 + INSET, 385, 40, 40 / LOGO_ASPECT, LOGO_URL);
 }
 
 /**
@@ -316,9 +317,19 @@ export function deckRequests(show: Show, rev: number, imageUrls: Record<string, 
   return reqs;
 }
 
-/** What the deck shows, so it's only redrawn when something on it changed. */
+/**
+ * What the deck shows, so it's only redrawn when something on it changed: the running order's names and timecodes,
+ * and each song's values in the columns on its slide. Edits to columns that aren't on the slides leave it alone.
+ */
 export function deckFingerprint(show: Show): string {
+  const clips = show.google?.clips ?? {};
+  const cols = show.columns.filter(onSlide);
+  const drawn = (col: ColumnDef, song: Song) =>
+    col.type === "colour" ? song.colours[col.index ?? 0] ?? null
+    : col.type === "palette" ? fieldSwatches(song, col.id)
+    : col.type === "image" ? songImage(song, col.id) ?? null
+    : col.type === "clip" ? columnClips(show, col, song).map((c) => [c.path, clipLabel(show, c), clips[c.path]])
+    : cellValue(show, col, song);
   return JSON.stringify([LAYOUT, show.name, show.venue, show.date, show.columns.filter((c) => onSlide(c) || c.type === "tc").map((c) => [c.id, c.label, c.dept, customColour(show, c.dept), onSlide(c)]),
-    show.set_order.map((id) => { const s = show.songs[id]; return [id, s.fields, s.statuses, s.colours, s.swatches, s.hero, s.images, s.segues_into_next, s.clips]; }),
-    show.google?.clips, (show.records ?? []).map((r) => [r.id, r.image_col, r.label])]);
+    show.set_order.map((id) => { const s = show.songs[id]; return [id, s.fields.name, tcText(show, s), s.segues_into_next, cols.map((c) => drawn(c, s))]; })]);
 }

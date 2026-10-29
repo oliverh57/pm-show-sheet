@@ -4,7 +4,7 @@
 // itself, not on any frame or image.
 import { useState } from "react";
 import { backend } from "../backend";
-import { addReview, clipLabel, clipTimeAt, deptList, deptName, keepResolvedDays, setReviewDone, songNumber } from "../model/ops";
+import { addReview, clipLabel, clipTimeAt, commentDepts, deptList, deptName, keepResolvedDays, setReviewDone, songNumber } from "../model/ops";
 import type { ReviewComment, Show, Song } from "../model/types";
 import { useStore } from "../store";
 import { Icon, type IconName } from "./icons";
@@ -173,7 +173,7 @@ function SongComposer({ song }: { song: Song }) {
   const [text, setText] = useState("");
   const [dept, setDept] = useState("");
   const [error, setError] = useState(false);
-  const depts = deptList(show).filter((d) => !["CORE", "STATUS", "COLOUR"].includes(d));
+  const depts = commentDepts(show);
   const post = () => {
     const body = text.trim();
     if (!body) { setError(true); return; }
