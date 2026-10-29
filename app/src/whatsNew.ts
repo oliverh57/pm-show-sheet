@@ -7,6 +7,12 @@ export interface ReleaseNotes {
 }
 
 export const WHATS_NEW: Record<string, ReleaseNotes> = {
+  "0.6.2": {
+    summary: "Changes no longer get stuck on this Mac when the connection drops.",
+    items: [
+      "If the connection to Google drops in the middle of a save, the app no longer waits for ever. Your changes were stuck on this Mac until you reopened the show; now they're saved as offline changes, for you to review and upload when Google Drive can be reached.",
+    ],
+  },
   "0.6.1": {
     summary: "Fixes for comments when several people have a show open, and progress for uploads.",
     items: [

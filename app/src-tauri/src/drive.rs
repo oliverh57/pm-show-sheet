@@ -6,7 +6,7 @@
 //! `.drive.json` in each show's folder is the frontend's manifest: the show's Drive folder id and each file's Drive id.
 //! This side only reads it.
 
-use crate::google::{access_token, api_error, forget_token, mime_for, multipart_body};
+use crate::google::{access_token, api_error, forget_token, http, mime_for, multipart_body, UPLOAD_TIMEOUT};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs;
@@ -97,7 +97,7 @@ fn in_cache(app: &AppHandle, path: &Path) -> bool {
 async fn get_json(app: &AppHandle, url: &str) -> Result<Value, String> {
     for attempt in 0..2 {
         let token = access_token(app).await?;
-        let res = reqwest::Client::new().get(url).bearer_auth(token).send().await.map_err(err("reach Google Drive"))?;
+        let res = http().get(url).bearer_auth(token).send().await.map_err(err("reach Google Drive"))?;
         let status = res.status();
         let text = res.text().await.map_err(err("read Drive's reply"))?;
         if status == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 {
@@ -127,7 +127,7 @@ async fn download_to(app: &AppHandle, file_id: &str, revision: Option<&str>, des
     let mut res = None;
     for attempt in 0..2 {
         let token = access_token(app).await?;
-        let r = reqwest::Client::new().get(&url).bearer_auth(token).send().await.map_err(err("reach Google Drive"))?;
+        let r = http().get(&url).bearer_auth(token).send().await.map_err(err("reach Google Drive"))?;
         if r.status() == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 {
             forget_token(app);
             continue;
@@ -374,11 +374,12 @@ pub async fn drive_upload(app: AppHandle, path: String, name: Option<String>, pa
         let url = format!("{base}?uploadType=multipart&{RETURN}");
         for attempt in 0..2 {
             let token = access_token(&app).await?;
-            let res = reqwest::Client::new()
+            let res = http()
                 .request(method.clone(), &url)
                 .bearer_auth(token)
                 .header("Content-Type", format!("multipart/related; boundary={boundary}"))
                 .body(body.clone())
+                .timeout(UPLOAD_TIMEOUT)
                 .send()
                 .await
                 .map_err(err("upload to Drive"))?;
@@ -401,7 +402,7 @@ pub async fn drive_upload(app: AppHandle, path: String, name: Option<String>, pa
 
 /// A resumable upload: open a session, then send the file in chunks.
 async fn resumable(app: &AppHandle, method: reqwest::Method, url: &str, meta: &Value, src: &Path, size: u64, mime: &str) -> Result<Value, String> {
-    let client = reqwest::Client::new();
+    let client = http();
     let token = access_token(app).await?;
     let res = client
         .request(method, url)
@@ -439,6 +440,7 @@ async fn resumable(app: &AppHandle, method: reqwest::Method, url: &str, meta: &V
             .header("Content-Length", n)
             .header("Content-Range", format!("bytes {offset}-{}/{size}", end.saturating_sub(1)))
             .body(buf[..n].to_vec())
+            .timeout(UPLOAD_TIMEOUT)
             .send()
             .await
             .map_err(err("upload to Drive"))?;

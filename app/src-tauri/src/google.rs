@@ -15,7 +15,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
@@ -30,6 +30,23 @@ const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive";
 const SCOPES: &str = "openid email profile https://www.googleapis.com/auth/drive";
 pub const SIGN_IN_AGAIN: &str = "Sign in to Google again to let the app put the Sheet and deck in the show's folder";
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(300);
+/// The most one upload request may take: a file goes up in pieces of at most 8 MB.
+pub const UPLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// The HTTP client for every Google request. One that stops moving fails rather than waiting for ever: saves to Drive go
+/// one at a time, so a request stuck on a dropped connection would hold up every save after it, with nothing to say so.
+/// The read timeout is between reads, not for the whole request, so big downloads still finish.
+pub fn http() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(20))
+            .read_timeout(Duration::from_secs(60))
+            .tcp_keepalive(Duration::from_secs(30))
+            .build()
+            .expect("an HTTP client")
+    })
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct GoogleUser {
@@ -246,7 +263,7 @@ pub async fn google_sign_in(app: AppHandle) -> Result<GoogleUser, String> {
         .await
         .map_err(err("wait for sign-in"))??;
 
-    let http = reqwest::Client::new();
+    let http = http();
     let tokens: TokenResponse = http
         .post("https://oauth2.googleapis.com/token")
         .form(&[
@@ -298,7 +315,7 @@ pub fn google_current_user(app: AppHandle) -> Option<GoogleUser> {
 pub async fn google_sign_out(app: AppHandle) -> Result<(), String> {
     if let Some(token) = load_refresh(&app) {
         // Best effort: tell Google to forget the token too.
-        let _ = reqwest::Client::new()
+        let _ = http()
             .post("https://oauth2.googleapis.com/revoke")
             .form(&[("token", token.as_str())])
             .timeout(Duration::from_secs(5))
@@ -348,7 +365,7 @@ pub(crate) async fn access_token(app: &AppHandle) -> Result<String, String> {
     }
     let client = client(app).ok_or("Google sign-in isn't set up on this Mac")?;
     let refresh = load_refresh(app).ok_or_else(|| "Sign in to Google again".to_string())?;
-    let res: Refreshed = reqwest::Client::new()
+    let res: Refreshed = http()
         .post("https://oauth2.googleapis.com/token")
         .form(&[("client_id", client.id.as_str()), ("client_secret", client.secret.as_str()), ("refresh_token", refresh.as_str()), ("grant_type", "refresh_token")])
         .send()
@@ -393,7 +410,7 @@ pub async fn google_api(app: AppHandle, method: String, url: String, body: Optio
     let method = reqwest::Method::from_bytes(method.as_bytes()).map_err(err("method"))?;
     for attempt in 0..2 {
         let token = access_token(&app).await?;
-        let mut req = reqwest::Client::new().request(method.clone(), &url).bearer_auth(&token);
+        let mut req = http().request(method.clone(), &url).bearer_auth(&token);
         if let Some(b) = &body {
             req = req.json(b);
         }
@@ -469,11 +486,12 @@ pub async fn google_upload(app: AppHandle, path: String, name: String, parent: O
     };
     for attempt in 0..2 {
         let token = access_token(&app).await?;
-        let res = reqwest::Client::new()
+        let res = http()
             .request(method.clone(), &url)
             .bearer_auth(token)
             .header("Content-Type", format!("multipart/related; boundary={boundary}"))
             .body(body.clone())
+            .timeout(UPLOAD_TIMEOUT)
             .send()
             .await
             .map_err(err("upload to Drive"))?;
@@ -495,6 +513,19 @@ pub async fn google_upload(app: AppHandle, path: String, name: String, parent: O
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "takes a minute: cargo test --lib -- --ignored stalled"]
+    fn a_stalled_request_fails_instead_of_waiting_for_ever() {
+        // A server that accepts the connection and never answers, like a connection that dropped mid-request.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let _hold = std::thread::spawn(move || { let _conn = listener.accept(); std::thread::sleep(Duration::from_secs(90)); });
+        let started = Instant::now();
+        let res = tauri::async_runtime::block_on(async { http().get(&url).send().await });
+        assert!(res.is_err());
+        assert!(started.elapsed() < Duration::from_secs(75));
+    }
 
     #[test]
     fn pkce_matches_rfc_7636_example() {
