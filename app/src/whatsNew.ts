@@ -7,6 +7,17 @@ export interface ReleaseNotes {
 }
 
 export const WHATS_NEW: Record<string, ReleaseNotes> = {
+  "0.7.0": {
+    summary: "Pop a video out to write notes while it plays, and quieter syncing with lots of people in a show.",
+    items: [
+      "Pop out a video into a small window that stays on top of the app, so you can write notes in the show while it plays.",
+      "Only one Mac keeps the Google Sheet and deck up to date at a time. The others say whose Mac it is, and take over if they close the show.",
+      "Clips show as cards with their thumbnail, length and category. Change a clip's category and its thumbnail moves with it.",
+      "When Google is busy, saves wait a moment and try again, and saves from several people at once all make it in.",
+      "A new still or clip never takes the name of one that's in the show but not on this Mac yet.",
+      "Once AUDIO VERSION is deleted, it stays gone.",
+    ],
+  },
   "0.6.3": {
     summary: "Smoother syncing when several Macs have a show open.",
     items: [
