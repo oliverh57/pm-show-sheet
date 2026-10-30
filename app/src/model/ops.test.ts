@@ -156,6 +156,13 @@ describe("media helpers", () => {
     syncAudioField(show, "s_lights");
     expect(show.songs.s_lights.fields.audio).toBe("V3");
   });
+  it("leaves AUDIO VERSION out once it's deleted", () => {
+    const show = fresh();
+    removeColumn(show, "audio");
+    addAudio(show, { path: "/a/v3.wav", scope: "song", song_id: "s_lights", version: "V3" });
+    syncAudioField(show, "s_lights");
+    expect(show.songs.s_lights.fields.audio).toBeUndefined();
+  });
   it("groups renders into sessions by time gap", () => {
     const h = 3600_000;
     const groups = groupSessions([{ modified_ms: 0 }, { modified_ms: 10 * 60_000 }, { modified_ms: 5 * h }]);
@@ -486,6 +493,27 @@ describe("BPM", () => {
     deleteCategory(show, lasers);
     expect(b.clips![0].category).toBeUndefined();
     expect(cellValue(show, clipCol(deptCategory("LX"))!, b)).toBe("NYC");
+  });
+  it("a clip's thumbnail always moves with it, in place of the picture there", async () => {
+    const { addClip, deptCategory, GENERAL, imageCategory, migrate, moveClip, songImage } = await import("./ops");
+    const show = migrate(fresh());
+    show.records = [{ id: "r1", path: "/x/NYC.mov", name: "NYC.mov", label: "NYC", scope: "show", added_at: "" }];
+    const song = show.songs[show.set_order[0]];
+    addClip(show, song.id, { path: "media/clips/a.mp4", record_id: "r1", in: 0, out: 10, source: "manual", still: "media/grabs/a.jpg" });
+    song.gallery = ["media/renders/r.jpg", "media/grabs/a.jpg"];
+    song.hero = "media/grabs/a.jpg";
+    const lx = deptCategory("LX");
+    (song.images ??= {})[lx] = "media/renders/r.jpg";
+
+    // Out of General: its still takes LX's picture, and the main image falls back to another.
+    moveClip(show, song.id, "media/clips/a.mp4", lx);
+    expect(songImage(song, lx)).toBe("media/grabs/a.jpg");
+    expect(song.hero).toBe("media/renders/r.jpg");
+
+    // Back to General: it's the main image again, and out of LX.
+    moveClip(show, song.id, "media/clips/a.mp4", GENERAL);
+    expect(song.hero).toBe("media/grabs/a.jpg");
+    expect(imageCategory(show, song, "media/grabs/a.jpg")).toBe("");
   });
   it("deleting a category takes its clip column; its records' clips are General's", async () => {
     const { addClip, cellValue, deleteCategory, GENERAL, imageColumnFor, migrate } = await import("./ops");

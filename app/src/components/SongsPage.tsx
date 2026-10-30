@@ -7,7 +7,7 @@ import { backend } from "../backend";
 import {
   addCustomField, addSongWith, archiveSong, DEFAULT_SET_LIST_FORMAT, deleteSong, fieldLabel, moveSong, noteFields, parseSetList,
   SET_LIST_FIELDS, type FieldKind, type SetListField,
-  openReviews, parseTc, restoreSong, songAudio, songRecords,
+  hasColumn, openReviews, parseTc, restoreSong, songAudio, songRecords,
 } from "../model/ops";
 import { swatchFill } from "../model/gels";
 import type { Show, Song } from "../model/types";
@@ -338,6 +338,7 @@ function SongCard({ show, song, position, last, selected, placeholder, dropClass
   const bundle = useStore((s) => s.bundle)!;
   const renders = (song.gallery ?? (song.hero ? [song.hero] : [])).length;
   const audio = songAudio(show, song.id)[0]?.version || song.fields.audio;
+  const version = hasColumn(show, "audio") && audio; // shown while the show has AUDIO VERSION
   const clips = (song.clips ?? []).length + songRecords(show, song.id).length;
   return (
     <div className={["scard", position === null && "archived", selected && "sel", placeholder && "placeholder", dropClass].filter(Boolean).join(" ")}
@@ -351,7 +352,7 @@ function SongCard({ show, song, position, last, selected, placeholder, dropClass
         <div className="title">{position !== null && <span className="num" data-col="moved">{String(position).padStart(2, "0")}</span>}<span className="t" data-col="name">{song.fields.name || "Untitled"}</span></div>
         <div className="meta">
           {song.fields.tc ? <span className="chip tc" data-col="tc">{song.fields.tc}</span> : <span className="chip missing" data-col="tc">No TC</span>}
-          {audio && <span className="chip" data-col="audio">{audio}</span>}
+          {version && <span className="chip" data-col="audio">{version}</span>}
           {song.fields.bpm && <span className="chip" data-col="bpm">{song.fields.bpm} BPM</span>}
           {song.segues_into_next && <span className="chip accent" data-col="segues_into_next"><Icon name="link" size="sm" />Segue</span>}
         </div>
@@ -393,7 +394,7 @@ function SongRow({ show, song, position, selected, placeholder, dropClass, onPoi
       <span className="th">{song.hero ? <img src={backend.mediaUrl(bundle, song.hero)} alt="" draggable={false} /> : <span className="ph"><Icon name="music" /></span>}<CommentBadge count={openReviews(show, song.id)} /></span>
       <span className="nm"><span data-col="name">{song.fields.name || "Untitled"}</span>{song.segues_into_next && <span className="pill" data-col="segues_into_next">SEGUE</span>}</span>
       {song.fields.tc ? <span className="chip tc" data-col="tc">{song.fields.tc}</span> : <span className="chip missing" data-col="tc">No TC</span>}
-      <span className="muted small" data-col="audio">{audio || "—"}</span>
+      <span className="muted small" data-col="audio">{hasColumn(show, "audio") ? audio || "—" : ""}</span>
       <span className="icons"><span className={renders ? "on" : ""}><Icon name="image" /></span><span className={audio ? "on" : ""}><Icon name="music" /></span><span className={clips ? "on" : ""}><Icon name="film" /></span></span>
       <span><SongSaveMenu show={show} bundle={bundle} song={song} /></span>
       {onRestore

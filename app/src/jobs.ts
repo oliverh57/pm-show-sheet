@@ -184,7 +184,7 @@ export async function pickTopStills(bundle: string) {
 export function replaceStill(show: Show, songId: string, old: string | null, still: string, colId = GENERAL) {
   const sg = show.songs[songId];
   const gallery = sg.gallery ?? (sg.hero ? [sg.hero] : []);
-  sg.gallery = old && gallery.includes(old) ? gallery.map((p) => (p === old ? still : p)) : [still, ...gallery];
+  sg.gallery = [...new Set(old && gallery.includes(old) ? gallery.map((p) => (p === old ? still : p)) : [still, ...gallery])];
   if (old) for (const [col, p] of Object.entries(sg.images ?? {})) if (p === old) sg.images![col] = still;
   if (old && sg.hero === old) setHero(show, songId, still);
   else if (categoryFree(show, sg, colId)) setSongImage(show, songId, colId, still);

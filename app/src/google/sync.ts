@@ -1,7 +1,8 @@
 // Always-on Google sync. While a show is open the app keeps its Google Sheet and Slides deck up to date:
 // a few seconds after each change it pulls collaborator edits from the Sheet's ✎ columns, then pushes the
 // show; the deck is redrawn when you pause. Every minute it also checks the Sheet for edits.
-// There's no Publish step. One job runs at a time.
+// There's no Publish step. One job runs at a time, and only on the Mac holding the show's sync lease (drive/lease.ts):
+// the others see its pushes through Drive.
 import { useEffect } from "react";
 import { create } from "zustand";
 import { backend } from "../backend";
@@ -15,7 +16,8 @@ import {
 import { deckFingerprint, deckRequests, playUrl } from "./slides";
 import { driveIdOf } from "../drive/media";
 import { addEdits, editsBetween, editorKey, sheetEditor as asEditor, sheetPull } from "../drive/edits";
-import { readManifest } from "../drive/show";
+import { folderIdOf, readManifest } from "../drive/show";
+import { holdLease, releaseLease, THIS_MAC, type Lease } from "../drive/lease";
 
 const SHEETS = "https://sheets.googleapis.com/v4/spreadsheets";
 const SLIDES = "https://slides.googleapis.com/v1/presentations";
@@ -34,6 +36,7 @@ const QUOTA_RETRY_MS = 60000; // Google's quotas are per minute
 const MAX_RETRY_MS = 5 * 60000;
 const CLASH_RETRY_MS = 4000; // and up to as long again, so two Macs don't clash again
 const MAX_CLASHES = 3; // in a row, before it's said as an error
+const LEASE_EVERY_MS = 30000; // renew the sync lease, or look whether it's free
 const IMAGE_PX = 2560;
 
 export type SyncState = "off" | "syncing" | "ok" | "error";
@@ -46,8 +49,10 @@ interface Status {
   step: string | null;
   /** When a failed sync is tried again (ms). */
   retryAt: number | null;
+  /** Who's syncing the show from their Mac, when it's not this one. */
+  by: string | null;
 }
-export const useSyncStatus = create<Status>(() => ({ state: "off", message: null, lastSync: null, deck: "idle", step: null, retryAt: null }));
+export const useSyncStatus = create<Status>(() => ({ state: "off", message: null, lastSync: null, deck: "idle", step: null, retryAt: null, by: null }));
 const status = (s: Partial<Status>) => useSyncStatus.setState(s);
 const step = (what: string) => status({ step: what });
 
@@ -132,12 +137,13 @@ const reviewStills = (show: Show) => (show.reviews ?? []).flatMap((c) => (c.stil
 
 /**
  * Upload any image-column images (renders, tagged stills) of these songs, and `extra` images, not on Drive yet
- * (downsized). Returns image path → image URL.
+ * (downsized). Returns image path → image URL, and how many couldn't be found (made on a Mac that hasn't uploaded them yet).
  */
-async function ensureImages(songIds: string[], extra: string[] = []): Promise<Record<string, { url: string; id: string }>> {
+async function ensureImages(songIds: string[], extra: string[] = []): Promise<{ images: Record<string, { url: string; id: string }>; missing: number }> {
   const { show, bundle } = useStore.getState();
-  if (!show || !bundle) return {};
+  if (!show || !bundle) return { images: {}, missing: 0 };
   const out: Record<string, { url: string; id: string }> = {};
+  let missing = 0;
   const paths = [...new Set([...songIds.flatMap((sid) => (show.songs[sid] ? songImagePaths(show.songs[sid]) : [])), ...extra])];
   const todo = paths.filter((p) => !g().images?.[p]).length;
   let n = 0;
@@ -150,6 +156,7 @@ async function ensureImages(songIds: string[], extra: string[] = []): Promise<Re
         if (!img.startsWith("/")) await backend.driveFetch(bundle, [img], true); // made on another Mac: download it first (quietly: it's only for the Sheet)
         id = await backend.googleUpload(path, img.split("/").pop() ?? "render.jpg", g().media_folder_id ?? null, null, IMAGE_PX);
       } catch {
+        missing++;
         continue; // missing file: the cell stays empty
       }
       const fileId = id;
@@ -157,7 +164,7 @@ async function ensureImages(songIds: string[], extra: string[] = []): Promise<Re
     }
     out[img] = { url: imageUrl(id), id };
   }
-  return out;
+  return { images: out, missing };
 }
 
 /** Bin the Drive copies of images no song uses any more (removed images, replaced heroes, deleted songs). */
@@ -413,17 +420,24 @@ function appAuthor(key: string, me: string | undefined): string | undefined {
 export const LOCKED_OUT = "The Sheet's locked columns aren't open to you yet. They open the next time someone who can already edit them has the show open (their app adds you); until then their app keeps the Sheet up to date.";
 let lockedOut = false;
 
+/**
+ * Put this account on the show's app editors. Whichever Mac syncs the show writes every column, so each person who may
+ * end up syncing goes on the lock's editors (and stays there, so a collaborator's sync doesn't lock out whoever made the
+ * show). Added on every Mac, syncing or not: the show reaches the syncing Mac through Drive, and if its account can edit
+ * the lock it adds this one on its next push. It's put in as this account signs in (someone may have shared it as
+ * @gmail.com when Google knows it as @googlemail.com).
+ */
+function joinAppEditors() {
+  const me = useStore.getState().user?.email.toLowerCase();
+  if (me && !(g().app_editors ?? []).some((e) => e.toLowerCase() === me)) meta((x) => { x.app_editors = [...(x.app_editors ?? []).filter((e) => emailKey(e) !== emailKey(me)), me]; });
+}
+
 async function pushSheet(): Promise<void> {
   const { user } = useStore.getState();
   const ssid = g().spreadsheet_id!;
-  // Everyone who syncs the show from the app writes every column, so each one goes on the lock's editors (and stays
-  // there, so a collaborator's sync doesn't lock out whoever made the show). Added before writing: the show reaches
-  // the other Macs through Drive, and one whose account can edit the lock adds this one on its next push. It's put in
-  // as this account signs in (someone may have shared it as @gmail.com when Google knows it as @googlemail.com).
-  const me = user?.email.toLowerCase();
-  if (me && !(g().app_editors ?? []).some((e) => e.toLowerCase() === me)) meta((x) => { x.app_editors = [...(x.app_editors ?? []).filter((e) => emailKey(e) !== emailKey(me)), me]; });
+  joinAppEditors();
   const show = useStore.getState().show!;
-  const images = await ensureImages([...show.set_order, ...show.archive], reviewStills(show));
+  const { images, missing } = await ensureImages([...show.set_order, ...show.archive], reviewStills(show));
   const urls = Object.fromEntries(Object.entries(images).map(([k, v]) => [k, v.url]));
   step("Updating the Sheet");
   // The running order on SHOW SHEET, archived songs on ARCHIVED SONGS: a song moves between them as it's archived or restored.
@@ -475,7 +489,8 @@ async function pushSheet(): Promise<void> {
   }
   lockedOut = false;
   meta((x) => { x.tab_id = TAB_ID; x.archive_tab_id = ARCHIVE_TAB_ID; if (reviewing) x.review_tab_id = REVIEW_TAB_ID; x.published = pushed; });
-  lastSheet = sheetFingerprint(show);
+  // An image made on a Mac that hasn't uploaded it yet: the next poll pushes again, when it may be there.
+  lastSheet = missing ? null : sheetFingerprint(show);
   await lockTabs(ssid, grids, user?.email ?? "", columnsChanged, metaRes);
   await pruneImages();
 }
@@ -517,7 +532,7 @@ async function pushDeck(): Promise<void> {
   const show = useStore.getState().show!;
   const pid = g().presentation_id!;
   status({ deck: "drawing" });
-  const images = await ensureImages(show.set_order);
+  const { images } = await ensureImages(show.set_order);
   step("Redrawing the deck");
   const pres = await api<{ slides?: { objectId: string; pageElements?: { objectId: string }[] }[] }>("GET", `${SLIDES}/${pid}?fields=${enc("slides(objectId,pageElements(objectId))")}`);
   const existing = Object.fromEntries((pres.slides ?? []).map((s) => [s.objectId, (s.pageElements ?? []).map((e) => e.objectId)]));
@@ -569,23 +584,29 @@ function sheetFingerprint(show: Show): string {
 let retryTimer: number | undefined; // set while waiting to try again after a failed sync
 let failures = 0; // syncs failed in a row: each waits longer before trying again
 let clashes = 0; // syncs in a row another Mac's push got in the way of
+let leading = false; // this Mac holds the show's sync lease, so it's the one that syncs
 
 /**
  * Google refusing a push because another Mac with the show open pushed the same change between this one reading the
- * Sheet or deck and writing to it: a conditional format or slide element that's gone, or one made twice. Every Mac
- * pushes each save, so they meet when a push is slow (uploading a clip). Read again and it goes through.
+ * Sheet or deck and writing to it: a conditional format or slide element that's gone, or one made twice. Only the Mac
+ * holding the sync lease pushes, but two can meet while the lease changes hands, when someone presses Sync now, or
+ * with an older app that pushes every save. Read again and it goes through.
  */
 export const clashed = (e: unknown) => /Google 400: .*(No conditional format|could not be found|should be unique)/i.test(String(e));
 
-/** Run a sync job in turn. While a retry waits, only a full sync (`syncNow`) runs: the retry does the rest. */
-function run(job: () => Promise<void>, full = false) {
+/**
+ * Run a sync job in turn, if this Mac syncs the show (or someone asked for it here: `force`). While a retry waits, only a
+ * full sync (`syncNow`) runs: the retry does the rest.
+ */
+function run(job: () => Promise<void>, full = false, force = false) {
   const gen = generation;
   queue = queue.then(async () => {
     if (gen !== generation || !useStore.getState().show) return;
+    if (!leading && !force) return;
     if (retryTimer !== undefined && !full) return;
     window.clearTimeout(retryTimer);
     retryTimer = undefined;
-    status({ state: "syncing", step: null, retryAt: null });
+    status({ state: "syncing", step: null, retryAt: null, by: null });
     try {
       await job();
       failures = 0;
@@ -608,7 +629,7 @@ function run(job: () => Promise<void>, full = false) {
   });
 }
 
-/** Pull, then push the Sheet if anything changed (or always, with `force`). */
+/** Pull, then push the Sheet if anything changed (or always, with `force`, which also syncs from this Mac when another holds the lease). */
 export function syncNow(force = false) {
   run(async () => {
     await ensureFiles();
@@ -617,7 +638,32 @@ export function syncNow(force = false) {
     const show = useStore.getState().show!;
     if (force || sheetFingerprint(show) !== lastSheet || !g().tab_id) await pushSheet();
     if (force || deckFingerprint(show) !== lastDeck) await pushDeck();
-  }, true);
+  }, true, force);
+}
+
+/**
+ * Take or renew the show's sync lease, if no other Mac holds it: this Mac syncs while it holds it. One that takes it
+ * over syncs straight away; one that doesn't says whose Mac does. The first time the lease can't be read (an older
+ * Drive permission, say), this Mac syncs, as every Mac used to.
+ */
+async function checkLease(bundle: string, gen: number, first: boolean) {
+  const user = useStore.getState().user;
+  if (!user) return;
+  let holder: Lease | null | "unknown";
+  try {
+    holder = await holdLease(folderIdOf(bundle), user.email, user.name, !lockedOut);
+  } catch {
+    if (!first) return; // couldn't look: carry on as before
+    holder = "unknown";
+  }
+  if (gen !== generation) return;
+  const was = leading;
+  leading = holder === "unknown" || holder?.mac === THIS_MAC;
+  if (leading && !was) return syncNow();
+  if (leading || !holder || holder === "unknown") return; // nobody holds it (just let go): it's looked at again shortly
+  window.clearTimeout(retryTimer);
+  retryTimer = undefined;
+  status({ state: "ok", message: `${holder.name}'s app is keeping the Sheet and deck up to date. This Mac takes over if they close the show.`, by: holder.name, step: null, retryAt: null, deck: "idle" });
 }
 
 /** Run the sync engine while a show is open (desktop app, signed in). */
@@ -634,17 +680,24 @@ export function useGoogleSync() {
     retryTimer = undefined;
     failures = 0;
     clashes = 0;
+    leading = false;
     lastDeck = useStore.getState().show?.google?.deck_hash ?? null; // don't redraw an unchanged deck on open
-    if (!bundle || !user) return status({ state: "off", message: null });
-    if (readOnly) return status({ state: "off", message: "Read only" });
-    if (!backend.isDesktop) return status({ state: "off", message: "Google sync runs in the desktop app" });
-    if (connection === "offline") return status({ state: "off", message: "Offline" });
-    if (connection === "back") return status({ state: "off", message: "Waiting for your offline changes" }); // the Sheet mustn't get them before they're approved
-    syncNow();
+    if (!bundle || !user) return status({ state: "off", message: null, by: null });
+    if (readOnly) return status({ state: "off", message: "Read only", by: null });
+    if (!backend.isDesktop) return status({ state: "off", message: "Google sync runs in the desktop app", by: null });
+    if (connection === "offline") return status({ state: "off", message: "Offline", by: null });
+    if (connection === "back") return status({ state: "off", message: "Waiting for your offline changes", by: null }); // the Sheet mustn't get them before they're approved
+    const gen = generation;
+    status({ state: "syncing", message: null, step: "Checking which Mac syncs the show", by: null, retryAt: null });
+    joinAppEditors();
+    checkLease(bundle, gen, true);
+    const lease = window.setInterval(() => checkLease(bundle, gen, false), LEASE_EVERY_MS);
+    const letGo = () => { if (leading) releaseLease(folderIdOf(bundle)).catch(() => {}); };
+    window.addEventListener("beforeunload", letGo);
     let sheetTimer: number | undefined;
     let deckTimer: number | undefined;
     const unsub = useStore.subscribe((s, prev) => {
-      if (!s.show || s.show === prev.show) return;
+      if (!s.show || s.show === prev.show || !leading) return;
       if (sheetFingerprint(s.show) !== lastSheet) {
         window.clearTimeout(sheetTimer);
         sheetTimer = window.setTimeout(() => run(async () => { await pull(); await pushSheet(); }), PUSH_DELAY_MS);
@@ -665,6 +718,10 @@ export function useGoogleSync() {
       window.clearTimeout(sheetTimer);
       window.clearTimeout(deckTimer);
       window.clearInterval(poll);
+      window.clearInterval(lease);
+      window.removeEventListener("beforeunload", letGo);
+      letGo();
+      leading = false;
     };
   }, [bundle, user, readOnly, connection]);
 }

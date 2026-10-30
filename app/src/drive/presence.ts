@@ -5,6 +5,7 @@
 import { fitProperty, getFile, patchFile } from "./api";
 
 const FRESH_MS = 3 * 60 * 1000;
+const STALE_MS = 10 * 60 * 1000; // well past FRESH_MS, so a key isn't cleared just as its owner writes it again
 const PREFIX = "p_";
 
 export interface Presence { email: string; name: string; at: number; editedAt?: number }
@@ -30,6 +31,16 @@ export function othersIn(properties: Record<string, string> | undefined, email: 
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/**
+ * The presence keys no one has written for a while: apps that quit or slept without saying they'd left. They're cleared,
+ * because a folder holds only 30 properties, and every person who ever left one that way would otherwise keep theirs.
+ */
+export function staleIn(properties: Record<string, string> | undefined, now = Date.now()): string[] {
+  return Object.entries(properties ?? {})
+    .filter(([k, v]) => k.startsWith(PREFIX) && !(now - Number(v.split("|")[0].split(".")[0]) < STALE_MS))
+    .map(([k]) => k);
+}
+
 /** What `beat` writes: the time, when this Mac last edited the show (if it has since opening it), and who. */
 export function presenceValue(email: string, name: string, editedAt: number | null, now = Date.now()): string {
   const ago = editedAt === null ? "" : `.${Math.max(0, Math.round((now - editedAt) / 1000))}`;
@@ -51,6 +62,8 @@ export async function beat(folderId: string, email: string, name: string, canEdi
   const folder = canEdit
     ? await patchFile(folderId, { properties: { [key]: fitProperty(key, presenceValue(email, name, editedAt)) } }, "", "properties")
     : await getFile(folderId, "properties");
+  const stale = canEdit ? staleIn(folder.properties) : [];
+  if (stale.length) patchFile(folderId, { properties: Object.fromEntries(stale.map((k) => [k, null])) }).catch(() => {});
   return othersIn(folder.properties, email);
 }
 

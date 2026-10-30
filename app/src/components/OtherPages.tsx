@@ -76,7 +76,7 @@ export function SyncBadge() {
   const [, tick] = useState(0);
   useEffect(() => { const t = window.setInterval(() => tick((n) => n + 1), 10000); return () => window.clearInterval(t); }, []);
   const signIn = sync.state === "error" && sync.message?.startsWith("Sign in to Google again");
-  const label = signIn ? "Sign in to Google again" : { off: sync.message ?? "Sync off", syncing: `${sync.step ?? "Syncing"}…`, error: "Sync stopped", ok: sync.message === LOCKED_OUT ? "Waiting for the Sheet" : sync.lastSync ? `Synced ${timeAgo(sync.lastSync)}` : "Synced" }[sync.state];
+  const label = signIn ? "Sign in to Google again" : { off: sync.message ?? "Sync off", syncing: `${sync.step ?? "Syncing"}…`, error: "Sync stopped", ok: sync.message === LOCKED_OUT ? "Waiting for the Sheet" : sync.by ? `Synced by ${sync.by.split(" ")[0]}'s Mac` : sync.lastSync ? `Synced ${timeAgo(sync.lastSync)}` : "Synced" }[sync.state];
   return <span className={`sync-badge ${sync.state}`} title={sync.message ?? label}><span className="dot" /><span className="txt">{label}</span></span>;
 }
 

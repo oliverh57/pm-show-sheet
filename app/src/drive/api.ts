@@ -52,6 +52,23 @@ export async function ensureFolder(parent: string, name: string): Promise<string
 /** A Drive "file not found" (deleted, or no longer shared with this user). */
 export const notFound = (e: unknown) => /^(Error: )?Google 404/.test(String(e));
 
+/** Google asking for fewer requests, or failing for a moment: worth trying again shortly. */
+export const busy = (e: unknown) => /Google (429|50[0234])\b|Google 403: .*rate limit exceeded/i.test(String(e));
+
+export const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** `fn`, tried again (waiting longer each time, by a random amount so Macs don't retry together) while Google is busy. */
+export async function patiently<T>(fn: () => Promise<T>, tries = 4, waitMs = 1000): Promise<T> {
+  for (let i = 1; ; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (i >= tries || !busy(e)) throw e;
+      await pause(waitMs * 2 ** (i - 1) * (0.5 + Math.random()));
+    }
+  }
+}
+
 /** Values in Drive `properties` are limited to 124 bytes with their key: cut a value to fit. */
 export function fitProperty(key: string, value: string): string {
   const room = 124 - new TextEncoder().encode(key).length;

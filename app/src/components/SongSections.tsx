@@ -2,11 +2,11 @@
 import { useEffect, useRef, useState } from "react";
 import { backend } from "../backend";
 import { type Gel, searchGels, swatchFill } from "../model/gels";
-import { addImages, categories, deptCategory, ensureCategory, fieldSwatches, GENERAL, imageCategory, imageLabel, isHeroImage, MAX_SWATCHES, replaceImage, setHero, setImageCategory } from "../model/ops";
+import { addImages, categories, clipStills, deptCategory, fileName, ensureCategory, fieldSwatches, GENERAL, imageCategory, imageLabel, isHeroImage, MAX_SWATCHES, replaceImage, setHero, setImageCategory } from "../model/ops";
 import { CategoriesDialog } from "./Categories";
 import { useFileStates } from "./CloudFiles";
 import { repickStill } from "../jobs";
-import type { ColourSwatch, Song } from "../model/types";
+import type { Clip, ColourSwatch, Song } from "../model/types";
 import { deleteSongImage } from "../library";
 import { useStore } from "../store";
 import { DraftInput } from "./fields";
@@ -118,7 +118,11 @@ export function Media({ song, onOpen }: { song: Song; onOpen: (path: string) => 
   const [editing, setEditing] = useState(false);
   const update = useStore((s) => s.update);
   const [error, setError] = useState<string | null>(null);
-  const gallery = song.gallery ?? (song.hero ? [song.hero] : []);
+  // A clip's thumbnail is shown on its clip (under Clips), not here.
+  const thumbOf = (c: Clip) => c.still ?? clipStills(song, c)[0];
+  const thumbs = new Set((song.clips ?? []).flatMap((c) => thumbOf(c) ?? []));
+  const gallery = (song.gallery ?? (song.hero ? [song.hero] : [])).filter((p) => !thumbs.has(p));
+  const heroClip = (song.clips ?? []).find((c) => thumbOf(c) === (song.hero_crop?.src ?? song.hero));
   const recordOf = (p: string) => (show.records ?? []).find((r) => r.stills?.includes(p));
   const [states] = useFileStates([...new Set(gallery.flatMap((p) => recordOf(p)?.path ?? []))]);
   // A still from a record: another frame can be picked from the record when it's on this Mac and the song's marked in
@@ -160,6 +164,7 @@ export function Media({ song, onOpen }: { song: Song; onOpen: (path: string) => 
   return (
     <div className="stack">
       {song.hero && <div className="hero-box"><img src={backend.mediaUrl(bundle, song.hero)} alt="" title="Open full screen" onClick={() => onOpen(song.hero!)} /></div>}
+      {heroClip && <p className="muted small hero-from"><Icon name="film" size="sm" /><span>Main image: the thumbnail of the clip <strong>{fileName(heroClip.path)}</strong></span></p>}
       <div className="dropzone-sm">
         {backend.isDesktop ? (song.hero ? "Drop more images on the song's card" : "No images yet. Drop some on the song's card") : "Adding images needs the desktop app"}
         {backend.isDesktop && <button onClick={choose}>Choose images…</button>}

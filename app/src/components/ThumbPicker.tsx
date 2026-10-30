@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { backend, type ThumbCandidate } from "../backend";
 import { replaceStill } from "../jobs";
-import { clipLength, clipName } from "../model/ops";
+import { addImages, clipCategory, clipLength, clipName, setSongImage, songImage } from "../model/ops";
 import type { Clip, Show, Song } from "../model/types";
 import { useStore } from "../store";
 import { Icon } from "./icons";
@@ -57,8 +57,15 @@ export function ThumbPicker({ song, replace, clip, onClose }: { song: Song; repl
     try {
       const still = await backend.grabFrame(bundle, source.path, time, clipName(show, song.id));
       update((s) => {
-        replaceStill(s, song.id, replace, still);
-        const c = clip && s.songs[song.id].clips?.find((x) => x.path === clip.path);
+        const sg = s.songs[song.id];
+        const c = clip && sg.clips?.find((x) => x.path === clip.path);
+        // A still another clip uses too stays theirs: this clip's new one goes beside it, and into this clip's category
+        // in its place there.
+        if (c && replace && sg.clips!.some((x) => x !== c && x.still === replace)) {
+          const col = clipCategory(s, c);
+          addImages(s, song.id, [still], col);
+          if (songImage(sg, col) === replace) setSongImage(s, song.id, col, still);
+        } else replaceStill(s, song.id, replace, still);
         if (c) c.still = still;
       });
       toast("Thumbnail updated");

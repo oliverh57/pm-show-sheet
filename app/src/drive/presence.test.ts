@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { editedAgo, othersIn, presenceKey, presenceValue } from "./presence";
+import { editedAgo, othersIn, presenceKey, presenceValue, staleIn } from "./presence";
 
 const NOW = 1_800_000_000_000;
 
@@ -15,6 +15,19 @@ describe("presence", () => {
       { at: NOW, email: "sam@x.com", name: "Sam Jones", editedAt: NOW - 5 * 60_000 },
     ]);
     expect(Number(presenceValue("sam@x.com", "Sam", NOW - 1000, NOW).split("|")[0])).toBeCloseTo(NOW, -1); // as older apps read it
+  });
+
+  it("finds presence nobody has written for a while, to clear it", () => {
+    const props = {
+      [presenceKey("now@x.com")]: presenceValue("now@x.com", "Now", null, NOW),
+      [presenceKey("away@x.com")]: presenceValue("away@x.com", "Away", NOW - 3600_000, NOW - 5 * 60_000), // not open, but recent
+      [presenceKey("gone@x.com")]: presenceValue("gone@x.com", "Gone", null, NOW - 11 * 60_000),
+      [presenceKey("old@x.com")]: `${NOW - 86_400_000}|old@x.com|Old`,
+      p_junk: "?",
+      pmss: "1",
+      name: "SHOW",
+    };
+    expect(staleIn(props, NOW).sort()).toEqual([presenceKey("gone@x.com"), presenceKey("old@x.com"), "p_junk"].sort());
   });
 
   it("says how long ago", () => {

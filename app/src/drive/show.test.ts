@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import sample from "../model/sample_show.json";
 import { migrate } from "../model/ops";
 import type { ReviewComment, Show } from "../model/types";
+import { backend } from "../backend";
 import { FakeDrive } from "./fakeDrive";
 import { clashes, diffShows, mergeClashes, openClashes, putBack, reviewOffline, settle, sheetClashes, throwAway } from "./offline";
 import { holdEdits, releaseEdits, syncShow, updateManifest } from "./show";
@@ -84,7 +85,44 @@ describe("syncShow", () => {
     expect(drive.content(project).songs[b].fields.name).toBe("SLIPPED IN");
   });
 
-  it("gives up re-merging after a few tries", async () => {
+  it("merges back every save that landed in between, not just the last", async () => {
+    const { show } = await syncShow(bundle(folder));
+    const [a, b, c] = show!.set_order;
+    drive.beforeUpload = () => {
+      drive.beforeUpload = null;
+      // Two other Macs, each saving their own edit to the version this one started from.
+      for (const [id, name] of [[b, "FIRST"], [c, "SECOND"]]) {
+        const theirs = structuredClone(show!);
+        theirs.songs[id].fields.name = name;
+        drive.put(theirs, { id: project });
+      }
+    };
+    const mine = structuredClone(show!);
+    mine.songs[a].fields.name = "MINE";
+    await syncShow(bundle(folder), mine);
+    expect(drive.content(project).songs[a].fields.name).toBe("MINE");
+    expect(drive.content(project).songs[b].fields.name).toBe("FIRST");
+    expect(drive.content(project).songs[c].fields.name).toBe("SECOND");
+  });
+
+  it("merges back the save just before its own when Drive has dropped the version it started from", async () => {
+    const { show } = await syncShow(bundle(folder));
+    const [a, b] = show!.set_order;
+    drive.beforeUpload = () => {
+      drive.beforeUpload = null;
+      const theirs = structuredClone(show!);
+      theirs.songs[b].fields.name = "SLIPPED IN";
+      drive.put(theirs, { id: project });
+      drive.files.get(project)!.revisions.splice(0, 1); // Drive keeps only so many revisions
+    };
+    const mine = structuredClone(show!);
+    mine.songs[a].fields.name = "MINE";
+    await syncShow(bundle(folder), mine);
+    expect(drive.content(project).songs[a].fields.name).toBe("MINE");
+    expect(drive.content(project).songs[b].fields.name).toBe("SLIPPED IN");
+  });
+
+  it("stops re-uploading after a few tries, keeping what it merged for the next sync", async () => {
     const { show } = await syncShow(bundle(folder));
     let n = 0;
     drive.beforeUpload = () => {
@@ -94,8 +132,26 @@ describe("syncShow", () => {
     };
     const mine = structuredClone(show!);
     mine.date = "2026-12-31";
-    await syncShow(bundle(folder), mine);
+    const r = await syncShow(bundle(folder), mine);
     expect(drive.uploads).toBe(4);
+    const last = show!.set_order[3];
+    expect(r.show!.songs[last].fields.name).toBe("BUSY"); // merged here
+    expect(drive.content(project).songs[last].fields.name).not.toBe("BUSY"); // but overwritten in Drive, for now
+    drive.beforeUpload = null;
+    await syncShow(bundle(folder), r.show);
+    expect(drive.content(project).songs[last].fields.name).toBe("BUSY");
+    expect(drive.content(project).date).toBe("2026-12-31");
+  });
+
+  it("tries again while Google says it's busy", async () => {
+    const { show } = await syncShow(bundle(folder));
+    const b = backend as unknown as { googleApi: (...a: unknown[]) => Promise<unknown> };
+    const real = b.googleApi;
+    let refusals = 1;
+    b.googleApi = (...a) => (refusals-- > 0 ? Promise.reject(new Error("Google 403: User rate limit exceeded.")) : real(...a));
+    const mine = { ...structuredClone(show!), venue: "O2" };
+    await syncShow(bundle(folder), mine);
+    expect(drive.content(project).venue).toBe("O2");
   });
 
   it("never uploads a show it can't edit", async () => {

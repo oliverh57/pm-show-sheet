@@ -636,10 +636,24 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; }
 .tick-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border: 1px solid var(--line-2); border-radius: 13px; font-size: 12px; font-weight: 600; cursor: pointer; background: var(--field); }
 .tick-chip input { display: none; }
 .tick-chip.on { background: var(--ok); color: #fff; border-color: var(--ok); }
-.media-row.clip-row { align-items: flex-start; margin-bottom: 6px; }
-.clip-thumb { width: 128px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 5px; background: #000; cursor: zoom-in; flex: none; }
-.clip-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
-.clip-row video { width: 100%; border-radius: 7px; background: #000; margin-top: 8px; }
+.clip-card { display: flex; gap: 12px; padding: 8px; margin-bottom: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.clip-card.is-hero { border-color: var(--accent); }
+.clip-pic { position: relative; width: 168px; aspect-ratio: 16 / 9; flex: none; border-radius: 6px; overflow: hidden; background: #000; cursor: pointer; }
+.clip-pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.clip-pic .clip-none { position: absolute; inset: 0; display: grid; place-items: center; color: rgba(255,255,255,.4); }
+.clip-pic .clip-play { position: absolute; left: 50%; top: 50%; translate: -50% -50%; width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; background: rgba(0,0,0,.55); color: #fff; transition: background .12s; }
+.clip-pic:hover .clip-play { background: var(--accent); }
+.clip-pic .clip-len { position: absolute; right: 5px; bottom: 5px; padding: 1px 5px; border-radius: 4px; background: rgba(0,0,0,.6); color: #fff; font-size: 11px; font-variant-numeric: tabular-nums; }
+.clip-pic .pill { position: absolute; left: 5px; top: 5px; margin: 0; }
+.clip-pic-acts { position: absolute; top: 4px; right: 4px; display: flex; gap: 4px; opacity: 0; transition: opacity .12s; }
+.clip-pic:hover .clip-pic-acts, .clip-pic-acts:focus-within { opacity: 1; }
+.clip-pic-acts .icon { width: 24px; height: 24px; background: var(--float); color: var(--text); }
+.clip-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.clip-head { display: flex; align-items: flex-start; gap: 4px; }
+.clip-title { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.clip-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.clip-info select.category { align-self: flex-start; max-width: 100%; height: 26px; padding: 0 6px; font-size: 12px; font-weight: 500; color: var(--muted); }
+.clip-info select.category.on { color: var(--accent); background-color: var(--accent-bg); border-color: transparent; }
 .player-inline { display: grid; gap: 6px; width: 100%; margin-top: 6px; }
 .player-inline video { width: 100%; max-height: 380px; border-radius: 8px; background: #000; }
 .player-inline audio { width: 100%; }
@@ -683,6 +697,9 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; }
 /* gallery */
 .hero-box { aspect-ratio: 16 / 9; background: var(--surface-2); border-radius: 8px; overflow: hidden; }
 .hero-box img { width: 100%; height: 100%; object-fit: contain; cursor: zoom-in; }
+.hero-from { display: flex; align-items: center; gap: 6px; margin: -4px 0 0; }
+.hero-from span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hero-from strong { font-weight: 500; color: var(--text); }
 .dropzone-sm { border: 1.5px dashed var(--line-2); border-radius: 8px; padding: 10px 12px; color: var(--muted); display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 13px; background: var(--surface); }
 .gallery { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .gallery figure { margin: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); }
@@ -1380,8 +1397,8 @@ textarea.cell-input { height: 120px; resize: none; }
 .viewer-stage .nav.prev { left: 14px; }
 .viewer-stage .nav.next { right: 14px; }
 .viewer-foot { padding: 8px 16px 14px; text-align: center; font-size: 11.5px; color: rgba(255,255,255,.45); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.viewer .review-toggle { color: #fff; background: rgba(255,255,255,.1); border-color: transparent; box-shadow: none; }
-.viewer .review-toggle:hover:not(:disabled) { background: rgba(255,255,255,.2); }
+.viewer .review-toggle, .viewer .pop-out { color: #fff; background: rgba(255,255,255,.1); border-color: transparent; box-shadow: none; }
+.viewer .review-toggle:hover:not(:disabled), .viewer .pop-out:hover:not(:disabled) { background: rgba(255,255,255,.2); }
 .viewer .review-toggle.on { background: rgba(37,99,235,.35); }
 
 /* --- comments on videos (Review.tsx), beside the viewer's picture ------------------------- */
@@ -1557,3 +1574,16 @@ button.cbadge:hover:not(:disabled) { background: var(--bad); filter: brightness(
 .review-panel.cm-compose { grid-area: auto; display: block; margin: 0 0 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); }
 .review-panel.cm-compose .rv-compose { border-top: 0; padding: 12px 14px; }
 .cm-card.plain, .drawer .cm-card.plain { grid-template-columns: minmax(0, 1fr); }
+
+/* The pop-out player window (components/PopOutPlayer.tsx) and the button that opens it, over any video */
+.video-wrap .popout-btn { position: absolute; right: 8px; top: 8px; z-index: 2; background: rgba(0,0,0,.6); color: rgba(255,255,255,.9); opacity: 0; transition: opacity .15s; }
+.video-wrap:hover .popout-btn, .video-wrap .popout-btn:focus-visible { opacity: 1; }
+.video-wrap .popout-btn:hover:not(:disabled) { background: rgba(0,0,0,.8); color: #fff; }
+.popout { position: fixed; inset: 0; background: #000; color: #fff; }
+.popout .player-inline { margin: 0; height: 100%; grid-template-rows: minmax(0, 1fr) auto; gap: 0; }
+.popout .player-inline .video-wrap { min-height: 0; display: flex; align-items: center; justify-content: center; }
+.popout .player-inline video { max-height: 100%; height: 100%; object-fit: contain; border-radius: 0; background: transparent; }
+.popout .player-inline .muted { padding: 4px 10px 6px; color: rgba(255,255,255,.55); }
+.popout .popout-pin { position: absolute; right: 8px; top: 8px; z-index: 3; background: rgba(0,0,0,.6); color: rgba(255,255,255,.6); opacity: 0; transition: opacity .15s; }
+.popout:hover .popout-pin { opacity: 1; }
+.popout .popout-pin:hover:not(:disabled) { background: rgba(0,0,0,.8); color: #fff; }

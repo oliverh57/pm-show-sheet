@@ -85,21 +85,45 @@ fn media_import(bundle: String, source: String, kind: String) -> Result<String, 
     fs::create_dir_all(&dir).map_err(err("create media folder"))?;
     let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("file").to_string();
     let ext = src.extension().and_then(|s| s.to_str()).unwrap_or_default().to_string();
-    let name = unique_name(&dir, &stem, &ext);
+    let name = unique_name(Path::new(&bundle), &kind, &stem, &ext);
     fs::copy(&src, dir.join(&name)).map_err(err("copy media"))?;
     Ok(format!("media/{kind}/{name}"))
 }
 
-/// `stem.ext`, or `stem_2.ext`, `stem_3.ext`… if that name is taken in `dir`.
-fn unique_name(dir: &Path, stem: &str, ext: &str) -> String {
+/// `stem.ext`, or `stem_2.ext`, `stem_3.ext`… if that name is taken in `media/<kind>/`: a file on this Mac, or one the
+/// show knows of that isn't here (in its Google Drive folder, or named in project.json: cleared to save space, or made on
+/// another Mac and not downloaded yet). Taking one of those would overwrite another picture everywhere it's used.
+fn unique_name(bundle: &Path, kind: &str, stem: &str, ext: &str) -> String {
+    let dir = bundle.join("media").join(kind);
+    let known = known_media(bundle);
+    let taken = |name: &str| dir.join(name).exists() || known.contains(&format!("media/{kind}/{name}"));
     let dot = if ext.is_empty() { String::new() } else { format!(".{ext}") };
     let mut name = format!("{stem}{dot}");
     let mut n = 2;
-    while dir.join(&name).exists() {
+    while taken(&name) {
         name = format!("{stem}_{n}{dot}");
         n += 1;
     }
     name
+}
+
+/// The bundle-relative media paths a show knows of: its Drive manifest's files and every "media/…" in project.json.
+fn known_media(bundle: &Path) -> std::collections::HashSet<String> {
+    fn walk(v: &Value, out: &mut std::collections::HashSet<String>) {
+        match v {
+            Value::String(s) if s.starts_with("media/") => { out.insert(s.clone()); }
+            Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+            Value::Object(o) => o.values().for_each(|x| walk(x, out)),
+            _ => {}
+        }
+    }
+    let read = |name: &str| fs::read_to_string(bundle.join(name)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    let mut out = std::collections::HashSet::new();
+    if let Some(project) = read(PROJECT) { walk(&project, &mut out); }
+    if let Some(files) = read(drive::MANIFEST).as_ref().and_then(|m| m["files"].as_object()) {
+        out.extend(files.keys().filter(|k| k.starts_with("media/")).cloned());
+    }
+    out
 }
 
 /// A name safe to use as a file name: "03 Be Quiet / Drive" → "03 Be Quiet - Drive".
@@ -539,7 +563,7 @@ async fn frame_grab(bundle: String, source: String, time: f64, name: String) -> 
     tauri::async_runtime::spawn_blocking(move || {
         let dir = PathBuf::from(&bundle).join("media").join("grabs");
         fs::create_dir_all(&dir).map_err(err("create grabs folder"))?;
-        let file = unique_name(&dir, &safe_stem(&name), "jpg");
+        let file = unique_name(Path::new(&bundle), "grabs", &safe_stem(&name), "jpg");
         let output = Command::new(ffmpeg)
             .args(["-v", "error", "-nostdin", "-y", "-ss", &format!("{time:.3}"), "-i", &source, "-frames:v", "1", "-q:v", "3"])
             .arg(dir.join(&file))
@@ -567,7 +591,7 @@ async fn image_crop(bundle: String, source: String, x: f64, y: f64, w: f64, h: f
     tauri::async_runtime::spawn_blocking(move || {
         let dir = PathBuf::from(&bundle).join("media").join("crops");
         fs::create_dir_all(&dir).map_err(err("create crops folder"))?;
-        let file = unique_name(&dir, &safe_stem(&name), "jpg");
+        let file = unique_name(Path::new(&bundle), "crops", &safe_stem(&name), "jpg");
         let crop = format!("crop=iw*{w:.5}:ih*{h:.5}:iw*{x:.5}:ih*{y:.5}");
         let run = |input: &Path| {
             Command::new(&ffmpeg)
@@ -613,6 +637,15 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .on_window_event(|window, event| {
+            // The pop-out player (src/popout.ts) closes with the main window, so the app quits as before.
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
+                use tauri::Manager;
+                if let Some(player) = window.app_handle().get_webview_window("player") {
+                    let _ = player.close();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             bundle_create, bundle_open, bundle_save, media_import, side_read, side_write, list_folder, probe_media,
             ltc_scan, clip_cut, frame_grab, image_crop, media_save,
@@ -694,11 +727,16 @@ mod tests {
     fn safe_names() {
         assert_eq!(safe_stem("03 Be Quiet / Drive: Far"), "03 Be Quiet - Drive- Far");
         assert_eq!(safe_stem("..."), "clip");
-        let dir = temp_dir("names");
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("a.mp4"), b"x").unwrap();
-        assert_eq!(unique_name(&dir, "a", "mp4"), "a_2.mp4");
-        assert_eq!(unique_name(&dir, "b", "mp4"), "b.mp4");
+        let bundle = temp_dir("names");
+        fs::create_dir_all(bundle.join("media/clips")).unwrap();
+        fs::write(bundle.join("media/clips/a.mp4"), b"x").unwrap();
+        assert_eq!(unique_name(&bundle, "clips", "a", "mp4"), "a_2.mp4");
+        assert_eq!(unique_name(&bundle, "clips", "b", "mp4"), "b.mp4");
+        // Stills the show uses that aren't on this Mac (in Drive, or named in the show) are taken too.
+        fs::write(bundle.join(PROJECT), r#"{"songs":{"s":{"gallery":["media/grabs/16 Song.jpg"]}}}"#).unwrap();
+        fs::write(bundle.join(drive::MANIFEST), r#"{"files":{"media/grabs/16 Song_2.jpg":{"id":"x"}}}"#).unwrap();
+        assert_eq!(unique_name(&bundle, "grabs", "16 Song", "jpg"), "16 Song_3.jpg");
+        assert_eq!(unique_name(&bundle, "grabs", "17 Other", "jpg"), "17 Other.jpg");
     }
 
     #[test]

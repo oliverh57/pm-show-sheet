@@ -6,6 +6,9 @@ export const DEPTS = ["CORE", "STATUS", "COLOUR", "CONTENT", "CHOREO", "LX", "VI
 export const MAX_SWATCHES = 4;
 export const CORE_COLUMN_IDS = ["num", "name", "bpm"]; // can't be deleted
 
+/** Whether the show has a field (AUDIO VERSION, TC…): the others can be deleted, and then show nowhere. */
+export const hasColumn = (show: Show, colId: string) => show.columns.some((c) => c.id === colId);
+
 export function newId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 }
@@ -426,7 +429,8 @@ export function clipCategory(show: Show, clip: Clip): string {
 
 /**
  * Move one of a song's clips into another category (an image column id), away from the rest of its record's: it shows
- * in that category's clip column, and the song's still from it moves with it, if the new category's picture is empty.
+ * in that category's clip column, and its thumbnail (the song's still from it) goes with it, wherever it was filed,
+ * taking the place of the picture already there. Moved out of General, it stops being the main image too.
  */
 export function moveClip(show: Show, songId: string, path: string, category: string) {
   const song = show.songs[songId];
@@ -437,7 +441,16 @@ export function moveClip(show: Show, songId: string, path: string, category: str
   if (to === recordCategory(show, clip)) delete clip.category;
   else clip.category = to;
   ensureClipColumn(show, to);
-  if (to !== from) moveStills(show, song, from, to, new Set(clipStills(song, clip)));
+  const stills = new Set(clipStills(song, clip));
+  const still = clip.still ?? [...stills][0];
+  if (!still) return;
+  const at = imageCategory(show, song, still);
+  if (at && at !== to) delete song.images![at];
+  if (from === GENERAL && to !== GENERAL && stills.has(song.hero_crop?.src ?? song.hero ?? "")) {
+    song.hero = (song.gallery ?? []).find((p) => !stills.has(p));
+    delete song.hero_crop;
+  }
+  setSongImage(show, songId, to, still);
 }
 
 /** The clips a clip column shows: those in its category (every clip, for one with none). */
@@ -997,7 +1010,7 @@ export function recordMedia(show: Show, id: string): { clips: string[]; stills: 
 }
 
 /** The song's stills made with one of its clips. */
-function clipStills(song: Song, c: Clip): string[] {
+export function clipStills(song: Song, c: Clip): string[] {
   // Clips from before stills were recorded on them share the still's name: media/clips/01 X.mp4 ↔ media/grabs/01 X.jpg (or 01 X_2.jpg).
   const stem = fileName(c.path).replace(/\.[^.]+$/, "");
   const same = (p: string) => p.startsWith("media/grabs/") && new RegExp(`^${stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(_\\d+)?\\.jpg$`).test(fileName(p));
@@ -1097,10 +1110,10 @@ export function showRecords(show: Show): SourceRecord[] {
   return (show.records ?? []).filter((r) => r.scope === "show");
 }
 
-/** Keeps the AUDIO VERSION field in step with the newest audio file added for the song. */
+/** Keeps the AUDIO VERSION field (when the show has it) in step with the newest audio file added for the song. */
 export function syncAudioField(show: Show, songId: string) {
   const latest = songAudio(show, songId)[0];
-  if (latest) show.songs[songId].fields.audio = latest.version;
+  if (latest && hasColumn(show, "audio")) show.songs[songId].fields.audio = latest.version;
 }
 
 /** Guess a version label from a filename: V4.1, v20250609b, _012025_… */
@@ -1282,7 +1295,7 @@ export function tcSeconds(tc: string, fps = 25): number | null {
 export function addSongWith(show: Show, name: string, tc = "", version = "", bpm = ""): string {
   const id = addSong(show, "set_order", undefined, name);
   if (tc) show.songs[id].fields.tc = tc;
-  if (version) show.songs[id].fields.audio = version;
+  if (version && hasColumn(show, "audio")) show.songs[id].fields.audio = version;
   if (bpm) show.songs[id].fields.bpm = bpm;
   return id;
 }

@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "popout",
+  "description": "Capability for the pop-out video player window (src/popout.ts)",
+  "windows": [
+    "player"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-theme",
+    "core:window:allow-set-title",
+    "core:window:allow-set-always-on-top"
+  ]
+}

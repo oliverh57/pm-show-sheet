@@ -8,6 +8,7 @@ import type { ReviewComment, Show, Song } from "../model/types";
 import { useStore } from "../store";
 import { Icon } from "./icons";
 import { MediaPlayer } from "./Player";
+import { popOut } from "../popout";
 import { Review, type ReviewAnchor, type ReviewTarget } from "./Review";
 import { SaveCopy, SongSaveMenu } from "./SaveCopy";
 import { formatTime } from "./SongDrawer";
@@ -98,6 +99,14 @@ export function MediaViewer({ song, start, play, comment, onClose }: Props) {
   const target = reviewTarget(item, videoRef, imageRef);
   const review = Boolean(target);
   const open = itemComments(show, item).filter((c) => !c.done).length;
+  // The video carries on in its own small window over the app (popout.ts), and the viewer gets out of the way.
+  const popOutItem = () => {
+    if (item.kind !== "video") return;
+    const el = videoRef.current;
+    popOut({ path: item.path, label: `${song.fields.name || "Untitled"}: ${item.label}`, ltc: item.ltc, channels: item.channels, at: el?.currentTime ?? 0, play: el ? !el.paused : true });
+    el?.pause();
+    onClose();
+  };
   const toggleReview = () => {
     setReviewing(!reviewing);
     try { localStorage.setItem(REVIEW_KEY, reviewing ? "off" : "on"); } catch { /* storage unavailable */ }
@@ -117,6 +126,11 @@ export function MediaViewer({ song, start, play, comment, onClose }: Props) {
               <Icon name="comment" size="sm" /> {open ? `${open} open` : "Comments"}
             </button>
           )}
+          {item.kind === "video" && backend.isDesktop && (
+            <button className="sm pop-out" title="Keep watching in a small window over the app, to write notes while it plays" onClick={popOutItem}>
+              <Icon name="external" size="sm" /> Pop out
+            </button>
+          )}
           <SaveCopy key={file} path={file} ltc={item.kind === "video" ? item.ltc : null} video={item.kind === "video"} />
           <SongSaveMenu show={show} bundle={bundle} song={song} />
           <button className="icon" title="Open the song" onClick={() => { onClose(); focusSong(song.id, item.kind === "image" ? "renders" : "records"); }}><Icon name="pencil" size="sm" /></button>
@@ -127,7 +141,7 @@ export function MediaViewer({ song, start, play, comment, onClose }: Props) {
         {items.length > 1 && <button className="icon nav prev" title="Previous (←)" onClick={() => step(-1)}><Icon name="chevL" /></button>}
         {item.kind === "image"
           ? <img key={item.key} ref={imageRef} src={backend.mediaUrl(bundle, item.src)} alt={item.label} draggable={false} />
-          : <MediaPlayer key={item.key} path={item.path} video autoPlay={!(review && reviewing) || (play && item.key === start)} controls={!(review && reviewing)} ltc={item.ltc} channels={item.channels} mediaRef={videoRef} />}
+          : <MediaPlayer key={item.key} path={item.path} video autoPlay={!(review && reviewing) || (play && item.key === start)} controls={!(review && reviewing)} ltc={item.ltc} channels={item.channels} mediaRef={videoRef} popOut={false} />}
         {items.length > 1 && <button className="icon nav next" title="Next (→)" onClick={() => step(1)}><Icon name="chevR" /></button>}
       </div>
       {target && reviewing && (

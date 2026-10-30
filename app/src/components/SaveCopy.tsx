@@ -40,7 +40,7 @@ export function saveWays(path: string, ltc: number | null | undefined, video: bo
 interface MenuPos { top?: number; bottom?: number; left: number; maxHeight: number }
 
 /** Saving one copy at a time, with its progress (0–1) while it runs. */
-function useSaver() {
+export function useSaver() {
   const toast = useStore((s) => s.toast);
   const [progress, setProgress] = useState<number | null>(null);
   async function save(way: Way) {

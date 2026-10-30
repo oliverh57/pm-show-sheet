@@ -6,14 +6,15 @@
 //
 // `syncShow` brings the copy and Drive together: it pulls someone else's save (merging it with edits made here), then
 // uploads what's changed here. Drive has no "only if unchanged" upload, so after each upload it checks that nobody
-// else's save landed just before it; if one did, that save is merged in and uploaded again.
+// else's save landed between the version it merged with and its own; if any did, they're merged in and uploaded again.
 import { backend, type DriveUser } from "../backend";
 import type { Show } from "../model/types";
-import { child, getFile } from "./api";
+import { child, getFile, patiently, pause } from "./api";
 import { merge3, same, type MergeConflict } from "./merge";
 
 export const PROJECT = "project.json";
 const RETRIES = 3;
+const RETRY_PAUSE_MS = 200; // before uploading a re-merge, growing each time, so busy Macs stop landing on each other
 
 export interface Manifest {
   folderId: string;
@@ -73,8 +74,8 @@ interface Revision { id: string; modifiedTime: string; lastModifyingUser?: Drive
 
 /** project.json's revisions, oldest first. */
 async function revisions(fileId: string): Promise<Revision[]> {
-  const res = await backend.googleApi<{ revisions?: Revision[] }>("GET",
-    `https://www.googleapis.com/drive/v3/files/${fileId}/revisions?pageSize=1000&fields=${encodeURIComponent("revisions(id,modifiedTime,lastModifyingUser(displayName,emailAddress,me))")}`);
+  const res = await patiently(() => backend.googleApi<{ revisions?: Revision[] }>("GET",
+    `https://www.googleapis.com/drive/v3/files/${fileId}/revisions?pageSize=1000&fields=${encodeURIComponent("revisions(id,modifiedTime,lastModifyingUser(displayName,emailAddress,me))")}`));
   return [...(res.revisions ?? [])].sort((a, b) => a.modifiedTime.localeCompare(b.modifiedTime));
 }
 
@@ -88,13 +89,17 @@ export async function lastSaves(fileId: string): Promise<Map<string, number>> {
   return out;
 }
 
-/** The revision saved just before `rev`, if it isn't `base`: someone else's save that landed between ours. */
-async function slippedIn(fileId: string, base: string | undefined, rev: string | undefined): Promise<Revision | null> {
-  if (!base || !rev) return null;
+/**
+ * The revisions saved after `base` and before ours (`rev`), newest first: other people's saves that landed in between.
+ * If `base` is gone (Drive keeps only so many revisions), just the one before ours: older ones could be from before it.
+ */
+async function slippedIn(fileId: string, base: string | undefined, rev: string | undefined): Promise<Revision[]> {
+  if (!base || !rev) return [];
   const revs = await revisions(fileId);
   const i = revs.findIndex((r) => r.id === rev);
-  if (i < 1 || !revs.some((r) => r.id === base)) return null; // can't tell (Drive prunes old revisions)
-  return revs[i - 1].id === base ? null : revs[i - 1];
+  if (i < 1) return []; // can't tell
+  const b = revs.findIndex((r) => r.id === base);
+  return revs.slice(b >= 0 ? b + 1 : i - 1, i).reverse();
 }
 
 /** Someone who edited the show. `me`: the signed-in user (on another Mac). `via`: typed in the Google Sheet. */
@@ -140,7 +145,7 @@ export interface SyncResult {
  * The result's show is written to the copy; compare it with `local` to see what came from Drive.
  */
 export function syncShow(bundle: string, local?: Show | null): Promise<SyncResult> {
-  return serial(`sync:${bundle}`, () => syncNow(bundle, local));
+  return serial(`sync:${bundle}`, () => patiently(() => syncNow(bundle, local)));
 }
 
 async function syncNow(bundle: string, localIn?: Show | null): Promise<SyncResult> {
@@ -179,22 +184,36 @@ async function syncNow(bundle: string, localIn?: Show | null): Promise<SyncResul
 
   let uploaded = false;
   for (let attempt = 0; current && canEdit && !same(base, current); attempt++) {
+    if (attempt) await pause(RETRY_PAUSE_MS * attempt * (0.5 + Math.random()));
     await backend.save(bundle, current);
     const up = await backend.driveUpload(`${bundle}/${PROJECT}`, { fileId: projectId });
     const before = base;
-    const slipped = await slippedIn(projectId, rev, up.headRevisionId).catch(() => null);
+    const slipped = await slippedIn(projectId, rev, up.headRevisionId).catch(() => []);
     base = current;
     rev = up.headRevisionId;
     uploaded = true;
     await backend.writeJson(bundle, "base.json", base);
-    if (!slipped || attempt >= RETRIES) break;
-    // Someone saved between our check and our upload, and ours replaced theirs: merge theirs back in.
-    const theirs = await download(bundle, projectId, slipped.id);
-    addEditors(editors, [editorOf(slipped.lastModifyingUser)]);
-    const r = merge3(before, current, theirs);
-    if (r.conflicts.length) merges.push({ base: before, mine: current, theirs, conflicts: r.conflicts });
-    current = r.merged;
-    conflicts.push(...r.conflicts);
+    if (!slipped.length) break;
+    // Others saved between our check and our upload, and ours replaced theirs: merge theirs back in. Newest first, so
+    // where two of theirs differ the later one wins; each clash is listed against this Mac's own edits only.
+    const mine = current;
+    let merged = current;
+    const round: Merge[] = [];
+    for (const s of slipped) {
+      const theirs = await download(bundle, projectId, s.id);
+      addEditors(editors, [editorOf(s.lastModifyingUser)]);
+      const r = merge3(before, merged, theirs);
+      if (r.conflicts.length) round.unshift({ base: before, mine, theirs, conflicts: r.conflicts });
+      merged = r.merged;
+      conflicts.push(...r.conflicts);
+    }
+    merges.push(...round);
+    current = merged;
+    if (attempt >= RETRIES) {
+      // Still busy: what was merged stays on this Mac (it's not in Drive yet) for the next save or pull to upload.
+      await backend.save(bundle, merged);
+      break;
+    }
   }
 
   await updateManifest(bundle, (x) => { x.projectId = projectId; x.rev = rev; x.canEdit = canEdit; });

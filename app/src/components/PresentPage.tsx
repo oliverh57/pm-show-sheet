@@ -4,7 +4,7 @@
 // has the comments on the image or clip on screen (as in the media viewer); the thumbnails show which have open ones.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { backend } from "../backend";
-import { deptColour, deptList, deptName, fieldLabel, fieldSwatches, isFieldColumn, openReviews, setField, songAudio, toggleStatus } from "../model/ops";
+import { deptColour, deptList, deptName, fieldLabel, fieldSwatches, hasColumn, isFieldColumn, openReviews, setField, songAudio, toggleStatus } from "../model/ops";
 import { swatchFill } from "../model/gels";
 import type { ColourSwatch, ColumnDef, Show, Song } from "../model/types";
 import { useStore } from "../store";
@@ -149,7 +149,7 @@ function SongSlide({ show, song, position, tab, onTab }: { show: Show; song: Son
         <div className="pv-stats">
           <label><span>TC start</span><DraftInput mono value={song.fields.tc ?? ""} placeholder="—" onCommit={(v) => set("tc", v)} /></label>
           <label><span>BPM</span><DraftInput value={song.fields.bpm ?? ""} placeholder="—" onCommit={(v) => set("bpm", v.trim())} /></label>
-          <label><span>Audio version</span><DraftInput value={song.fields.audio ?? ""} placeholder="—" onCommit={(v) => set("audio", v)} /></label>
+          {hasColumn(show, "audio") && <label><span>Audio version</span><DraftInput value={song.fields.audio ?? ""} placeholder="—" onCommit={(v) => set("audio", v)} /></label>}
         </div>
 
         <div className="pv-ticks">

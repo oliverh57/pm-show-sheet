@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { backend } from "../backend";
 import { ltcFromName } from "../model/ops";
+import { popOut as openPopOut } from "../popout";
 import { Icon } from "./icons";
 import { useVideoHelpers } from "./videoGestures";
 
@@ -64,9 +65,12 @@ interface Props {
   autoPlay?: boolean;
   mediaRef?: React.RefObject<HTMLVideoElement | null>;
   controls?: boolean; // off when something else is the transport (the comments strip)
+  popOut?: boolean; // offer a button that moves a video to its own floating window (popout.ts); off in that window
+  label?: string; // that window's title
+  onPopOut?: () => void; // after it's popped out (the viewer closes, so the show can be worked on)
 }
 
-export function MediaPlayer({ path, video, ltc: given, channels, autoPlay, mediaRef, controls = true }: Props) {
+export function MediaPlayer({ path, video, ltc: given, channels, autoPlay, mediaRef, controls = true, popOut = true, label, onPopOut }: Props) {
   const ltc = given ?? ltcFromName(path);
   const own = useRef<HTMLVideoElement>(null);
   const ref = mediaRef ?? own;
@@ -74,9 +78,19 @@ export function MediaPlayer({ path, video, ltc: given, channels, autoPlay, media
   const { overlay } = useVideoHelpers(ref, path);
   const hasLtc = ltc !== null && ltc !== undefined;
   const common = { controls, autoPlay, preload: "metadata" as const, src: backend.streamUrl(path), crossOrigin: hasLtc ? ("anonymous" as const) : undefined };
+  // Carries on in the pop-out window from the same moment; this one pauses.
+  const popOutNow = () => {
+    const el = ref.current;
+    openPopOut({ path, label, ltc, channels, at: el?.currentTime ?? 0, play: el ? !el.paused : true });
+    el?.pause();
+    onPopOut?.();
+  };
+  const popButton = popOut && backend.isDesktop && (
+    <button className="icon popout-btn" title="Pop out: keep watching in a small window over the app" onClick={popOutNow}><Icon name="external" size="sm" /></button>
+  );
   return (
     <div className="player-inline">
-      {video ? <div className="video-wrap"><video key={path} ref={ref} {...common} playsInline />{overlay}</div> : <audio key={path} ref={ref as React.RefObject<HTMLAudioElement | null>} {...common} />}
+      {video ? <div className="video-wrap"><video key={path} ref={ref} {...common} playsInline />{overlay}{popButton}</div> : <audio key={path} ref={ref as React.RefObject<HTMLAudioElement | null>} {...common} />}
       {hasLtc && <span className="muted small"><Icon name="radio" size="sm" /> Timecode (channel {ltc + 1}) muted</span>}
     </div>
   );

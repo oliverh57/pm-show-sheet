@@ -5,22 +5,24 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { backend } from "../backend";
 import {
-  addChoiceOption, archiveSong, deleteSong, deptList, deptName, fieldLabel, isFieldColumn, listOf, moveChoiceOption,
+  addChoiceOption, archiveSong, deleteSong, deptList, deptName, fieldLabel, hasColumn, isFieldColumn, listOf, moveChoiceOption,
   openReviews, removeAudio, removeChoiceOption, removeColumn, renameChoiceOption, renameField, restoreSong, reviewsOn, setField, songAudio, songRecords,
-  syncAudioField, toggleStatus,
+  syncAudioField, toggleStatus, categories, clipCategory, clipLength, clipStills, fileName, GENERAL, isHeroImage, moveClip, setHero,
 } from "../model/ops";
-import { removeRecordAndMedia } from "../library";
+import { deleteClip, removeRecordAndMedia } from "../library";
+import { popOut } from "../popout";
 import { useStore } from "../store";
 import { DraftInput, FieldInput, OptionsEditor } from "./fields";
 import { Icon } from "./icons";
 import { SongComments } from "./Comments";
 import { AudioList, RecordList } from "./MediaLists";
 import { MediaViewer } from "./MediaViewer";
-import { SaveCopy } from "./SaveCopy";
+import { MenuPopup, SaveCopy, saveWays, useMenu, useSaver } from "./SaveCopy";
+import { CategoriesDialog } from "./Categories";
 import { Colours, FieldSwatches, Media } from "./SongSections";
 import { HeroCrop } from "./HeroCrop";
 import { isGrab, thumbSource, ThumbPicker } from "./ThumbPicker";
-import type { Clip, ColumnDef } from "../model/types";
+import type { Clip, ColumnDef, Song } from "../model/types";
 
 type Tab = "overview" | "media" | "comments";
 const SECTION_TABS: Record<string, Tab> = { media: "media", renders: "media", records: "media", audio: "media", comments: "comments" };
@@ -174,7 +176,7 @@ export function SongDrawer() {
                 <div className="label">Song</div>
                 <div className="frow" data-col="tc"><span>TC start</span><DraftInput mono value={song.fields.tc ?? ""} onCommit={(v) => set("tc", v)} /></div>
                 <div className="frow" data-col="bpm"><span>BPM</span><DraftInput value={song.fields.bpm ?? ""} onCommit={(v) => set("bpm", v.trim())} /></div>
-                <div className="frow" data-col="audio"><span>Audio version</span><DraftInput value={song.fields.audio ?? ""} onCommit={(v) => set("audio", v)} /></div>
+                {hasColumn(show, "audio") && <div className="frow" data-col="audio"><span>Audio version</span><DraftInput value={song.fields.audio ?? ""} onCommit={(v) => set("audio", v)} /></div>}
                 <div className="frow" data-col="segues_into_next"><span>Segues into next</span>
                   <div className="setting-row"><span className="muted">Shows as “Cont.” in the Sheet</span>
                     <button className={`toggle ${song.segues_into_next ? "on" : ""}`} aria-label="Segues into the next song"
@@ -216,9 +218,8 @@ export function SongDrawer() {
               <div className="panel">
                 <div className="label">Clips</div>
                 {(song.clips ?? []).length === 0 && songRecords(show, song.id).length === 0 && <p className="muted" style={{ margin: 0 }}>No clips yet. Add a show record on the Media page.</p>}
-                {(song.clips ?? []).map((c) => <ClipRow key={c.path} bundle={bundle} path={c.path} still={c.still} label={`${formatTime(c.in)} – ${formatTime(c.out)} · ${c.source === "auto_tc" ? "from timecode" : "marked by hand"}`}
-                                                        open={reviewsOn(show, c.record_id, c.in, c.out).filter((r) => !r.done).length} onPlay={() => setWatching(c.path)}
-                                                        onPickThumb={() => setPicking({ replace: c.still ?? null, clip: c })} />)}
+                {(song.clips ?? []).map((c) => <ClipCard key={c.path} song={song} clip={c} comments={reviewsOn(show, c.record_id, c.in, c.out).filter((r) => !r.done).length}
+                                                         onPlay={() => setWatching(c.path)} onPickThumb={() => setPicking({ replace: c.still ?? null, clip: c })} />)}
                 <RecordList records={songRecords(show, song.id)} empty="" onWatch={setWatching} onRemove={(id) => removeRecordAndMedia(id)} />
                 <div style={{ marginTop: 10 }}><button className="sm" onClick={() => addFiles("video")}><Icon name="plus" size="sm" /> Add a song clip</button></div>
               </div>
@@ -249,20 +250,78 @@ export function SongDrawer() {
   );
 }
 
-function ClipRow({ bundle, path, still, label, open: comments, onPlay, onPickThumb }:
-                 { bundle: string; path: string; still?: string; label: string; open: number; onPlay: () => void; onPickThumb: () => void }) {
+/**
+ * One of the song's clips, with its thumbnail (a frame from it, the song's still from it) as its picture. They share a
+ * category, so the clip and its still show in the same category's columns. Click the picture to play it.
+ */
+function ClipCard({ song, clip, comments, onPlay, onPickThumb }:
+                  { song: Song; clip: Clip; comments: number; onPlay: () => void; onPickThumb: () => void }) {
+  const show = useStore((s) => s.show)!;
+  const bundle = useStore((s) => s.bundle)!;
+  const update = useStore((s) => s.update);
+  const wrap = useRef<HTMLSpanElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  const menu = useMenu(wrap, button, 270);
+  const { progress, save } = useSaver();
+  const [editing, setEditing] = useState(false);
+  const still = clip.still ?? clipStills(song, clip)[0];
+  const main = Boolean(still && isHeroImage(song, still));
+  const category = clipCategory(show, clip);
+  const name = fileName(clip.path);
+  const ways = saveWays(`${bundle}/${clip.path}`, undefined, true);
+  const act = (fn: () => unknown) => () => { menu.close(); fn(); };
+  const label = `${formatTime(clip.in)} – ${formatTime(clip.out)} · ${clip.source === "auto_tc" ? "from timecode" : "marked by hand"}`;
   return (
-    <div className="media-row clip-row">
-      {still && <img className="clip-thumb" src={backend.mediaUrl(bundle, still)} alt="" title="Play it full screen" onClick={onPlay} />}
-      <div className="media-main">
-        <strong title={path.split("/").pop()}>{path.split("/").pop()}</strong>
-        <span className="muted small">{label}</span>
-        <div className="clip-acts">
-          <button className="sm" title="Play it full screen, with its comments beside it" onClick={onPlay}><Icon name="play" size="sm" /> Play{comments ? <span className="muted"> · {comments} open</span> : null}</button>
-          <button className="sm" title="Pick the frame used as its thumbnail" onClick={onPickThumb}><Icon name="image" size="sm" /> Thumbnail</button>
-          <SaveCopy path={`${bundle}/${path}`} video />
-        </div>
+    <div className={`clip-card ${main ? "is-hero" : ""}`}>
+      <div className="clip-pic" title="Play it full screen, with its comments beside it" onClick={onPlay}>
+        {still ? <img src={backend.mediaUrl(bundle, still)} alt="" /> : <span className="clip-none"><Icon name="film" /></span>}
+        <span className="clip-play"><Icon name="play" size="sm" /></span>
+        <span className="clip-len">{formatTime(clipLength(clip))}</span>
+        {main && <span className="pill" title="Its thumbnail is the song's main image: General (the SONG IMAGE column), its card and slide">MAIN</span>}
+        {backend.isDesktop && (
+          <span className="clip-pic-acts" onClick={(e) => e.stopPropagation()}>
+            <button className="icon" title="Pop out: play it in a small window over the app, to write notes while it plays"
+                    onClick={() => popOut({ path: `${bundle}/${clip.path}`, label: `${song.fields.name || "Untitled"}: ${name}`, at: 0, play: true })}>
+              <Icon name="external" size="sm" />
+            </button>
+            <button className="icon" title="Change the thumbnail: pick another frame from the clip" onClick={onPickThumb}><Icon name="camera" size="sm" /></button>
+            <SaveCopy path={`${bundle}/${clip.path}`} video compact />
+          </span>
+        )}
       </div>
+      <div className="clip-info">
+        <div className="clip-head">
+          <div className="clip-title">
+            <strong title={name}>{name}</strong>
+            <span className="muted small">
+              {label}{comments ? ` · ${comments} open comment${comments === 1 ? "" : "s"}` : ""}{progress !== null && ` · Saving ${Math.round(progress * 100)}%`}
+            </span>
+          </div>
+          <span ref={wrap}>
+            <button ref={button} className={`icon ${menu.pos ? "on" : ""}`} title="More" onClick={menu.toggle}><Icon name="more" size="sm" /></button>
+            <MenuPopup menu={menu}>
+              <div className="save-group">
+                {still && !main && <button onClick={act(() => update((s) => setHero(s, song.id, still)))}><span>Make its thumbnail the main image</span><small>The SONG IMAGE column, card and slide</small></button>}
+                {backend.isDesktop && <button onClick={act(onPickThumb)}><span>Change thumbnail…</span><small>Pick another frame from the clip</small></button>}
+              </div>
+              <div className="save-group">
+                {ways.map((w) => <button key={w.title} onClick={act(() => save(w))}><span>{ways.length === 1 ? "Save clip as…" : `Save clip · ${w.title}`}</span>{w.hint && <small>{w.hint}</small>}</button>)}
+                {still && <button onClick={act(() => save(saveWays(`${bundle}/${still}`, null, false)[0]))}><span>Save thumbnail as…</span></button>}
+              </div>
+              <div className="save-group">
+                <button className="danger" onClick={act(() => deleteClip(song.id, clip.path))}><span>Delete this clip</span><small>Its thumbnail stays, under images</small></button>
+              </div>
+            </MenuPopup>
+          </span>
+        </div>
+        <select className={`category ${category !== GENERAL ? "on" : ""}`} value={category} aria-label="Category"
+                title="The category of the clip and its thumbnail: the columns they show in, in the Sheet and on the slide"
+                onChange={(e) => (e.target.value === "__edit" ? setEditing(true) : update((s) => moveClip(s, song.id, clip.path, e.target.value)))}>
+          {categories(show).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          <option value="__edit">Edit categories…</option>
+        </select>
+      </div>
+      {editing && <CategoriesDialog onClose={() => setEditing(false)} />}
     </div>
   );
 }

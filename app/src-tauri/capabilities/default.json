@@ -8,6 +8,8 @@
   "permissions": [
     "core:default",
     "core:window:allow-set-theme",
+    "core:webview:allow-create-webview-window",
+    "core:window:allow-set-focus",
     "opener:default",
     "dialog:default",
     "updater:default",
