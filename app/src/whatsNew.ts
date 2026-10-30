@@ -7,6 +7,16 @@ export interface ReleaseNotes {
 }
 
 export const WHATS_NEW: Record<string, ReleaseNotes> = {
+  "0.8.0": {
+    summary: "Make a REAPER project of the running order, with its audio, LTC and clips.",
+    items: [
+      "A REAPER project… button on the Running order makes a project of the songs in the set, with a marker and the tempo at the start of each.",
+      "Each song's audio is on one track and its LTC on another, so the LTC can go straight out to the desk without being heard.",
+      "Clips go on their own tracks, grouped and colour coded by category, and lined up by their LTC so they play in time with the audio.",
+      "Choose which categories and recordings to put in before saving.",
+      "Clips that aren't on this Mac download from Google Drive first, with a progress bar, so REAPER never opens with media missing.",
+    ],
+  },
   "0.7.0": {
     summary: "Pop a video out to write notes while it plays, and quieter syncing with lots of people in a show.",
     items: [
