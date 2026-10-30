@@ -189,6 +189,25 @@ pub fn paths_exist(paths: Vec<String>) -> Vec<bool> {
     paths.iter().map(|p| Path::new(p).is_file()).collect()
 }
 
+/// Which of these absolute paths are files whose data is on this Mac: not a cloud placeholder (Dropbox, iCloud) that
+/// an app reading it would sit and wait to download.
+#[tauri::command]
+pub fn paths_local(paths: Vec<String>) -> Vec<bool> {
+    paths.iter().map(|p| fs::metadata(p).map(|m| m.is_file() && !dataless(&m)).unwrap_or(false)).collect()
+}
+
+#[cfg(target_os = "macos")]
+fn dataless(m: &fs::Metadata) -> bool {
+    use std::os::macos::fs::MetadataExt;
+    const SF_DATALESS: u32 = 0x4000_0000;
+    m.st_flags() & SF_DATALESS != 0
+}
+
+#[cfg(not(target_os = "macos"))]
+fn dataless(_: &fs::Metadata) -> bool {
+    false
+}
+
 /// Delete files from a show's copy on this Mac (bundle-relative, under media/). They stay in Google Drive and download
 /// again when they're needed. Returns how many were deleted.
 #[tauri::command]

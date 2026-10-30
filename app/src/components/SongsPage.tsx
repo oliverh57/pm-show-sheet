@@ -13,6 +13,7 @@ import { swatchFill } from "../model/gels";
 import type { Show, Song } from "../model/types";
 import { useStore } from "../store";
 import { PresentPage } from "./PresentPage";
+import { ReaperButton } from "./ReaperExport";
 import { CommentBadge } from "./Review";
 import { SongSaveMenu } from "./SaveCopy";
 import { Icon } from "./icons";
@@ -211,6 +212,7 @@ export function SongsPage() {
       <div className="page-head">
         <div><h1>Running order</h1><div className="sub">{n ? "Drag to reorder" : "Add the songs in the set"}</div></div>
         <div className="acts">
+          {n > 0 && <ReaperButton />}
           {toggle}
         </div>
       </div>

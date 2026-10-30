@@ -141,7 +141,9 @@ export interface Backend {
   /** Crop an image into media/crops/ (`crop` in fractions of the picture). Returns the bundle-relative path. */
   cropImage(bundle: string, source: string, crop: CropRect, name: string): Promise<string>;
   /** Ask where to save a copy of a file, starting in Downloads with `defaultName`. */
-  chooseSavePath(defaultName: string): Promise<string | null>;
+  chooseSavePath(defaultName: string, title?: string): Promise<string | null>;
+  /** Write a text file (a REAPER project) at `path`, and open it in its app when `open`. */
+  writeProject(path: string, text: string, open: boolean): Promise<void>;
   /** Save a copy of `source` at `dest`. `dropChannel` takes the LTC channel out; `audioOnly` writes just the audio, as WAV. */
   saveCopy(job: string, source: string, dest: string, dropChannel: number | null, audioOnly: boolean, onProgress?: (fraction: number) => void): Promise<void>;
   /** The best few frames of `start`–`end` for a thumbnail (bright, sharp, colourful), as preview JPEGs outside the show. */
@@ -177,6 +179,8 @@ export interface Backend {
   driveSetCacheLimit(bytes: number): Promise<number>;
   /** Which of these absolute paths are files on this Mac. */
   pathsExist(paths: string[]): Promise<boolean[]>;
+  /** Which of these absolute paths are files whose data is on this Mac (not a Dropbox or iCloud placeholder). */
+  pathsLocal(paths: string[]): Promise<boolean[]>;
   readJson<T>(bundle: string, name: SideFile): Promise<T | null>;
   writeJson(bundle: string, name: SideFile, value: unknown): Promise<void>;
 }
@@ -346,11 +350,14 @@ const desktop: Backend = {
     await local(source);
     return (await invoke("thumb_candidates", { source, start, end, count })) as ThumbCandidate[];
   },
-  async chooseSavePath(defaultName) {
+  async chooseSavePath(defaultName, title = "Save a copy") {
     const ext = defaultName.includes(".") ? defaultName.split(".").pop()! : "";
     const defaultPath = await downloadDir().then((dir) => join(dir, defaultName)).catch(() => defaultName);
-    const path = await saveDialog({ title: "Save a copy", defaultPath, filters: ext ? [{ name: ext.toUpperCase(), extensions: [ext] }] : undefined });
+    const path = await saveDialog({ title, defaultPath, filters: ext ? [{ name: ext.toUpperCase(), extensions: [ext] }] : undefined });
     return path ?? null;
+  },
+  async writeProject(path, text, open) {
+    await invoke("project_write", { path, text, open });
   },
   async saveCopy(job, source, dest, dropChannel, audioOnly, onProgress) {
     await local(source);
@@ -402,6 +409,9 @@ const desktop: Backend = {
   },
   async pathsExist(paths) {
     return paths.length ? ((await invoke("paths_exist", { paths })) as boolean[]) : [];
+  },
+  async pathsLocal(paths) {
+    return paths.length ? ((await invoke("paths_local", { paths })) as boolean[]) : [];
   },
   async readJson<T>(bundle: string, name: SideFile) {
     return (await invoke("side_read", { bundle, name })) as T | null;
@@ -549,6 +559,11 @@ const browser: Backend = {
   async chooseSavePath(defaultName) {
     return defaultName;
   },
+  async writeProject(path, text) {
+    const href = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+    Object.assign(document.createElement("a"), { href, download: path.split("/").pop() }).click();
+    setTimeout(() => URL.revokeObjectURL(href), 1000);
+  },
   async saveCopy(_job, source, dest, dropChannel, audioOnly) {
     if (dropChannel !== null || audioOnly) throw new Error("Taking the timecode out needs the desktop app");
     const a = Object.assign(document.createElement("a"), { href: browser.fileUrl(source), download: dest });
@@ -590,6 +605,9 @@ const browser: Backend = {
     return 0;
   },
   async pathsExist(paths) {
+    return paths.map(() => true);
+  },
+  async pathsLocal(paths) {
     return paths.map(() => true);
   },
   async readJson<T>(bundle: string, name: SideFile) {

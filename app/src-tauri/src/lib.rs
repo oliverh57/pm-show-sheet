@@ -556,6 +556,18 @@ async fn media_save(app: AppHandle, job: String, source: String, dest: String, d
     .map_err(err("save copy"))?
 }
 
+/// Write a project file where the user chose to save it (a REAPER project of the set), then open it in the app
+/// that opens that kind of file when `open`.
+#[tauri::command]
+fn project_write(app: AppHandle, path: String, text: String, open: bool) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    fs::write(&path, text).map_err(err("save the project"))?;
+    if open {
+        app.opener().open_path(&path, None::<&str>).map_err(err("open the project"))?;
+    }
+    Ok(())
+}
+
 /// Save the frame at `time` seconds of a video into media/grabs/ as a JPEG. Returns the bundle-relative path.
 #[tauri::command]
 async fn frame_grab(bundle: String, source: String, time: f64, name: String) -> Result<String, String> {
@@ -648,12 +660,12 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             bundle_create, bundle_open, bundle_save, media_import, side_read, side_write, list_folder, probe_media,
-            ltc_scan, clip_cut, frame_grab, image_crop, media_save,
+            ltc_scan, clip_cut, frame_grab, image_crop, media_save, project_write,
             tools::tools_status, tools::tools_install, tools::tools_install_cancel, shows::bundle_trash_files,
             thumbs::thumb_candidates, stream::media_server,
             google::google_client_configured, google::google_set_client, google::google_sign_in,
             google::google_current_user, google::google_sign_out, google::google_api, google::google_upload,
-            drive::drive_cache_root, drive::drive_download, drive::drive_upload, drive::drive_fetch, drive::paths_exist, drive::drive_evict, drive::drive_forget,
+            drive::drive_cache_root, drive::drive_download, drive::drive_upload, drive::drive_fetch, drive::paths_exist, drive::paths_local, drive::drive_evict, drive::drive_forget,
             drive::drive_cached_shows, drive::drive_cache_size, drive::drive_open_cache, drive::drive_storage, drive::drive_set_cache_limit
         ])
         .run(tauri::generate_context!())
