@@ -7,6 +7,12 @@ export interface ReleaseNotes {
 }
 
 export const WHATS_NEW: Record<string, ReleaseNotes> = {
+  "0.8.1": {
+    summary: "Open a show's Slides deck straight from its Google Sheet.",
+    items: [
+      "Once a show has a Slides deck, the banner at the top of the SHOW SHEET and REVIEW tabs has a ▶ SLIDES DECK link to it.",
+    ],
+  },
   "0.8.0": {
     summary: "Make a REAPER project of the running order, with its audio, LTC and clips.",
     items: [
