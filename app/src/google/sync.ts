@@ -578,7 +578,8 @@ function sheetFingerprint(show: Show): string {
   return JSON.stringify([show.name, show.columns, show.set_order, show.archive,
     Object.values(show.songs).map((s) => [s.id, s.fields, s.statuses, s.colours, s.hero, s.images, s.segues_into_next, s.clips]), show.google?.clips, show.reviews,
     (show.records ?? []).map((r) => [r.id, r.image_col, r.label]), // which clip column a record's clips are in, and what they're called
-    show.google?.app_editors]); // someone new using the show in the app: push, so the lock lets them in
+    show.google?.app_editors, // someone new using the show in the app: push, so the lock lets them in
+    show.google?.slides_url]); // the banner links to the deck
 }
 
 let retryTimer: number | undefined; // set while waiting to try again after a failed sync

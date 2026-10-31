@@ -27,6 +27,12 @@ const BLACK = "#000000", WHITE = "#FFFFFF", GREY = "#8C8C8C";
  */
 export const LOGO_URL = "https://raw.githubusercontent.com/oliverh57/pm-show-sheet/main/app/src/assets/logo.png";
 const logoCell = (): Cell => ({ formula: `=IMAGE("${LOGO_URL}", 4, 44, 120)`, bg: BLACK }); // 44 px high, in the 64 px banner
+/** The banner's title, with a link to the show's Slides deck after it once there is one. */
+const titleCell = (show: Show, tab: string): Cell => {
+  const title = `${show.name}  |  ${tab}`;
+  const deck = show.google?.slides_url;
+  return { bg: BLACK, fg: WHITE, bold: true, font: FONT_HEAD, size: 18, ...(deck ? { links: [{ text: title }, { text: "▶ SLIDES DECK", url: deck }], linkSep: "      " } : { value: title }) };
+};
 const LABEL_BG = "#1A1A1A";
 const EDITABLE_LABEL_BG = "#FFD84D";
 const EDITABLE_CELL_BG = "#FFF8DC";
@@ -57,6 +63,7 @@ export interface Cell {
   overflow?: boolean; // runs on into the empty cells to its right
   halign?: "LEFT" | "CENTER" | "RIGHT";
   links?: { text: string; url?: string }[]; // one line each; a line with a url is a link
+  linkSep?: string; // what goes between `links` instead of a blank line (spaces keep them on one line)
 }
 
 function cellApi(c: Cell) {
@@ -64,7 +71,7 @@ function cellApi(c: Cell) {
   if (c.links?.length) {
     // One string, with a run per line: linked lines carry their url, the others reset to plain.
     // A blank line between them keeps several clips in one cell visibly apart.
-    const SEP = "\n\n";
+    const SEP = c.linkSep ?? "\n\n";
     let at = 0;
     d.textFormatRuns = c.links.map((l) => {
       const run = { startIndex: at, format: l.url ? { link: { uri: l.url }, underline: true } : {} };
@@ -156,7 +163,7 @@ export function showTab(show: Show, imageUrls: Record<string, string>, clipUrls:
 
   const banner: Cell[] = Array.from({ length: n }, () => ({ bg: BLACK }));
   banner[1] = logoCell();
-  banner[frozen] = { value: `${show.name}  |  ${title}`, bg: BLACK, fg: WHITE, bold: true, font: FONT_HEAD, size: 18 };
+  banner[frozen] = titleCell(show, title);
   const merges: TabGrid["merges"] = [[1, 2, 1, frozen], [1, 2, frozen, n]];
 
   const depts = cols.map((c) => c.dept ?? "CORE");
@@ -694,7 +701,7 @@ export function reviewTab(show: Show, imageUrls: Record<string, string>, clipUrl
   const frozen = colIds.indexOf("song") + 1;
   const banner: Cell[] = Array.from({ length: n }, () => ({ bg: BLACK }));
   banner[1] = logoCell();
-  banner[frozen] = { value: `${show.name}  |  ${REVIEW_TAB}`, bg: BLACK, fg: WHITE, bold: true, font: FONT_HEAD, size: 18 };
+  banner[frozen] = titleCell(show, REVIEW_TAB);
   const band = DEPT_COLOURS.VIDEO;
   // The open-comment count, worked out by the Sheet so ticking RESOLVED there changes it at once: rows with a comment
   // that aren't ticked or replies (heading rows have no comment).

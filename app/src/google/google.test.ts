@@ -27,6 +27,19 @@ describe("SHOW SHEET tab", () => {
       .find((r) => r?.condition.type === "ONE_OF_LIST");
     expect(rule?.condition.values).toEqual([{ userEnteredValue: "Out" }, { userEnteredValue: "Deck" }]);
   });
+  it("links the banner to the Slides deck once there is one", () => {
+    const show = fresh();
+    const title = (s: Show) => showTab(s, {}).headerRows[1][showTab(s, {}).frozenCols];
+    expect(title(show)).toMatchObject({ value: `${show.name}  |  SHOW SHEET` });
+    show.google = { ...show.google, slides_url: "https://docs.google.com/presentation/d/deck/edit" };
+    const cells = contentRequests(showTab(show, {}), 1)[0] as { updateCells: { rows: { values: { userEnteredValue?: { stringValue?: string }; textFormatRuns?: { startIndex: number; format: { link?: { uri: string } } }[] }[] }[] } };
+    const cell = cells.updateCells.rows[1].values[showTab(show, {}).frozenCols];
+    const text = cell.userEnteredValue?.stringValue ?? "";
+    expect(text).not.toContain("\n");
+    const link = cell.textFormatRuns?.find((r) => r.format.link);
+    expect(link?.format.link?.uri).toBe("https://docs.google.com/presentation/d/deck/edit");
+    expect(text.slice(link!.startIndex)).toBe("▶ SLIDES DECK");
+  });
   it("clears every old validation rule before setting the current ones, so moved columns don't keep them", () => {
     const g = showTab(fresh(), {});
     const vals = contentRequests(g, 1).flatMap((r) => ("setDataValidation" in r ? [r.setDataValidation as { range: Record<string, number>; rule?: unknown }] : []));
