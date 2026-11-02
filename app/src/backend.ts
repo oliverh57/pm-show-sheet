@@ -11,7 +11,7 @@ import { showCover } from "./model/ops";
 import type { CropRect, InboxState, LtcResult, MediaInfo, Show, TcBlock } from "./model/types";
 import sample from "./model/sample_show.json";
 
-export type MediaKind = "renders" | "grabs" | "clips" | "layout" | "inspo";
+export type MediaKind = "renders" | "grabs" | "clips" | "layout" | "inspo" | "audio";
 export const IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "tif", "tiff", "webp", "gif", "heic"];
 
 export interface FolderFile {

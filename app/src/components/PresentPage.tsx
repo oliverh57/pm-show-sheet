@@ -4,7 +4,7 @@
 // has the comments on the image or clip on screen (as in the media viewer); the thumbnails show which have open ones.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { backend } from "../backend";
-import { deptColour, deptList, deptName, fieldLabel, fieldSwatches, hasColumn, isFieldColumn, openReviews, setField, songAudio, toggleStatus } from "../model/ops";
+import { deptColour, deptList, deptName, fieldLabel, fieldSwatches, hasColumn, inBundle, isFieldColumn, openReviews, setField, songAudio, toggleStatus } from "../model/ops";
 import { swatchFill } from "../model/gels";
 import type { ColourSwatch, ColumnDef, Show, Song } from "../model/types";
 import { useStore } from "../store";
@@ -226,6 +226,7 @@ function SwatchField({ swatches, editor }: { swatches: ColourSwatch[]; editor: R
 
 /** The song's audio, newest version first, ready to play. */
 function SongAudio({ show, song }: { show: Show; song: Song }) {
+  const bundle = useStore((s) => s.bundle)!;
   const versions = songAudio(show, song.id);
   const [id, setId] = useState(versions[0]?.id);
   const a = versions.find((x) => x.id === id) ?? versions[0];
@@ -239,9 +240,9 @@ function SongAudio({ show, song }: { show: Show; song: Song }) {
               {versions.map((x, i) => <option key={x.id} value={x.id}>{x.version || x.name}{i === 0 ? " (current)" : ""}</option>)}
             </select>
           : <span className="chip">{a.version || a.name}</span>}
-        <SaveCopy key={a.id} path={a.path} ltc={a.ltc?.channel} compact />
+        <SaveCopy key={a.id} path={inBundle(bundle, a.path)} ltc={a.ltc?.channel} compact />
       </h3>
-      <MediaPlayer key={a.id} path={a.path} video={false} ltc={a.ltc?.channel} channels={a.info?.audio_channels} />
+      <MediaPlayer key={a.id} path={inBundle(bundle, a.path)} video={false} ltc={a.ltc?.channel} channels={a.info?.audio_channels} />
       <div className="muted small">{a.name}{infoLine(a.info) && ` · ${infoLine(a.info)}`}</div>
     </section>
   );

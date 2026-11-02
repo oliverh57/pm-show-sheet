@@ -63,12 +63,13 @@ export function watchDownloads(): () => void {
   }));
 }
 
-/** Every media path the show uses (bundle-relative): images, crops, clips and their stills, comment frames, the cover. */
+/** Every media path the show uses (bundle-relative): images, crops, clips and their stills, song audio, comment frames, the cover. */
 export function showMedia(show: Show): string[] {
   const songs = Object.values(show.songs ?? {});
   const paths = [
     ...songs.flatMap((s) => [...(s.gallery ?? []), ...songImagePaths(s), s.hero_crop?.src ?? "", ...(s.clips ?? []).flatMap((c) => [c.path, c.still ?? ""])]),
     ...(show.records ?? []).flatMap((r) => r.stills ?? []),
+    ...(show.audio ?? []).map((a) => a.path), // song audio, copied into the show (show audio is linked in place)
     ...(show.reviews ?? []).flatMap((c) => [c.still ?? "", c.image ?? ""]),
     show.cover ?? "",
     show.branding?.logo ?? "",

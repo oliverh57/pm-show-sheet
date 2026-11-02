@@ -6,10 +6,10 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { backend } from "../backend";
 import {
   addChoiceOption, archiveSong, deleteSong, deptList, deptName, fieldLabel, hasColumn, isFieldColumn, listOf, moveChoiceOption,
-  openReviews, removeAudio, removeChoiceOption, removeColumn, renameChoiceOption, renameField, restoreSong, reviewsOn, setField, songAudio, songRecords,
-  syncAudioField, toggleStatus, categories, clipCategory, clipLength, clipStills, fileName, GENERAL, isHeroImage, moveClip, setHero,
+  openReviews, removeChoiceOption, removeColumn, renameChoiceOption, renameField, restoreSong, reviewsOn, setField, songAudio, songRecords,
+  toggleStatus, categories, clipCategory, clipLength, clipStills, fileName, GENERAL, isHeroImage, moveClip, setHero,
 } from "../model/ops";
-import { deleteClip, removeRecordAndMedia } from "../library";
+import { deleteClip, removeAudioFile, removeRecordAndMedia } from "../library";
 import { popOut } from "../popout";
 import { useStore } from "../store";
 import { DraftInput, FieldInput, OptionsEditor } from "./fields";
@@ -226,7 +226,7 @@ export function SongDrawer() {
               <div className="panel">
                 <div className="label">Audio versions</div>
                 <AudioList files={songAudio(show, song.id)} empty="No audio for this song yet." onPlay={setWatching}
-                           onRemove={(id) => update((s) => { removeAudio(s, id); syncAudioField(s, song.id); })} />
+                           onRemove={(id) => removeAudioFile(id)} />
                 <div style={{ marginTop: 10 }}><button className="sm" onClick={() => addFiles("audio")}><Icon name="plus" size="sm" /> Add a version</button></div>
               </div>
             </>

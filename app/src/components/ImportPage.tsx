@@ -167,6 +167,7 @@ const renderCategory = (show: Show) => categories(show).find((c) => c.id === dep
 
 function WhatStep({ files, onNext }: { files: string[]; onNext: (step: Step, sources?: Source[], paths?: string[], make?: Make, category?: string) => void }) {
   const show = useStore((s) => s.show)!;
+  const bundle = useStore((s) => s.bundle)!;
   const { update, endImport, focusSong, setView, setMediaTab, toast } = useStore.getState();
   const songIds = [...show.set_order, ...show.archive];
   const [what, setWhat] = useState<What>(guessWhat(files));
@@ -270,11 +271,21 @@ function WhatStep({ files, onNext }: { files: string[]; onNext: (step: Step, sou
         const versions = files.map((p) => version.trim() || guessVersion(p));
         const replace = await askToReplaceAudio(songId, files.map((p, i) => ({ path: p, info: infos[i], version: versions[i] })));
         if (replace === null) return;
-        update((s) => {
-          if (replace) for (const a of songAudio(s, songId)) removeAudio(s, a.id); // linked in place: the files stay
-          files.forEach((p, i) => { addAudio(s, { path: p, scope: "song", song_id: songId, version: versions[i], info: infos[i] }); });
+        // Copied into the show, to go up to Drive with its other media. Replaced copies go to the bin.
+        let copies: string[];
+        try {
+          copies = await Promise.all(files.map((p) => backend.importMedia(bundle, p, "audio")));
+        } catch (e) {
+          toast(`Couldn't copy the audio into the show: ${String(e).replace(/^Error: /, "")}`);
+          return;
+        }
+        const add = (s: Show) => {
+          if (replace) for (const a of songAudio(s, songId)) removeAudio(s, a.id);
+          copies.forEach((p, i) => { addAudio(s, { path: p, name: fileName(files[i]), scope: "song", song_id: songId, version: versions[i], info: infos[i] }); });
           syncAudioField(s, songId);
-        });
+        };
+        if (replace) await changeAndBin(add);
+        else update(add);
         toast(`${replace ? "Replaced the audio for" : "New audio for"} ${show.songs[songId]?.fields.name || "the song"}`);
         endImport();
         setView("songs");

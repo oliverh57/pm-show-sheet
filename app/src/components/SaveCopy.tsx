@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { backend } from "../backend";
-import { ltcFromName, songAudio, songRecords } from "../model/ops";
+import { inBundle, ltcFromName, songAudio, songRecords } from "../model/ops";
 import type { Show, Song } from "../model/types";
 import { useStore } from "../store";
 import { Icon } from "./icons";
@@ -133,7 +133,7 @@ export function songFiles(show: Show, bundle: string, song: Song): { group: stri
       ...(song.clips ?? []).map((c) => ({ path: `${bundle}/${c.path}`, name: name(c.path), video: true })),
       ...songRecords(show, song.id).map((r) => ({ path: r.path, name: r.name, ltc: r.ltc?.channel, video: true })),
     ] },
-    { group: "Audio", files: songAudio(show, song.id).map((a) => ({ path: a.path, name: a.version ? `${a.version} · ${a.name}` : a.name, ltc: a.ltc?.channel, video: false })) },
+    { group: "Audio", files: songAudio(show, song.id).map((a) => ({ path: inBundle(bundle, a.path), name: a.version ? `${a.version} · ${a.name}` : a.name, ltc: a.ltc?.channel, video: false })) },
   ].filter((g) => g.files.length > 0);
 }
 

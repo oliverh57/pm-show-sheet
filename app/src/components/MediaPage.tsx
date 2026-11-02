@@ -2,7 +2,7 @@
 // renders in the Render inbox tab.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { backend } from "../backend";
-import { categories, categoryName, cleanLabel, clipCategory, clipLength, clipName, fileName, guessRecordLabel, ltcFromName, moveClip, recordMedia, removeAudio, retagRecord, setAudioVersion, syncAudioField } from "../model/ops";
+import { categories, categoryName, cleanLabel, clipCategory, clipLength, clipName, fileName, guessRecordLabel, ltcFromName, moveClip, recordMedia, retagRecord, setAudioVersion } from "../model/ops";
 import { CategoriesDialog } from "./Categories";
 import { useStore } from "../store";
 import { Icon, type IconName } from "./icons";
@@ -11,7 +11,7 @@ import { DraftInput } from "./fields";
 import { MediaPlayer } from "./Player";
 import { audioItem, MediaViewer, type Item } from "./MediaViewer";
 import { formatTime } from "./SongDrawer";
-import { deleteClip, deleteRecordStill, deleteRecordStills, deleteSongImage, removeRecordAndMedia } from "../library";
+import { deleteClip, deleteRecordStill, deleteRecordStills, deleteSongImage, removeAudioFile, removeRecordAndMedia } from "../library";
 import { RenderInbox } from "./RenderInbox";
 import { MenuPopup, SaveCopy, useMenu } from "./SaveCopy";
 import { CloudButton, useFileStates } from "./CloudFiles";
@@ -288,7 +288,7 @@ function Library() {
     audioSongs ? `${audioSongs} song${audioSongs === 1 ? "" : "s"}` : "",
     showAudio ? `${showAudio} full show` : "",
   ].filter(Boolean).join(" · ");
-  const statePaths = [...records.map((r) => r.path), ...audio.map((a) => a.path), ...allClips.map((c) => `${bundle}/${c.path}`), ...images.map((i) => inBundle(i.path))];
+  const statePaths = [...records.map((r) => r.path), ...audio.map((a) => inBundle(a.path)), ...allClips.map((c) => `${bundle}/${c.path}`), ...images.map((i) => inBundle(i.path))];
   const [states, refreshStates] = useFileStates(statePaths);
   // The clips and images in Google Drive, and how much of that is downloaded: measured again as files come and go.
   const sizeKey = [...statePaths, ...[...fromRecords].map(inBundle)].join("\n");
@@ -472,7 +472,7 @@ function Library() {
               <GroupHead icon="image" open={!folded.has("images")} onToggle={() => toggleFold("images")}>
                 Renders &amp; stills<div className="muted small" style={{ fontWeight: 400 }}>{images.length} image{images.length === 1 ? "" : "s"} · {imageSongs} song{imageSongs === 1 ? "" : "s"}</div>
               </GroupHead>
-              <span className="acts"><CloudButton all={images.length > 1} paths={images.map((i) => inBundle(i.path))} states={states} refresh={refreshStates} /></span>
+              <span className="acts"><CloudButton all={images.length > 1} paths={images.map((i) => inBundle(i.path))} states={states} refresh={refreshStates} /><span className="menu-gap" /></span>
             </div>
             {!folded.has("images") && <div className="clip-list">
               {images.map(({ songId, path, hero }) => {
@@ -555,7 +555,8 @@ function Library() {
               <GroupHead icon="music" open={!folded.has("audio")} onToggle={() => toggleFold("audio")}>
                 Audio<div className="muted small" style={{ fontWeight: 400 }}>{audioHeadline}</div>
               </GroupHead>
-              <span className="acts" />
+              {/* Audio copied into the show is in Google Drive; a linked file (an absolute path) stays put, with no button. */}
+              <span className="acts"><CloudButton all={audio.length > 1} paths={audio.map((a) => inBundle(a.path))} states={states} refresh={refreshStates} /><span className="menu-gap" /></span>
             </div>
             {!folded.has("audio") && <div className="clip-list">
               {audioSorted.map((a) => {
@@ -565,17 +566,17 @@ function Library() {
                     <div className="clip-item">
                       <Icon name="music" size="sm" />
                       <DraftInput className="audio-version" value={a.version} placeholder="Version" fit onCommit={(v) => update((s) => setAudioVersion(s, a.id, v))} />
-                      <span className="nm" title={a.path}>{a.scope === "song" ? songName(a.song_id) : "Show audio"}
+                      <span className="nm" title={inBundle(a.path)}>{a.scope === "song" ? songName(a.song_id) : "Show audio"}
                         <span className="muted small"> · {a.name}{info ? ` · ${info}` : ""}</span>
                       </span>
                       {a.scope === "show" && <button className="sm" onClick={() => startImport([], { kind: "audio", id: a.id })}><Icon name="radio" size="sm" /> Match to songs</button>}
-                      {states[a.path] === "missing" && <Locate kind="audio" id={a.id} path={a.path} onFound={refreshStates} />}
-                      {states[a.path] !== "missing" && <SaveCopy path={a.path} ltc={a.ltc?.channel} compact />}
-                      <button className="icon" title="Play full screen" onClick={() => setWatching({ songId: a.scope === "song" && a.song_id ? a.song_id : "", path: a.id, alone: audioItem(a) })}>
+                      {states[inBundle(a.path)] === "missing" && <Locate kind="audio" id={a.id} path={inBundle(a.path)} onFound={refreshStates} />}
+                      {states[inBundle(a.path)] !== "missing" && <SaveCopy path={inBundle(a.path)} ltc={a.ltc?.channel} compact />}
+                      <button className="icon" title="Play full screen" onClick={() => setWatching({ songId: a.scope === "song" && a.song_id ? a.song_id : "", path: a.id, alone: audioItem(a, bundle) })}>
                         <Icon name="play" size="sm" />
                       </button>
-                      <button className="icon" title="Remove (the file stays where it is)"
-                              onClick={() => update((s) => { removeAudio(s, a.id); if (a.song_id) syncAudioField(s, a.song_id); })}><Icon name="x" size="sm" /></button>
+                      <button className="icon" title={a.path.startsWith("/") ? "Remove (the file stays where it is)" : "Remove (its copy in the show goes to the bin)"}
+                              onClick={() => removeAudioFile(a.id)}><Icon name="x" size="sm" /></button>
                     </div>
                   </div>
                 );

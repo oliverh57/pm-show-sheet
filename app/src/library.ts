@@ -7,7 +7,7 @@ import { findShows, SHOW_EXT, summaryProps } from "./drive/list";
 import { checkBack, openFromDrive } from "./drive/live";
 import { refreshManifest, trashMedia } from "./drive/media";
 import { readManifest, showDir, syncShow, updateManifest } from "./drive/show";
-import { bundleName, clipName, fileName, migrate, newShow, orphanRecordIds, recordMedia, removeImage, removeRecord, removeRecordStill, removeRecordStills } from "./model/ops";
+import { bundleName, clipName, fileName, migrate, newShow, orphanRecordIds, recordMedia, removeAudio, removeImage, removeRecord, removeRecordStill, removeRecordStills, syncAudioField } from "./model/ops";
 import type { Show } from "./model/types";
 import { sweepShowsDaily } from "./storage";
 import { useStore } from "./store";
@@ -100,7 +100,25 @@ export async function openShow(path: string) {
     await refreshManifest(path);
     if (leftovers.length) await trashMedia(path, leftovers);
     if (!readOnly) await binUnusedMedia(path, show);
+    if (!readOnly) await copyLinkedAudio(path);
   })().catch(() => {});
+}
+
+/**
+ * Song audio from before it was copied into the show was linked where it was on one Mac's disks: copy the files that are
+ * on this Mac into the show, to go up to Drive with the rest. Audio linked on another Mac is copied in there.
+ */
+async function copyLinkedAudio(bundle: string) {
+  const linked = (useStore.getState().show?.audio ?? []).filter((a) => a.scope === "song" && a.path.startsWith("/"));
+  if (!linked.length) return;
+  const here = await backend.pathsExist(linked.map((a) => a.path));
+  for (const [i, a] of linked.entries()) {
+    if (!here[i] || useStore.getState().bundle !== bundle) continue;
+    const rel = await backend.importMedia(bundle, a.path, "audio");
+    const st = useStore.getState();
+    if (st.bundle !== bundle) return;
+    st.update((s) => { const f = (s.audio ?? []).find((x) => x.id === a.id && x.path === a.path); if (f) f.path = rel; });
+  }
 }
 
 const UNUSED_AFTER_MS = 60 * 60 * 1000; // a clip run on another Mac may not be in the show here yet
@@ -120,6 +138,15 @@ async function binUnusedMedia(bundle: string, show: Show) {
     for (const [rel, f] of Object.entries(m.files)) if (old(rel, f.modified ?? 0) && f.modified) unused.add(rel);
   }
   await trashMedia(bundle, [...unused]);
+}
+
+/** Take an audio file off the show. A song's copy in the show goes to the bin; show audio is linked, so its file stays. */
+export function removeAudioFile(id: string): Promise<void> {
+  return changeAndBin((s) => {
+    const songId = (s.audio ?? []).find((a) => a.id === id)?.song_id;
+    removeAudio(s, id);
+    if (songId) syncAudioField(s, songId);
+  });
 }
 
 /** Remove records from the open show (one, or a group of them), binning the clips and stills made from them (after asking). */
@@ -173,7 +200,10 @@ export async function deleteRecordStill(id: string, path: string): Promise<void>
 
 /** Files the show's songs use, so a file still used by another song isn't binned with the one being deleted. */
 function usedPaths(show: Show): Set<string> {
-  return new Set(Object.values(show.songs).flatMap((s) => [...(s.clips ?? []).flatMap((c) => [c.path, c.still ?? ""]), ...(s.gallery ?? []), s.hero ?? ""]));
+  return new Set([
+    ...Object.values(show.songs).flatMap((s) => [...(s.clips ?? []).flatMap((c) => [c.path, c.still ?? ""]), ...(s.gallery ?? []), s.hero ?? ""]),
+    ...(show.audio ?? []).map((a) => a.path),
+  ]);
 }
 
 /** Delete things from the open show after asking, binning the show's own files that nothing uses any more. */

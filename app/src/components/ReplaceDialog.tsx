@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { backend } from "../backend";
-import { categories, clipCategory, fileName, GENERAL, songAudio, songRecords } from "../model/ops";
+import { categories, clipCategory, fileName, GENERAL, inBundle, songAudio, songRecords } from "../model/ops";
 import type { MediaInfo, Show, SongMark, SourceRecord } from "../model/types";
 import { useStore } from "../store";
 import { Icon } from "./icons";
@@ -84,16 +84,16 @@ export async function askToReplaceVideos(songId: string, category: string, files
 
 /** Ask whether a song's audio makes way for these new files: true to replace, false to add both, null when cancelled. */
 export async function askToReplaceAudio(songId: string, files: (NewFile & { version: string })[]): Promise<boolean | null> {
-  const { show } = useStore.getState();
-  if (!show?.songs[songId]) return false;
+  const { show, bundle } = useStore.getState();
+  if (!show?.songs[songId] || !bundle) return false;
   const pic = (key: string, version: string, path: string, info?: MediaInfo) => ({
     key, label: version ? `Audio ${version}` : "Audio", detail: [fileName(path), info?.duration && formatTime(info.duration)].filter(Boolean).join(" · "),
     src: backend.streamUrl(path), at: 0, audio: true,
   });
-  const now = songAudio(show, songId).map((a) => pic(a.id, a.version, a.path, a.info));
+  const now = songAudio(show, songId).map((a) => pic(a.id, a.version, inBundle(bundle, a.path), a.info));
   const next = files.map((f) => pic(f.path, f.version, f.path, f.info));
   const rows = now.length ? [{ songId, name: show.songs[songId].fields.name || "Untitled", now, next }] : [];
-  const answer = await ask({ audio: true, place: "", nowLabel: "Audio now", newLabel: "New audio", note: "Replaced audio comes off the song. Its file stays where it is.", rows });
+  const answer = await ask({ audio: true, place: "", nowLabel: "Audio now", newLabel: "New audio", note: "Replaced audio comes off the song, and its copy in the show moves to the bin.", rows });
   return answer && answer.length > 0;
 }
 

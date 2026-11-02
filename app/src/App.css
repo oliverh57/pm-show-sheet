@@ -1179,6 +1179,7 @@ textarea.cell-input { height: 120px; resize: none; }
 .rec-group { border-bottom: 1px solid var(--line); }
 .rec-group:last-child { border-bottom: 0; }
 .rec-group .lib-row { border-bottom: 0; grid-template-columns: 36px 1fr auto; }
+.rec-group .lib-row .menu-gap { width: 28px; flex: none; } /* where a record's ⋯ menu is, so the buttons line up */
 .rec-group .fold { cursor: pointer; user-select: none; }
 .rec-group .nm.fold > svg { color: var(--muted); vertical-align: -2px; margin: 0 2px 0 -2px; }
 .rec-group .clip-list { border-bottom: 0; border-top: 1px solid var(--line); }

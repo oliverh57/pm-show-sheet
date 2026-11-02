@@ -80,7 +80,7 @@ export function showMediaPaths(bundle: string, show: Show, images: boolean): str
   const songs = Object.values(show.songs ?? {});
   return [...new Set([
     ...(show.records ?? []).map((r) => r.path),
-    ...(show.audio ?? []).map((a) => a.path),
+    ...(show.audio ?? []).map((a) => abs(a.path)),
     ...songs.flatMap((s) => (s.clips ?? []).map((c) => abs(c.path))),
     ...(images ? songs.flatMap((s) => [...(s.gallery ?? []), ...songImagePaths(s)].map(abs)) : []),
   ])];
@@ -99,7 +99,7 @@ export async function fileStates(bundle: string, paths: string[]): Promise<Recor
 
 /**
  * Bytes of these files of the show at `bundle` that are in Google Drive: all of them (`total`), and the ones downloaded
- * to this Mac (`local`). Records and audio aren't in Drive, so they don't count. A file not on this Mac counts what
+ * to this Mac (`local`). Records and show audio aren't in Drive, so they don't count. A file not on this Mac counts what
  * Drive said its size was (0 until the show's opened once with sizes in its manifest).
  */
 export async function mediaSize(bundle: string, paths: string[]): Promise<{ local: number; total: number }> {

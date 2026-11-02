@@ -76,6 +76,15 @@ describe("REAPER project of the set", () => {
     expect(audio[1]).toMatchObject({ file: "/audio/gunk v2.wav", offset: 0, length: 210, position: 125 }); // no LTC: from the song's start
   });
 
+  it("downloads a song's audio copied into the show when it isn't on this Mac", () => {
+    const { s, b } = show();
+    addAudio(s, { path: "media/audio/gunk.wav", scope: "song", song_id: b, version: "V5", info: { duration: 200 } });
+    expect(reaperFiles(s, BUNDLE)).toContain(`${BUNDLE}/media/audio/gunk.wav`);
+    const set = reaperSet(s, BUNDLE, (p) => !p.endsWith("gunk.wav"));
+    expect(set.download).toContain("media/audio/gunk.wav");
+    expect(set.tracks.find((t) => t.name === "Audio")!.items[1]).toMatchObject({ file: `${BUNDLE}/media/audio/gunk.wav`, length: 200 });
+  });
+
   it("locks each song's clips to its TC by their LTC, across categories", () => {
     const { s } = show();
     const set = reaperSet(s, BUNDLE, () => true);
@@ -156,6 +165,8 @@ describe("REAPER project of the set", () => {
     expect(rpp.match(/<TRACK/g)).toHaveLength(6);
     expect(rpp).toContain(`      <SOURCE VIDEO\n        VIDEO_DISABLED\n        FILE "${BUNDLE}/media/clips/NYC_01 Intro_LTC-R.mp4"\n      >`);
     expect(rpp.match(/MAINSEND 0 0/g)).toHaveLength(2); // the LTC tracks stay out of the mix
+    expect(rpp.match(/TRACKHEIGHT 1 0/g)).toHaveLength(1); // the empty Video track, at its smallest
+    expect(rpp).toContain(`    NAME "Video"\n    PEAKCOL ${rppColour(TRACK_COLOURS.video)}\n    ISBUS 0 0\n    TRACKHEIGHT 1 0\n`);
     expect(rpp.match(/ISBUS 1 1/g)).toHaveLength(2);
     expect(rpp.match(/ISBUS 2 -1/g)).toHaveLength(2);
     expect(rpp.split("\n").filter((l) => l.trim().startsWith("<")).length).toBe(rpp.split("\n").filter((l) => l.trim() === ">").length);

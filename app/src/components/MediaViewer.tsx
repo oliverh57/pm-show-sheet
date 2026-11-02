@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { backend } from "../backend";
-import { categories, clipLength, imageCategory, imageReviews, isHeroImage, reviewsOn, songAudio, songRecords } from "../model/ops";
+import { categories, clipLength, imageCategory, imageReviews, inBundle, isHeroImage, reviewsOn, songAudio, songRecords } from "../model/ops";
 import type { AudioFile, ReviewComment, Show, Song } from "../model/types";
 import { useStore } from "../store";
 import { Icon } from "./icons";
@@ -20,8 +20,8 @@ export type Item =
   | { key: string; kind: "audio"; path: string; label: string; ltc?: number | null; channels?: number | null }; // key is the audio's id
 
 /** An audio file as the viewer plays it. */
-export const audioItem = (a: AudioFile): Item =>
-  ({ key: a.id, kind: "audio", path: a.path, label: a.version ? `Audio ${a.version}` : "Audio", ltc: a.ltc?.channel, channels: a.info?.audio_channels });
+export const audioItem = (a: AudioFile, bundle: string): Item =>
+  ({ key: a.id, kind: "audio", path: inBundle(bundle, a.path), label: a.version ? `Audio ${a.version}` : "Audio", ltc: a.ltc?.channel, channels: a.info?.audio_channels });
 
 /** Everything the song has to look at: its main image first, the rest of its images, its clips, then its records. */
 export function mediaOf(show: Show, bundle: string, song: Song): Item[] {
@@ -72,7 +72,7 @@ export function MediaViewer({ song, alone, start, play, comment, onClose }: Prop
   const bundle = useStore((s) => s.bundle)!;
   const focusSong = useStore((s) => s.focusSong);
   // The song's audio comes after its records, newest version first.
-  const items = song ? [...mediaOf(show, bundle, song), ...songAudio(show, song.id).map(audioItem)] : alone ? [alone] : [];
+  const items = song ? [...mediaOf(show, bundle, song), ...songAudio(show, song.id).map((a) => audioItem(a, bundle))] : alone ? [alone] : [];
   // An image only in a category (not in the gallery) still opens.
   if (song && !items.some((x) => x.key === start)) items.unshift({ key: start, kind: "image", src: start, label: "Image" });
   const [key, setKey] = useState(start);

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import sample from "../model/sample_show.json";
-import { addClip, addCustomField, deptCategory, GENERAL, imageColumnFor, migrate, sheetEditable } from "../model/ops";
+import { addAudio, addClip, addCustomField, deptCategory, GENERAL, imageColumnFor, migrate, setAudioVersion, sheetEditable } from "../model/ops";
 import type { Show } from "../model/types";
-import { contentRequests, diffShowTab, formatRuleRequests, HEADER_ROWS, keptCells, LOGO_URL, protectionUpdateRequests, reconcileRows, showTab, snapshot, spareColumnRequests, structureRequests, withSheetValues } from "./sheet";
+import { AUDIO_LINK, contentRequests, diffShowTab, formatRuleRequests, HEADER_ROWS, keptCells, LOGO_URL, protectionUpdateRequests, reconcileRows, showTab, snapshot, spareColumnRequests, structureRequests, withSheetValues } from "./sheet";
 import { deckFingerprint, deckRequests, textHeight } from "./slides";
 
 const fresh = () => migrate(structuredClone(sample) as Show);
@@ -89,7 +89,7 @@ describe("SHOW SHEET tab", () => {
     expect(sheetWide[0].warningOnly).toBe(false);
     expect(sheetWide[0].unprotectedRanges!.map((r) => g.colIds[r.startColumnIndex])).toEqual(show.columns.filter(sheetEditable).map((c) => c.id));
     const warned = protects.filter((p) => p.warningOnly).flatMap((p) => g.colIds.slice(p.range.startColumnIndex, p.range.endColumnIndex));
-    expect(warned).toEqual(["__id", ...show.columns.filter((c) => !sheetEditable(c)).map((c) => c.id)]);
+    expect(warned).toEqual(["__id", ...show.columns.filter((c) => !sheetEditable(c)).map((c) => c.id)].flatMap((id) => (id === "audio" ? [id, AUDIO_LINK] : [id])));
     expect(structureRequests(g, 1001).some((r) => "addProtectedRange" in r)).toBe(false);
   });
   it("lets collaborators edit the status ticks and BPM, but not the running order's own fields", () => {
@@ -338,6 +338,27 @@ describe("SHOW DECK", () => {
     expect(fills).toHaveLength(2);
     expect(texts).toEqual(expect.arrayContaining(["LASER COLOUR", "Green", "Blue"]));
     expect(texts.join("|")).not.toContain("Green, Blue");
+  });
+  it("links each song's audio after AUDIO VERSION, once it's on Drive", () => {
+    const show = fresh();
+    const [a, b] = show.set_order;
+    addAudio(show, { path: "media/audio/a V1.mp3", scope: "song", song_id: a, version: "V1" });
+    const v2 = addAudio(show, { path: "media/audio/a V2.mp3", scope: "song", song_id: a, version: "V2" });
+    addAudio(show, { path: "media/audio/b.mp3", scope: "song", song_id: b, version: "V1" }); // not uploaded yet
+    const urls = { "media/audio/a V1.mp3": "https://drive.google.com/file/d/A1/view", "media/audio/a V2.mp3": "https://drive.google.com/file/d/A2/view" };
+    const g = showTab(show, {}, {}, false, urls);
+    const cell = (id: string) => g.dataRows[g.rowIds.indexOf(id)][g.colIds.indexOf(AUDIO_LINK)];
+    expect(g.colIds.indexOf(AUDIO_LINK)).toBe(g.colIds.indexOf("audio") + 1);
+    expect(g.headerRows[3][g.colIds.indexOf(AUDIO_LINK)].value).toBe("AUDIO LINK");
+    expect(g.editableCols).not.toContain(g.colIds.indexOf(AUDIO_LINK));
+    expect(cell(a).links).toEqual([{ text: "▶ V2", url: urls["media/audio/a V2.mp3"] }]); // the newest
+    expect(cell(b)).toEqual({ value: "" });
+    // The version AUDIO VERSION names, when that's an older one.
+    show.songs[a].fields.audio = "V1";
+    expect(showTab(show, {}, {}, false, urls).dataRows[g.rowIds.indexOf(a)][g.colIds.indexOf(AUDIO_LINK)].links).toEqual([{ text: "▶ V1", url: urls["media/audio/a V1.mp3"] }]);
+    setAudioVersion(show, v2, "V2");
+    // Nothing typed in it is read back.
+    expect(diffShowTab(show, snapshot(show), sheetValues(show).map((r, i) => (i < HEADER_ROWS ? r : r.map((v, ci) => (ci === g.colIds.indexOf(AUDIO_LINK) ? "typed" : v))))).edits).toEqual([]);
   });
   it("links each clip to where it plays, in its category's clip column in the Sheet and on the slide", () => {
     const show = fresh();

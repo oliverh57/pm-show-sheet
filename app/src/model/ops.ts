@@ -1106,6 +1106,19 @@ export function songAudio(show: Show, songId: string): AudioFile[] {
   return (show.audio ?? []).filter((a) => a.scope === "song" && a.song_id === songId).reverse();
 }
 
+/** The audio a song plays: the version its AUDIO VERSION names, else the newest. */
+export function currentAudio(show: Show, songId: string): AudioFile | undefined {
+  const own = songAudio(show, songId);
+  const named = show.songs[songId]?.fields.audio;
+  return own.find((a) => a.version && a.version === named) ?? own[0];
+}
+
+/**
+ * Where a media path is on this Mac. Song audio is copied into the show (media/audio/, bundle-relative) and goes up to
+ * Drive with the rest; show audio and records are linked in place (absolute), as is song audio from before it was copied.
+ */
+export const inBundle = (bundle: string, path: string) => (path.startsWith("/") ? path : `${bundle}/${path}`);
+
 export function showAudio(show: Show): AudioFile[] {
   return (show.audio ?? []).filter((a) => a.scope === "show").reverse();
 }

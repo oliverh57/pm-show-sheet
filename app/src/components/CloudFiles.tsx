@@ -24,7 +24,7 @@ export function useFileStates(paths: string[]): [Record<string, FileState>, () =
 }
 
 /**
- * "Make online only" for a show's files on this Mac, "Download" for ones only in Drive. Nothing for records and audio.
+ * "Make online only" for a show's files on this Mac, "Download" for ones only in Drive. Nothing for records and linked audio.
  * `compact`: one cloud icon for a row of a list, blue while the file is only in Drive (click to toggle).
  */
 export function CloudButton({ paths, states, refresh, all, compact }: { paths: string[]; states: Record<string, FileState>; refresh: () => void; all?: boolean; compact?: boolean }) {

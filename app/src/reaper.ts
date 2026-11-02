@@ -34,7 +34,7 @@ export async function exportToReaper(dest: string, include: Set<string>, onStep:
     onStep({ step: "download", done: i, total: set.download.length });
     notes.push(...(await backend.driveFetch(bundle, set.download.slice(i, i + FETCH_BATCH), true)));
   }
-  if (notes.length) throw new Error(`${plural(notes.length, "clip")} didn't download from Google Drive: ${notes.slice(0, 2).join(" · ")}`);
+  if (notes.length) throw new Error(`${plural(notes.length, "file")} didn't download from Google Drive: ${notes.slice(0, 2).join(" · ")}`);
   onStep({ step: "open" });
   await backend.writeProject(dest, reaperProject(set), true);
   const left = [

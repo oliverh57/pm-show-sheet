@@ -184,6 +184,7 @@ async function pruneImages(): Promise<void> {
 }
 
 const CLIPS_DIR = "media/clips/";
+const AUDIO_DIR = "media/audio/";
 
 /**
  * Clips are uploaded to the show's folder after they're made (src/drive/media.ts): find each one's Drive id (and forget
@@ -194,14 +195,30 @@ const CLIPS_DIR = "media/clips/";
  * mends those.
  */
 export async function resolveClips(): Promise<void> {
-  const { show, bundle } = useStore.getState();
-  if (!show || !bundle) return;
-  const known = g().clips ?? {};
+  const { show } = useStore.getState();
+  if (!show) return;
   const paths = new Set(Object.values(show.songs).flatMap((s) => (s.clips ?? []).map((c) => c.path)));
   if (paths.size) step("Finding the clips on Drive");
-  const inFolder = [...paths].filter((p) => p.startsWith(CLIPS_DIR) && !p.slice(CLIPS_DIR.length).includes("/"));
+  const next = await driveIds(CLIPS_DIR, paths, g().clips ?? {});
+  if (next) meta((x) => { x.clips = next; });
+}
+
+/** The same for song audio, copied into the show's media/audio/ folder: the Sheet links each song's to where it plays. */
+export async function resolveAudio(): Promise<void> {
+  const { show } = useStore.getState();
+  if (!show) return;
+  const paths = new Set((show.audio ?? []).filter((a) => a.scope === "song" && a.path.startsWith(AUDIO_DIR)).map((a) => a.path));
+  const next = await driveIds(AUDIO_DIR, paths, g().audio ?? {});
+  if (next) meta((x) => { x.audio = next; });
+}
+
+/** The Drive id of each of `paths` (bundle-relative, mostly in `dir`), or null when that's what `known` has already. */
+async function driveIds(dir: string, paths: Set<string>, known: Record<string, string>): Promise<Record<string, string> | null> {
+  const { bundle } = useStore.getState();
+  if (!bundle) return null;
+  const inFolder = [...paths].filter((p) => p.startsWith(dir) && !p.slice(dir.length).includes("/"));
   const onDrive = new Map<string, string>(); // file name → id, the most recently changed if two share a name
-  const folder = inFolder.length ? await driveIdOf(`${bundle}/${CLIPS_DIR.slice(0, -1)}`, bundle) : null;
+  const folder = inFolder.length ? await driveIdOf(`${bundle}/${dir.slice(0, -1)}`, bundle) : null;
   if (folder) {
     const q = enc(`'${folder}' in parents and trashed = false`);
     let page: string | undefined;
@@ -215,7 +232,7 @@ export async function resolveClips(): Promise<void> {
   const next: Record<string, string> = {};
   for (const path of paths) {
     if (folder && inFolder.includes(path)) {
-      const id = onDrive.get(path.slice(CLIPS_DIR.length));
+      const id = onDrive.get(path.slice(dir.length));
       if (id) next[path] = id; // not uploaded yet: no link until it is
     } else {
       const id = known[path] ?? (await driveIdOf(`${bundle}/${path}`, bundle));
@@ -223,11 +240,13 @@ export async function resolveClips(): Promise<void> {
     }
   }
   const same = Object.keys(next).length === Object.keys(known).length && Object.entries(next).every(([p, id]) => known[p] === id);
-  if (!same) meta((x) => { x.clips = next; });
+  return same ? null : next;
 }
 
 /** Clip path → where it plays on Drive. */
 const clipUrls = () => Object.fromEntries(Object.entries(g().clips ?? {}).map(([path, id]) => [path, playUrl(id)]));
+/** Song audio path → where it plays on Drive. */
+const audioUrls = () => Object.fromEntries(Object.entries(g().audio ?? {}).map(([path, id]) => [path, playUrl(id)]));
 
 // --- the Sheet ------------------------------------------------------------------
 
@@ -441,7 +460,7 @@ async function pushSheet(): Promise<void> {
   const urls = Object.fromEntries(Object.entries(images).map(([k, v]) => [k, v.url]));
   step("Updating the Sheet");
   // The running order on SHOW SHEET, archived songs on ARCHIVED SONGS: a song moves between them as it's archived or restored.
-  const grids: [TabGrid, number][] = [[showTab(show, urls, clipUrls()), TAB_ID], [showTab(show, urls, clipUrls(), true), ARCHIVE_TAB_ID]];
+  const grids: [TabGrid, number][] = [[showTab(show, urls, clipUrls(), false, audioUrls()), TAB_ID], [showTab(show, urls, clipUrls(), true, audioUrls()), ARCHIVE_TAB_ID]];
   // REVIEW is added once there's a comment to put in it.
   const reviewing = Boolean(g().review_tab_id || show.reviews?.length);
   if (reviewing) grids.push([reviewTab(show, urls, clipUrls()), REVIEW_TAB_ID]);
@@ -577,6 +596,7 @@ let generation = 0; // bumps when the open show changes, so stale jobs stop
 function sheetFingerprint(show: Show): string {
   return JSON.stringify([show.name, show.columns, show.set_order, show.archive,
     Object.values(show.songs).map((s) => [s.id, s.fields, s.statuses, s.colours, s.hero, s.images, s.segues_into_next, s.clips]), show.google?.clips, show.reviews,
+    (show.audio ?? []).map((a) => [a.id, a.path, a.song_id, a.version]), show.google?.audio, // each song's audio link
     (show.records ?? []).map((r) => [r.id, r.image_col, r.label]), // which clip column a record's clips are in, and what they're called
     show.google?.app_editors, // someone new using the show in the app: push, so the lock lets them in
     show.google?.slides_url]); // the banner links to the deck
@@ -635,6 +655,7 @@ export function syncNow(force = false) {
   run(async () => {
     await ensureFiles();
     await resolveClips();
+    await resolveAudio();
     await pull();
     const show = useStore.getState().show!;
     if (force || sheetFingerprint(show) !== lastSheet || !g().tab_id) await pushSheet();
@@ -711,6 +732,7 @@ export function useGoogleSync() {
     });
     const poll = window.setInterval(() => run(async () => {
       await resolveClips();
+      await resolveAudio();
       await pull();
       if (sheetFingerprint(useStore.getState().show!) !== lastSheet) await pushSheet();
     }), POLL_MS);

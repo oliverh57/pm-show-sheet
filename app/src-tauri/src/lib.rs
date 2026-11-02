@@ -27,7 +27,7 @@ mod tools;
 
 const PROJECT: &str = "project.json";
 const CLIP_HEIGHT: u32 = 720;
-const MEDIA_KINDS: [&str; 5] = ["renders", "grabs", "clips", "layout", "inspo"];
+const MEDIA_KINDS: [&str; 6] = ["renders", "grabs", "clips", "layout", "inspo", "audio"];
 
 fn err<E: std::fmt::Display>(context: &str) -> impl Fn(E) -> String + '_ {
     move |e| format!("{context}: {e}")
@@ -75,8 +75,13 @@ fn bundle_save(path: String, project: Value) -> Result<(), String> {
 
 /// Copy a file into `media/<kind>/` and return its path relative to the bundle.
 /// An existing file with the same name is never overwritten: a numeric suffix is added.
+/// Off the main thread: an audio file can be big enough to copy for a few seconds.
 #[tauri::command]
-fn media_import(bundle: String, source: String, kind: String) -> Result<String, String> {
+async fn media_import(bundle: String, source: String, kind: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || import_media(bundle, source, kind)).await.map_err(err("copy media"))?
+}
+
+fn import_media(bundle: String, source: String, kind: String) -> Result<String, String> {
     if !MEDIA_KINDS.contains(&kind.as_str()) {
         return Err(format!("unknown media kind '{kind}'"));
     }
@@ -710,9 +715,9 @@ mod tests {
         fs::write(&src, b"x").unwrap();
         let b = root.to_string_lossy().to_string();
         let s = src.to_string_lossy().to_string();
-        assert_eq!(media_import(b.clone(), s.clone(), "renders".into()).unwrap(), "media/renders/render.jpg");
-        assert_eq!(media_import(b.clone(), s.clone(), "renders".into()).unwrap(), "media/renders/render_2.jpg");
-        assert!(media_import(b, s, "../etc".into()).is_err());
+        assert_eq!(import_media(b.clone(), s.clone(), "renders".into()).unwrap(), "media/renders/render.jpg");
+        assert_eq!(import_media(b.clone(), s.clone(), "renders".into()).unwrap(), "media/renders/render_2.jpg");
+        assert!(import_media(b, s, "../etc".into()).is_err());
     }
 
     #[test]

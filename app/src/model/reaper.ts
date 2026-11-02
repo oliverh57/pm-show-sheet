@@ -8,7 +8,7 @@
 // to, and writes the text.
 import { DEPT_COLOURS } from "../google/sheet";
 import {
-  categories, clipCategory, deptColour, GENERAL, clipLabel, clipLength, extension, ltcFromName, showAudio, songAudio, songNumber, tcSeconds,
+  categories, clipCategory, currentAudio, deptColour, GENERAL, clipLabel, clipLength, extension, inBundle, ltcFromName, showAudio, songNumber, tcSeconds,
 } from "./ops";
 import type { Clip, LtcResult, Show } from "./types";
 
@@ -164,7 +164,7 @@ export function reaperChoices(show: Show): ClipChoice[] {
 /** Every file the project could use (absolute), to ask which are on this Mac. */
 export function reaperFiles(show: Show, bundle: string): string[] {
   return [...new Set([
-    ...(show.audio ?? []).map((a) => a.path),
+    ...(show.audio ?? []).map((a) => inBundle(bundle, a.path)),
     ...show.set_order.flatMap((id) => (show.songs[id]?.clips ?? []).map((c) => `${bundle}/${c.path}`)),
   ])];
 }
@@ -185,10 +185,12 @@ export function reaperSet(show: Show, bundle: string, here: (path: string) => bo
 
   function audioFor(songId: string): Source | null {
     const song = show.songs[songId];
-    const own = songAudio(show, songId);
-    const pick = own.find((a) => a.version && a.version === song.fields.audio) ?? own[0];
-    if (pick && here(pick.path) && pick.info?.duration) {
-      return { file: pick.path, name: pick.version || pick.name, pieces: [{ offset: 0, length: pick.info.duration, tc: tcAtTime(pick.ltc, 0) }], ltc: pick.ltc?.channel ?? null };
+    const pick = currentAudio(show, songId);
+    const file = pick && inBundle(bundle, pick.path);
+    // A copy in the show that isn't on this Mac downloads from Drive, like the clips.
+    if (pick && file && pick.info?.duration && (here(file) || !pick.path.startsWith("/"))) {
+      if (!here(file)) download.add(pick.path);
+      return { file, name: pick.version || pick.name, pieces: [{ offset: 0, length: pick.info.duration, tc: tcAtTime(pick.ltc, 0) }], ltc: pick.ltc?.channel ?? null };
     }
     for (const a of showAudio(show)) {
       if (!a.ltc?.blocks.length || !here(a.path)) continue;
@@ -355,6 +357,8 @@ export function reaperProject(set: ReaperSet): string {
     put(2, `NAME ${rppString(t.name)}`);
     put(2, `PEAKCOL ${rppColour(t.colour)}`);
     put(2, `ISBUS ${t.folder === "parent" ? "1 1" : t.folder === "last" ? "2 -1" : "0 0"}`);
+    // A track with nothing on it (the Video grid) at its smallest: REAPER takes 0 as its default height, 1 as its least.
+    if (!t.items.length) put(2, "TRACKHEIGHT 1 0");
     if (t.ltc) put(2, "MAINSEND 0 0");
     if (t.grid) {
       put(2, "<FXCHAIN");

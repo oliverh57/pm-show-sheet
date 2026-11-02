@@ -2,7 +2,7 @@
 // reading collaborator edits back. Both tabs have the same columns. The REVIEW tab lists the comments on videos.
 // Ported from prototypes/google-sheets (layout.py, sync_logic.py, model.py). Pure: no network here.
 import {
-  addReview, cellValue, clipLabel, clipTimeAt, columnClips, commentDepts, deptColour, deptLabel, deptList, deptName, editReview, findReview, parseTc, placeTc, recordTc, replyToReview, setReviewDone, sheetEditable,
+  addReview, cellValue, clipLabel, clipTimeAt, columnClips, commentDepts, currentAudio, deptColour, deptLabel, deptList, deptName, editReview, findReview, parseTc, placeTc, recordTc, replyToReview, setReviewDone, sheetEditable,
   songByLabel, songImage, songNumber,
 } from "../model/ops";
 import { GELS } from "../model/gels";
@@ -149,13 +149,27 @@ export function asBool(v: unknown): boolean {
   return v === true || String(v).trim().toUpperCase() === "TRUE";
 }
 
+/** The Sheet's link to each song's audio: a column of the Sheet's own (not one of the show's), read-only like a clip column. */
+export const AUDIO_LINK = "__audio";
+
+/** The show's columns as the Sheet has them: the audio link goes after AUDIO VERSION, in its department (else after NAME). */
+function sheetColumns(show: Show): ColumnDef[] {
+  const cols = [...show.columns];
+  if (!cols.some((c) => c.id === "audio") && !show.audio?.some((a) => a.scope === "song")) return cols;
+  const after = cols.findIndex((c) => c.id === "audio");
+  const at = (after >= 0 ? after : cols.findIndex((c) => c.id === "name")) + 1;
+  cols.splice(at, 0, { id: AUDIO_LINK, label: "AUDIO LINK", dept: cols[at - 1]?.dept ?? "CORE", type: "clip", width: 100 });
+  return cols;
+}
+
 /**
  * The SHOW SHEET tab for a show (its running order), or with `archived` the ARCHIVED SONGS tab (its archive).
- * `imageUrls` maps bundle-relative image paths to =IMAGE() URLs; `clipUrls` clip paths to where they play.
+ * `imageUrls` maps bundle-relative image paths to =IMAGE() URLs; `clipUrls` clip paths to where they play, and
+ * `audioUrls` song audio paths.
  */
-export function showTab(show: Show, imageUrls: Record<string, string>, clipUrls: Record<string, string> = {}, archived = false): TabGrid {
+export function showTab(show: Show, imageUrls: Record<string, string>, clipUrls: Record<string, string> = {}, archived = false, audioUrls: Record<string, string> = {}): TabGrid {
   const title = archived ? ARCHIVE_TAB : SHOW_TAB;
-  const cols = show.columns;
+  const cols = sheetColumns(show);
   const colIds = ["__id", ...cols.map((c) => c.id)];
   const n = colIds.length;
   const nameCi = colIds.indexOf("name");
@@ -180,6 +194,12 @@ export function showTab(show: Show, imageUrls: Record<string, string>, clipUrls:
   for (const [c0, c1] of runs(cols.map((c) => c.label), 1, frozen)) if (c1 - c0 > 1) merges.push([3, 4, c0, c1]);
 
   const songRow = (song: Song): Cell[] => [idCell(song.id), ...cols.map((c): Cell => {
+    if (c.id === AUDIO_LINK) {
+      // The audio AUDIO VERSION names (else the newest), once it's uploaded.
+      const a = currentAudio(show, song.id);
+      const url = a && audioUrls[a.path];
+      return a && url ? { links: [{ text: `▶ ${a.version || "Play"}`, url }], size: 9, wrap: true, halign: "CENTER" } : { value: "" };
+    }
     const v = sheetValue(show, c, song);
     const bg = sheetEditable(c) ? EDITABLE_CELL_BG : undefined;
     switch (c.type) {
