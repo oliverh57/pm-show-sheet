@@ -7,6 +7,17 @@ export interface ReleaseNotes {
 }
 
 export const WHATS_NEW: Record<string, ReleaseNotes> = {
+  "0.9.0": {
+    summary: "Replace a song's video or audio, or keep both, with the two side by side.",
+    items: [
+      "Adding a video to a song that already has one in that category asks whether to replace it or keep both, showing the old and new next to each other. Videos in other categories don't count.",
+      "The same goes for a song's audio, and for clips cut from a show record. When several songs have a clip already, pick Replace or Add both for each one.",
+      "Replaced clips the app made move to the bin. Your own video and audio files stay where they are.",
+      "Audio plays full screen in the media viewer like a clip, and you can rename an audio version from the Media page.",
+      "The Media page shows how much of the show's media is in Google Drive and how much is downloaded. Remove downloads is now Make online only.",
+      "Picking a still falls back to the song's clip when the show record won't play, and says what to allow when macOS keeps the app out of a Dropbox or Google Drive folder.",
+    ],
+  },
   "0.8.1": {
     summary: "Open a show's Slides deck straight from its Google Sheet.",
     items: [
