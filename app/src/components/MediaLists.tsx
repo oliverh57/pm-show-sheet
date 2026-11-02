@@ -1,9 +1,7 @@
-// Lists of audio versions (with in-place players) and recordings.
-import { useState } from "react";
+// Lists of audio versions and recordings. Both play in the media viewer.
 import { formatDuration } from "../model/ops";
 import type { AudioFile, MediaInfo, SourceRecord } from "../model/types";
 import { Icon } from "./icons";
-import { MediaPlayer } from "./Player";
 import { SaveCopy } from "./SaveCopy";
 
 export function infoLine(info?: MediaInfo): string {
@@ -19,8 +17,7 @@ export function infoLine(info?: MediaInfo): string {
   return parts.filter(Boolean).join(" · ");
 }
 
-export function AudioList({ files, empty, onRemove }: { files: AudioFile[]; empty: string; onRemove: (id: string) => void }) {
-  const [playing, setPlaying] = useState<string | null>(null);
+export function AudioList({ files, empty, onPlay, onRemove }: { files: AudioFile[]; empty: string; onPlay: (id: string) => void; onRemove: (id: string) => void }) {
   if (files.length === 0) return <p className="muted">{empty}</p>;
   return (
     <div className="media-list">
@@ -30,10 +27,9 @@ export function AudioList({ files, empty, onRemove }: { files: AudioFile[]; empt
           <div className="media-main">
             <strong>{a.name}{i === 0 && <span className="pill">CURRENT</span>}</strong>
             <span className="muted small">{infoLine(a.info)}{a.note ? ` · ${a.note}` : ""} · added {new Date(a.added_at).toLocaleDateString()}</span>
-            {playing === a.id && <MediaPlayer path={a.path} video={false} ltc={a.ltc?.channel} channels={a.info?.audio_channels} autoPlay />}
           </div>
           <SaveCopy path={a.path} ltc={a.ltc?.channel} />
-          <button className="sm" onClick={() => setPlaying(playing === a.id ? null : a.id)}>{playing === a.id ? "Hide" : <><Icon name="play" size="sm" /> Play</>}</button>
+          <button className="sm" title="Play it full screen" onClick={() => onPlay(a.id)}><Icon name="play" size="sm" /> Play</button>
           <button className="icon" onClick={() => onRemove(a.id)} title="Remove (the file stays where it is)">×</button>
         </div>
       ))}

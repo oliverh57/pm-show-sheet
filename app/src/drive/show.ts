@@ -21,7 +21,7 @@ export interface Manifest {
   projectId?: string;
   rev?: string; // project.json's headRevisionId that base.json is
   canEdit?: boolean;
-  files: Record<string, { id: string; md5?: string; modified?: number }>; // bundle-relative path → Drive file (modified: ms)
+  files: Record<string, { id: string; md5?: string; modified?: number; size?: number }>; // bundle-relative path → Drive file (modified: ms, size: bytes)
   folders: Record<string, string>; // bundle-relative folder ("media/clips") → Drive folder id
   summary?: Record<string, string>; // the properties last written on the show's folder (see list.ts)
   openedAt?: number;

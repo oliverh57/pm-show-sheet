@@ -24,7 +24,7 @@ export function useFileStates(paths: string[]): [Record<string, FileState>, () =
 }
 
 /**
- * "Remove download" for a show's files on this Mac, "Download" for ones only in Drive. Nothing for records and audio.
+ * "Make online only" for a show's files on this Mac, "Download" for ones only in Drive. Nothing for records and audio.
  * `compact`: one cloud icon for a row of a list, blue while the file is only in Drive (click to toggle).
  */
 export function CloudButton({ paths, states, refresh, all, compact }: { paths: string[]; states: Record<string, FileState>; refresh: () => void; all?: boolean; compact?: boolean }) {
@@ -45,7 +45,7 @@ export function CloudButton({ paths, states, refresh, all, compact }: { paths: s
   }
   const remove = () => run(async () => {
     const n = await removeDownloads(bundle!, local);
-    if (!compact) toast(n === 1 ? "Removed from this Mac" : `Removed ${n} files from this Mac`);
+    if (!compact) toast(n === 1 ? "Now online only" : `${n} files now online only`);
   });
   const fetchAll = () => run(() => download(bundle!, online));
   if (compact) {
@@ -57,8 +57,8 @@ export function CloudButton({ paths, states, refresh, all, compact }: { paths: s
   if (uploading) return <button className="sm ghost" disabled title="It can be removed from this Mac once it's in Google Drive">Uploading…</button>;
   if (local.length) {
     return (
-      <button className="sm" disabled={busy} title="Remove the download from this Mac. It stays in Google Drive and downloads again when it's shown." onClick={remove}>
-        <Icon name="cloud" size="sm" /> {busy ? "Working…" : all ? "Remove all downloads" : "Remove download"}
+      <button className="sm" disabled={busy} title="Remove the copy on this Mac. It stays in Google Drive and downloads again when it's shown." onClick={remove}>
+        <Icon name="cloud" size="sm" /> {busy ? "Working…" : all ? "Make all online only" : "Make online only"}
       </button>
     );
   }

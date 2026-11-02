@@ -4,7 +4,8 @@
 // Results are added to the show only if it's still the open one.
 import { backend } from "./backend";
 import { trashMedia } from "./drive/media";
-import { addClip, addImages, addRecordStill, burnsTc, categoryFree, clipCategory, clipLength, clipName, clipTimeAt, GENERAL, newId, recordClipName, recordStillOf, recordTimeAt, setHero, setSongImage, type Cut } from "./model/ops";
+import { changeAndBin } from "./library";
+import { addClip, addImages, addRecordStill, burnsTc, categoryFree, clipCategory, clipLength, clipName, clipTimeAt, GENERAL, newId, recordClipName, recordStillOf, recordTimeAt, removeSongVideos, setHero, setSongImage, type Cut } from "./model/ops";
 import type { Show, SongMark, SourceRecord } from "./model/types";
 import { type StillPick, useStore } from "./store";
 
@@ -14,7 +15,8 @@ const CHOICES = 3;
 /** The runs so far: a record split while another's clips are still being cut waits its turn behind them. */
 let previous: Promise<void> = Promise.resolve();
 
-export function runClipJobs(bundle: string, record: SourceRecord, marks: SongMark[], grabStills: boolean, makeClips = true): Promise<void> {
+/** `replace`: songs whose other videos in the record's category come off them once their new clip is made (see askToReplace). */
+export function runClipJobs(bundle: string, record: SourceRecord, marks: SongMark[], grabStills: boolean, makeClips = true, replace: string[] = []): Promise<void> {
   const { show, setJobs } = useStore.getState();
   if (!show) return Promise.resolve();
   const queue = marks.map((m) => ({ mark: m, id: newId("job"), name: recordClipName(show, record, m.song_id) }));
@@ -22,12 +24,12 @@ export function runClipJobs(bundle: string, record: SourceRecord, marks: SongMar
   const added = queue.map((q) => ({ id: q.id, label: show.songs[q.mark.song_id]?.fields.name || "Song", recordId: record.id, kind, progress: 0, status: "queued" as const }));
   // Listed after the jobs still going (several records split one after another), else in place of the finished ones.
   setJobs((jobs) => (jobs.some((j) => j.status === "queued" || j.status === "running") ? [...jobs, ...added] : added));
-  const run = previous.then(() => cutClips(bundle, record, queue, grabStills, makeClips));
+  const run = previous.then(() => cutClips(bundle, record, queue, grabStills, makeClips, replace));
   previous = run.catch(() => {});
   return run;
 }
 
-async function cutClips(bundle: string, record: SourceRecord, queue: { mark: SongMark; id: string; name: string }[], grabStills: boolean, makeClips: boolean) {
+async function cutClips(bundle: string, record: SourceRecord, queue: { mark: SongMark; id: string; name: string }[], grabStills: boolean, makeClips: boolean, replace: string[]) {
   const { setJobs } = useStore.getState();
   const patch = (id: string, change: Partial<{ progress: number; status: "running" | "done" | "error"; error: string }>) =>
     setJobs((jobs) => jobs.map((j) => (j.id === id ? { ...j, ...change } : j)));
@@ -58,11 +60,18 @@ async function cutClips(bundle: string, record: SourceRecord, queue: { mark: Son
         // A clip cut before under another name (before clips kept their LTC) goes to the Trash.
         const replaced = (useStore.getState().show?.songs[mark.song_id]?.clips ?? []).filter((c) => c.record_id === record.id && c.in === mark.in && c.path !== path);
         await trashMedia(bundle, replaced.map((c) => c.path)).catch(() => {});
-        useStore.getState().update((s) => {
+        const add = (s: Show) => {
           const kept = replaced.find((c) => c.still)?.still ?? had;
           addClip(s, mark.song_id, { path, record_id: record.id, in: mark.in, out: mark.out, source: mark.source, ...(mark.cuts?.length ? { cuts: mark.cuts } : {}),
             ...(kept ? { still: kept } : {}), ...(burn ? { burn_tc: true } : {}) });
+        };
+        // Replacing: the song's other videos in the clip's category come off it (their clips and stills to the bin).
+        if (replace.includes(mark.song_id)) await changeAndBin((s) => {
+          add(s);
+          const clip = s.songs[mark.song_id]?.clips?.find((c) => c.path === path);
+          if (clip) removeSongVideos(s, mark.song_id, clipCategory(s, clip), record.id);
         });
+        else useStore.getState().update(add);
       }
       if ((grabStills || !makeClips) && !had) await queuePick(bundle, record, mark.song_id, mark, clip, !makeClips);
       patch(id, { status: "done", progress: 1 });
@@ -133,9 +142,14 @@ export async function repickStill(bundle: string, record: SourceRecord, songId: 
 async function fileStill(bundle: string, record: SourceRecord, pick: StillPick, time: number): Promise<string | null> {
   const show = useStore.getState().show;
   if (!show) return null;
+  const name = clipName(show, pick.songId);
+  const fromClip = (path: string, cut: Cut) => backend.grabFrame(bundle, `${bundle}/${path}`, Math.max(0, clipTimeAt(cut, time)), name);
+  const songClip = show.songs[pick.songId]?.clips?.find((c) => c.record_id === record.id && Math.abs(c.in - pick.mark.in) < 0.5);
+  // A record that's here can still be unreadable (macOS hasn't let the app into its Dropbox folder, say): the song's
+  // clip of it will do.
   const still = pick.clip
-    ? await backend.grabFrame(bundle, `${bundle}/${pick.clip}`, Math.max(0, clipTimeAt(pick.mark, time)), clipName(show, pick.songId))
-    : await backend.grabFrame(bundle, record.path, time, clipName(show, pick.songId));
+    ? await fromClip(pick.clip, pick.mark)
+    : await backend.grabFrame(bundle, record.path, time, name).catch((e) => (songClip ? fromClip(songClip.path, songClip) : Promise.reject(e)));
   if (useStore.getState().bundle !== bundle) return null;
   useStore.getState().update((s) => {
     if (!s.songs[pick.songId]) return;

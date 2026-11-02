@@ -178,8 +178,13 @@ function usedPaths(show: Show): Set<string> {
 
 /** Delete things from the open show after asking, binning the show's own files that nothing uses any more. */
 async function deleteFromShow(question: string, change: (s: Show) => void) {
+  if (await backend.confirm(question)) await changeAndBin(change);
+}
+
+/** Change the open show, binning the show's own files that nothing uses any more. */
+export async function changeAndBin(change: (s: Show) => void) {
   const { show, bundle, update, toast } = useStore.getState();
-  if (!show || !bundle || !(await backend.confirm(question))) return;
+  if (!show || !bundle) return;
   const before = usedPaths(show);
   update(change);
   const after = usedPaths(useStore.getState().show!);

@@ -3,9 +3,10 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { backend } from "../backend";
 import { pickTopStills, runClipJobs } from "../jobs";
+import { askToReplace, askToReplaceAudio, askToReplaceVideos } from "./ReplaceDialog";
 import {
   addAudio, addImages, addRecord, addSong, categories, deptCategory, ensureCategory, GENERAL, addSongWith, AUDIO_EXTENSIONS, cleanLabel, guessRecordLabel, guessRecordsLabel, recordClipName, extension, fileName, guessSong, guessVersion,
-  clipLength, type Cut, cutPauses, joinPauses, marksToMake, MAX_PAUSE, MAX_REWIND, parseTc, type RunPart, setHero, setMarks, splitRuns, syncAudioField, tcInRun, timeAtTcInRun, VIDEO_EXTENSIONS,
+  clipLength, type Cut, cutPauses, joinPauses, marksToMake, MAX_PAUSE, MAX_REWIND, parseTc, removeAudio, removeSongVideos, type RunPart, setHero, setMarks, songAudio, splitRuns, syncAudioField, tcInRun, timeAtTcInRun, VIDEO_EXTENSIONS,
 } from "../model/ops";
 import type { AudioFile, LtcResult, MediaInfo, Show, SongMark, SourceRecord } from "../model/types";
 import { useStore } from "../store";
@@ -17,6 +18,7 @@ import { CategoryPicker } from "./Categories";
 import { MediaPlayer } from "./Player";
 import { SongPicker } from "./SongMenu";
 import { linkWatchFolder } from "../watchFolders";
+import { changeAndBin } from "../library";
 import { infoLine } from "./MediaLists";
 import { formatTime } from "./SongDrawer";
 import { IMAGE_EXTENSIONS } from "../backend";
@@ -242,8 +244,14 @@ function WhatStep({ files, onNext }: { files: string[]; onNext: (step: Step, sou
         endImport();
         onNext("scan", ids.map((id) => ({ kind: "record", id })), undefined, make);
       } else if (what === "song") {
-        update((s) => { const image_col = ensureCategory(s, tag); files.forEach((p, i) => addRecord(s, { path: p, scope: "song", song_id: songId, info: infos[i], image_col })); });
-        toast(`Added to ${show.songs[songId]?.fields.name || "the song"}`);
+        // Videos already in the category: add both, or replace them (cancelled: back to the questions).
+        const replace = await askToReplaceVideos(songId, tag, files.map((p, i) => ({ path: p, info: infos[i] })));
+        if (replace === null) return;
+        const add = (s: Show) => { const image_col = ensureCategory(s, tag); files.forEach((p, i) => addRecord(s, { path: p, scope: "song", song_id: songId, info: infos[i], image_col })); };
+        // Replaced clips the app made go to the bin; the song's own videos are linked in place, so their files stay.
+        if (replace) await changeAndBin((s) => { removeSongVideos(s, songId, tag); add(s); });
+        else update(add);
+        toast(`${replace ? "Replaced in" : "Added to"} ${show.songs[songId]?.fields.name || "the song"}`);
         endImport();
         setView("songs");
         focusSong(songId, "media");
@@ -259,8 +267,15 @@ function WhatStep({ files, onNext }: { files: string[]; onNext: (step: Step, sou
         setMediaTab("inbox");
         setView("media");
       } else if (audioScope === "song") {
-        update((s) => { files.forEach((p, i) => { addAudio(s, { path: p, scope: "song", song_id: songId, version: version.trim() || guessVersion(p), info: infos[i] }); }); syncAudioField(s, songId); });
-        toast(`New audio for ${show.songs[songId]?.fields.name || "the song"}`);
+        const versions = files.map((p) => version.trim() || guessVersion(p));
+        const replace = await askToReplaceAudio(songId, files.map((p, i) => ({ path: p, info: infos[i], version: versions[i] })));
+        if (replace === null) return;
+        update((s) => {
+          if (replace) for (const a of songAudio(s, songId)) removeAudio(s, a.id); // linked in place: the files stay
+          files.forEach((p, i) => { addAudio(s, { path: p, scope: "song", song_id: songId, version: versions[i], info: infos[i] }); });
+          syncAudioField(s, songId);
+        });
+        toast(`${replace ? "Replaced the audio for" : "New audio for"} ${show.songs[songId]?.fields.name || "the song"}`);
         endImport();
         setView("songs");
         focusSong(songId, "media");
@@ -597,7 +612,7 @@ function LtcStep({ file, source, initialMake, asked, more, onManual, onDone }: {
     toast(`Created ${blocks.length} songs. Rename them on the Songs page.`);
   }
 
-  function confirm() {
+  async function confirm() {
     const marks: SongMark[] = [];
     update((s) => {
       segs.forEach((g, k) => {
@@ -628,7 +643,10 @@ function LtcStep({ file, source, initialMake, asked, more, onManual, onDone }: {
     const todo = marksToMake(useStore.getState().show!, file.id, marks, makeClips, burn);
     if (make !== "none" && todo.length) {
       const record = useStore.getState().show?.records?.find((x) => x.id === file.id);
-      runClipJobs(bundle, { ...(file as SourceRecord), label: cleanLabel(label), image_col: record?.image_col, song_marks: marks }, todo, true, makeClips);
+      const split = { ...(file as SourceRecord), label: cleanLabel(label), image_col: record?.image_col, song_marks: marks };
+      const replace = makeClips ? await askToReplace(split, todo) : [];
+      if (!replace) return; // cancelled: back to the marks
+      runClipJobs(bundle, split, todo, true, makeClips, replace);
       onDone();
     } else {
       toast(make !== "none" && marks.length ? `Marked ${marks.length} songs. Every song already has its ${makeClips ? "clip" : "thumbnail"}.` : `Marked ${marks.length} songs`);

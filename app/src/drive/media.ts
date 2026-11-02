@@ -89,7 +89,7 @@ export async function refreshManifest(bundle: string): Promise<Manifest> {
         folders[rel] = f.id;
         await walk(f.id, `${rel}/`);
       } else if (prefix && !f.mimeType?.startsWith("application/vnd.google-apps.")) {
-        files[rel] = { id: f.id, md5: f.md5Checksum, modified: Date.parse(f.modifiedTime ?? "") || undefined };
+        files[rel] = { id: f.id, md5: f.md5Checksum, modified: Date.parse(f.modifiedTime ?? "") || undefined, size: Number(f.size) || undefined };
       }
     }
   };
@@ -133,7 +133,8 @@ export function uploadNewMedia(bundle: string, show: Show): Promise<string[]> {
           // Downloaded here from Drive rather than made here: it's there already.
           const there = await child(parent, name, "id,md5Checksum");
           const file = there ?? (await backend.driveUpload(`${bundle}/${rel}`, { parent, name }, onProgress));
-          await updateManifest(bundle, (x) => { x.files[rel] = { id: file.id, md5: file.md5Checksum, modified: Date.now() }; });
+          const [size] = await backend.pathSizes([`${bundle}/${rel}`]);
+          await updateManifest(bundle, (x) => { x.files[rel] = { id: file.id, md5: file.md5Checksum, modified: Date.now(), size: size || undefined }; });
         });
       } catch (e) {
         notes.push(`${name}: ${String(e).replace(/^Error: /, "")}`);

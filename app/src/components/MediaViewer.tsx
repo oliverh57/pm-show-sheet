@@ -1,10 +1,11 @@
-// A song's images and clips full screen, one at a time, with ways to save them. ← → step through them, Esc closes.
-// Each image, clip and record opens with its comments beside it (Review). Also where a song's media is listed for Present (mediaOf).
+// A song's images, clips and audio full screen, one at a time, with ways to save them. ← → step through them, Esc closes.
+// Each image, clip and record opens with its comments beside it (Review). Audio plays in the same player as a clip, with
+// a music note for its picture. Also where a song's media is listed for Present (mediaOf).
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { backend } from "../backend";
-import { categories, clipLength, imageCategory, imageReviews, isHeroImage, reviewsOn, songRecords } from "../model/ops";
-import type { ReviewComment, Show, Song } from "../model/types";
+import { categories, clipLength, imageCategory, imageReviews, isHeroImage, reviewsOn, songAudio, songRecords } from "../model/ops";
+import type { AudioFile, ReviewComment, Show, Song } from "../model/types";
 import { useStore } from "../store";
 import { Icon } from "./icons";
 import { MediaPlayer } from "./Player";
@@ -15,7 +16,12 @@ import { formatTime } from "./SongDrawer";
 
 export type Item =
   | { key: string; kind: "image"; src: string; label: string } // src is bundle-relative
-  | { key: string; kind: "video"; path: string; thumb?: string; label: string; ltc?: number | null; channels?: number | null; review?: ReviewAnchor };
+  | { key: string; kind: "video"; path: string; thumb?: string; label: string; ltc?: number | null; channels?: number | null; review?: ReviewAnchor }
+  | { key: string; kind: "audio"; path: string; label: string; ltc?: number | null; channels?: number | null }; // key is the audio's id
+
+/** An audio file as the viewer plays it. */
+export const audioItem = (a: AudioFile): Item =>
+  ({ key: a.id, kind: "audio", path: a.path, label: a.version ? `Audio ${a.version}` : "Audio", ltc: a.ltc?.channel, channels: a.info?.audio_channels });
 
 /** Everything the song has to look at: its main image first, the rest of its images, its clips, then its records. */
 export function mediaOf(show: Show, bundle: string, song: Song): Item[] {
@@ -34,12 +40,14 @@ export function mediaOf(show: Show, bundle: string, song: Song): Item[] {
 /** The comments on an item: an image's, or those in a clip's (or record's) stretch of its record. */
 export function itemComments(show: Show, item: Item): ReviewComment[] {
   if (item.kind === "image") return imageReviews(show, item.src);
+  if (item.kind === "audio") return [];
   return item.review ? reviewsOn(show, item.review.record_id, item.review.from, item.review.to) : [];
 }
 
 /** What Review comments on for an item, given the element showing it. */
 export function reviewTarget(item: Item, video: React.RefObject<HTMLVideoElement | null>, image: React.RefObject<HTMLImageElement | null>): ReviewTarget | undefined {
   if (item.kind === "image") return { kind: "image", path: item.src, ref: image };
+  if (item.kind === "audio") return undefined;
   return item.review && { kind: "video", anchor: item.review, source: item.path, ref: video };
 }
 
@@ -51,20 +59,22 @@ export function commentItem(show: Show, bundle: string, song: Song, c: ReviewCom
 const REVIEW_KEY = "pm.review"; // the comments panel shown or hidden, per Mac
 
 interface Props {
-  song: Song;
-  start: string; // the key (image path, clip path) to open on
+  song: Song | null; // null for a file in no song (show audio), given as `alone`
+  alone?: Item;
+  start: string; // the key (image path, clip path, audio id) to open on
   play?: boolean; // start that clip playing, even with the comments beside it
   comment?: string; // open on this comment (on the `start` item), with the comments shown
   onClose: () => void;
 }
 
-export function MediaViewer({ song, start, play, comment, onClose }: Props) {
+export function MediaViewer({ song, alone, start, play, comment, onClose }: Props) {
   const show = useStore((s) => s.show)!;
   const bundle = useStore((s) => s.bundle)!;
   const focusSong = useStore((s) => s.focusSong);
-  const items = mediaOf(show, bundle, song);
+  // The song's audio comes after its records, newest version first.
+  const items = song ? [...mediaOf(show, bundle, song), ...songAudio(show, song.id).map(audioItem)] : alone ? [alone] : [];
   // An image only in a category (not in the gallery) still opens.
-  if (!items.some((x) => x.key === start)) items.unshift({ key: start, kind: "image", src: start, label: "Image" });
+  if (song && !items.some((x) => x.key === start)) items.unshift({ key: start, kind: "image", src: start, label: "Image" });
   const [key, setKey] = useState(start);
   const [reviewing, setReviewing] = useState(() => { try { return Boolean(comment) || localStorage.getItem(REVIEW_KEY) !== "off"; } catch { return true; } });
   const [stage, setStage] = useState<HTMLDivElement | null>(null);
@@ -95,15 +105,16 @@ export function MediaViewer({ song, start, play, comment, onClose }: Props) {
   if (!item) return null;
   const abs = (p: string) => (p.startsWith("/") ? p : `${bundle}/${p}`);
   const file = item.kind === "image" ? abs(item.src) : item.path;
-  const position = show.set_order.indexOf(song.id);
+  const name = song ? song.fields.name || "Untitled" : "Show audio";
+  const position = song ? show.set_order.indexOf(song.id) : -1;
   const target = reviewTarget(item, videoRef, imageRef);
   const review = Boolean(target);
   const open = itemComments(show, item).filter((c) => !c.done).length;
   // The video carries on in its own small window over the app (popout.ts), and the viewer gets out of the way.
   const popOutItem = () => {
-    if (item.kind !== "video") return;
+    if (item.kind === "image") return;
     const el = videoRef.current;
-    popOut({ path: item.path, label: `${song.fields.name || "Untitled"}: ${item.label}`, ltc: item.ltc, channels: item.channels, at: el?.currentTime ?? 0, play: el ? !el.paused : true });
+    popOut({ path: item.path, label: `${name}: ${item.label}`, ltc: item.ltc, channels: item.channels, at: el?.currentTime ?? 0, play: el ? !el.paused : true });
     el?.pause();
     onClose();
   };
@@ -113,11 +124,11 @@ export function MediaViewer({ song, start, play, comment, onClose }: Props) {
   };
 
   return createPortal(
-    <div className={`viewer ${review && reviewing ? "reviewing" : ""}`} role="dialog" aria-label={`${song.fields.name || "Untitled"}: ${item.label}`}
+    <div className={`viewer ${review && reviewing ? "reviewing" : ""}`} role="dialog" aria-label={`${name}: ${item.label}`}
          onMouseDown={(e) => e.target === e.currentTarget && performance.now() - opened.current > 400 && onClose()}>
       <div className="viewer-bar">
         <div className="title">
-          <b>{position >= 0 ? `${String(position + 1).padStart(2, "0")} ` : ""}{song.fields.name || "Untitled"}</b>
+          <b>{position >= 0 ? `${String(position + 1).padStart(2, "0")} ` : ""}{name}</b>
           <span>{item.label}{items.length > 1 && ` · ${at + 1} of ${items.length}`}</span>
         </div>
         <div className="acts">
@@ -126,14 +137,14 @@ export function MediaViewer({ song, start, play, comment, onClose }: Props) {
               <Icon name="comment" size="sm" /> {open ? `${open} open` : "Comments"}
             </button>
           )}
-          {item.kind === "video" && backend.isDesktop && (
+          {item.kind !== "image" && backend.isDesktop && (
             <button className="sm pop-out" title="Keep watching in a small window over the app, to write notes while it plays" onClick={popOutItem}>
               <Icon name="external" size="sm" /> Pop out
             </button>
           )}
-          <SaveCopy key={file} path={file} ltc={item.kind === "video" ? item.ltc : null} video={item.kind === "video"} />
-          <SongSaveMenu show={show} bundle={bundle} song={song} />
-          <button className="icon" title="Open the song" onClick={() => { onClose(); focusSong(song.id, item.kind === "image" ? "renders" : "records"); }}><Icon name="pencil" size="sm" /></button>
+          <SaveCopy key={file} path={file} ltc={item.kind === "image" ? null : item.ltc} video={item.kind === "video"} />
+          {song && <SongSaveMenu show={show} bundle={bundle} song={song} />}
+          {song && <button className="icon" title="Open the song" onClick={() => { onClose(); focusSong(song.id, item.kind === "image" ? "renders" : "records"); }}><Icon name="pencil" size="sm" /></button>}
           <button className="icon" title="Close (Esc)" onClick={onClose}><Icon name="x" /></button>
         </div>
       </div>
@@ -144,7 +155,7 @@ export function MediaViewer({ song, start, play, comment, onClose }: Props) {
           : <MediaPlayer key={item.key} path={item.path} video autoPlay={!(review && reviewing) || (play && item.key === start)} controls={!(review && reviewing)} ltc={item.ltc} channels={item.channels} mediaRef={videoRef} popOut={false} />}
         {items.length > 1 && <button className="icon nav next" title="Next (→)" onClick={() => step(1)}><Icon name="chevR" /></button>}
       </div>
-      {target && reviewing && (
+      {song && target && reviewing && (
         <Review key={item.key} show={show} songId={song.id} target={target} stage={stage} itemKey={item.key} focus={item.key === start ? comment : undefined} />
       )}
       <div className="viewer-foot">{file.split("/").pop()}</div>

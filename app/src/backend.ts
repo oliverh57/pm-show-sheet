@@ -179,6 +179,8 @@ export interface Backend {
   driveSetCacheLimit(bytes: number): Promise<number>;
   /** Which of these absolute paths are files on this Mac. */
   pathsExist(paths: string[]): Promise<boolean[]>;
+  /** The size in bytes of each of these absolute paths on this Mac, 0 for one that isn't here. */
+  pathSizes(paths: string[]): Promise<number[]>;
   /** Which of these absolute paths are files whose data is on this Mac (not a Dropbox or iCloud placeholder). */
   pathsLocal(paths: string[]): Promise<boolean[]>;
   readJson<T>(bundle: string, name: SideFile): Promise<T | null>;
@@ -410,6 +412,9 @@ const desktop: Backend = {
   async pathsExist(paths) {
     return paths.length ? ((await invoke("paths_exist", { paths })) as boolean[]) : [];
   },
+  async pathSizes(paths) {
+    return paths.length ? ((await invoke("path_sizes", { paths })) as number[]) : [];
+  },
   async pathsLocal(paths) {
     return paths.length ? ((await invoke("paths_local", { paths })) as boolean[]) : [];
   },
@@ -606,6 +611,9 @@ const browser: Backend = {
   },
   async pathsExist(paths) {
     return paths.map(() => true);
+  },
+  async pathSizes(paths) {
+    return paths.map(() => 0);
   },
   async pathsLocal(paths) {
     return paths.map(() => true);

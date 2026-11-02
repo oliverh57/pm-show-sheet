@@ -1,21 +1,23 @@
 // Media: drop files in (they go to "What is this media?"), see what the show has, and cull
 // renders in the Render inbox tab.
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { backend } from "../backend";
-import { categories, categoryName, cleanLabel, clipCategory, clipLength, clipName, fileName, guessRecordLabel, ltcFromName, moveClip, recordMedia, removeAudio, retagRecord, syncAudioField } from "../model/ops";
+import { categories, categoryName, cleanLabel, clipCategory, clipLength, clipName, fileName, guessRecordLabel, ltcFromName, moveClip, recordMedia, removeAudio, retagRecord, setAudioVersion, syncAudioField } from "../model/ops";
 import { CategoriesDialog } from "./Categories";
 import { useStore } from "../store";
 import { Icon, type IconName } from "./icons";
 import { infoLine } from "./MediaLists";
+import { DraftInput } from "./fields";
 import { MediaPlayer } from "./Player";
-import { MediaViewer } from "./MediaViewer";
+import { audioItem, MediaViewer, type Item } from "./MediaViewer";
 import { formatTime } from "./SongDrawer";
 import { deleteClip, deleteRecordStill, deleteRecordStills, deleteSongImage, removeRecordAndMedia } from "../library";
 import { RenderInbox } from "./RenderInbox";
 import { MenuPopup, SaveCopy, useMenu } from "./SaveCopy";
 import { CloudButton, useFileStates } from "./CloudFiles";
 import { repickStill, repickStills, runClipJobs } from "../jobs";
-import { download, removeDownloads, type FileState } from "../storage";
+import { download, mediaSize, removeDownloads, type FileState } from "../storage";
+import { formatSize } from "./AppSettings";
 import type { Clip, SourceRecord } from "../model/types";
 import { linkWatchFolder, unlinkWatchFolder, useWatchFolders } from "../watchFolders";
 
@@ -81,8 +83,8 @@ function RecordMenu({ ids, category, paths, states, refresh, others, onRepick, o
         <div className="save-group">
           {onRepick && <button onClick={act(onRepick)}><span>Pick best stills</span><small>Each song's sharpest, brightest frame</small></button>}
           {local.length > 0 && (
-            <button onClick={act(() => files(async () => toast(`Removed ${await removeDownloads(bundle, local)} files from this Mac`)))}>
-              <span>Remove downloads</span><small>The clips stay in Google Drive</small>
+            <button onClick={act(() => files(async () => toast(`${await removeDownloads(bundle, local)} files now online only`)))}>
+              <span>Make online only</span><small>Removes the clips from this Mac. They stay in Google Drive</small>
             </button>
           )}
           {!local.length && online.length > 0 && <button onClick={act(() => files(() => download(bundle, online)))}><span>Download the clips</span></button>}
@@ -215,7 +217,8 @@ function Library() {
   const cutting = jobs.some((j) => j.status === "queued" || j.status === "running");
   const songName = (id?: string | null) => (id ? show.songs[id]?.fields.name : "") || "";
   const [playing, setPlaying] = useState<string | null>(null);
-  const [watching, setWatching] = useState<{ songId: string; path: string } | null>(null); // a song clip in the viewer, with its comments
+  // A song clip or audio file in the viewer (clips with their comments); show audio, in no song, opens on its own.
+  const [watching, setWatching] = useState<{ songId: string; path: string; alone?: Item } | null>(null);
   const [openClips, setOpenClips] = useState<string | null>(null);
   const [repicking, setRepicking] = useState<{ id: string; done: number; total: number } | null>(null); // id: the group's key
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -276,7 +279,24 @@ function Library() {
   /** Which song a still belongs to. */
   const stillSong = (path: string) => show.set_order.concat(show.archive).find((sid) => (show.songs[sid]?.gallery ?? []).includes(path));
   const imageSongs = new Set(images.map((i) => i.songId)).size;
-  const [states, refreshStates] = useFileStates([...records.map((r) => r.path), ...audio.map((a) => a.path), ...allClips.map((c) => `${bundle}/${c.path}`), ...images.map((i) => inBundle(i.path))]);
+  // Full show audio first, then each song's in set order.
+  const audioSorted = [...audio].sort((a, b) => (a.scope === "show" ? -1 : order.indexOf(a.song_id ?? "")) - (b.scope === "show" ? -1 : order.indexOf(b.song_id ?? "")));
+  const audioSongs = new Set(audio.filter((a) => a.scope === "song").map((a) => a.song_id)).size;
+  const showAudio = audio.filter((a) => a.scope === "show").length;
+  const audioHeadline = [
+    `${audio.length} file${audio.length === 1 ? "" : "s"}`,
+    audioSongs ? `${audioSongs} song${audioSongs === 1 ? "" : "s"}` : "",
+    showAudio ? `${showAudio} full show` : "",
+  ].filter(Boolean).join(" · ");
+  const statePaths = [...records.map((r) => r.path), ...audio.map((a) => a.path), ...allClips.map((c) => `${bundle}/${c.path}`), ...images.map((i) => inBundle(i.path))];
+  const [states, refreshStates] = useFileStates(statePaths);
+  // The clips and images in Google Drive, and how much of that is downloaded: measured again as files come and go.
+  const sizeKey = [...statePaths, ...[...fromRecords].map(inBundle)].join("\n");
+  const [size, setSize] = useState<{ local: number; total: number } | null>(null);
+  useEffect(() => {
+    if (!sizeKey) return setSize(null);
+    mediaSize(bundle, sizeKey.split("\n")).then(setSize, () => setSize(null));
+  }, [sizeKey, bundle, states]);
   /** Songs marked in a record that have no clip yet (a clip run that was stopped part way). */
   const missingClips = (r: (typeof records)[number]) => (r.song_marks ?? []).filter((m) =>
     show.songs[m.song_id] && !(show.songs[m.song_id].clips ?? []).some((c) => c.record_id === r.id && Math.abs(c.in - m.in) < 0.5));
@@ -300,6 +320,9 @@ function Library() {
     <button className="sm" onClick={() => setPlaying(playing === id ? null : id)}>{playing === id ? "Hide" : <><Icon name="play" size="sm" /> Play</>}</button>
   );
   if (!records.length && !audio.length && !folders.length && !images.length) return null;
+  /** "1.2 GB downloaded of 4.7 GB": the show's media in Google Drive. Records and audio stay on their Macs, so they're not counted. */
+  const sizeText = ({ local, total }: { local: number; total: number }) =>
+    local >= total ? `${formatSize(total)}, all downloaded` : !local ? `${formatSize(total)}, online only` : `${formatSize(local)} downloaded of ${formatSize(total)}`;
 
   async function linkFolder() {
     const path = await backend.chooseFolder("Choose the folder Depence exports renders into");
@@ -308,7 +331,7 @@ function Library() {
 
   return (
     <div className="lib">
-      <div className="section-head"><h2>In this show</h2><button className="sm" onClick={linkFolder}><Icon name="folder" size="sm" /> Link a render folder…</button></div>
+      <div className="section-head"><h2 title="The size is the show's clips and images in Google Drive. Show records and audio stay on the Mac they were added on, so they aren't counted.">In this show{size?.total ? ` (${sizeText(size)})` : ""}</h2><button className="sm" onClick={linkFolder}><Icon name="folder" size="sm" /> Link a render folder…</button></div>
       <div className="lib-list">
         {groups.map(({ key, label, recs }) => {
           const ids = recs.map((r) => r.id);
@@ -352,6 +375,7 @@ function Library() {
                   <div className="muted small" style={{ fontWeight: 400 }}>{headline}</div>
                 </GroupHead>
                 <span className="acts">
+                  <CloudButton all={clipPaths.length > 1} paths={clipPaths} states={states} refresh={refreshStates} />
                   <RecordMenu ids={ids} category={cols.length === 1 ? cols[0] : ""} paths={clipPaths} states={states} refresh={refreshStates}
                               others={groups.filter((g) => g.key !== key && g.label).map((g) => g.label)}
                               onRepick={canRepick ? () => repickGroup(key, recs) : undefined}
@@ -448,7 +472,7 @@ function Library() {
               <GroupHead icon="image" open={!folded.has("images")} onToggle={() => toggleFold("images")}>
                 Renders &amp; stills<div className="muted small" style={{ fontWeight: 400 }}>{images.length} image{images.length === 1 ? "" : "s"} · {imageSongs} song{imageSongs === 1 ? "" : "s"}</div>
               </GroupHead>
-              <span className="acts">{images.length > 1 && <CloudButton all paths={images.map((i) => inBundle(i.path))} states={states} refresh={refreshStates} />}</span>
+              <span className="acts"><CloudButton all={images.length > 1} paths={images.map((i) => inBundle(i.path))} states={states} refresh={refreshStates} /></span>
             </div>
             {!folded.has("images") && <div className="clip-list">
               {images.map(({ songId, path, hero }) => {
@@ -525,24 +549,40 @@ function Library() {
             </div>
           );
         })}
-        {audio.map((a) => (
-          <div key={a.id}>
-          <div className="lib-row">
-            <span className="ic"><Icon name="music" /></span>
-            <span className="nm" title={a.path}>{a.name}<div className="muted small">{infoLine(a.info)}</div></span>
-            <span className="muted small">{a.scope === "song" ? `${a.version} · ${songName(a.song_id)}` : `Show audio ${a.version}`}</span>
-            <span className="acts">
-              {states[a.path] === "missing" && <Locate kind="audio" id={a.id} path={a.path} onFound={refreshStates} />}
-              {states[a.path] !== "missing" && <SaveCopy path={a.path} ltc={a.ltc?.channel} />}
-              {playButton(a.id)}
-              {a.scope === "show" && <button className="sm" onClick={() => startImport([], { kind: "audio", id: a.id })}><Icon name="radio" size="sm" /> Match to songs</button>}
-              <button className="icon" title="Remove (the file stays where it is)"
-                      onClick={() => update((s) => { removeAudio(s, a.id); if (a.song_id) syncAudioField(s, a.song_id); })}><Icon name="x" size="sm" /></button>
-            </span>
+        {audio.length > 0 && (
+          <div className="rec-group">
+            <div className="lib-row">
+              <GroupHead icon="music" open={!folded.has("audio")} onToggle={() => toggleFold("audio")}>
+                Audio<div className="muted small" style={{ fontWeight: 400 }}>{audioHeadline}</div>
+              </GroupHead>
+              <span className="acts" />
+            </div>
+            {!folded.has("audio") && <div className="clip-list">
+              {audioSorted.map((a) => {
+                const info = infoLine(a.info);
+                return (
+                  <div key={a.id}>
+                    <div className="clip-item">
+                      <Icon name="music" size="sm" />
+                      <DraftInput className="audio-version" value={a.version} placeholder="Version" fit onCommit={(v) => update((s) => setAudioVersion(s, a.id, v))} />
+                      <span className="nm" title={a.path}>{a.scope === "song" ? songName(a.song_id) : "Show audio"}
+                        <span className="muted small"> · {a.name}{info ? ` · ${info}` : ""}</span>
+                      </span>
+                      {a.scope === "show" && <button className="sm" onClick={() => startImport([], { kind: "audio", id: a.id })}><Icon name="radio" size="sm" /> Match to songs</button>}
+                      {states[a.path] === "missing" && <Locate kind="audio" id={a.id} path={a.path} onFound={refreshStates} />}
+                      {states[a.path] !== "missing" && <SaveCopy path={a.path} ltc={a.ltc?.channel} compact />}
+                      <button className="icon" title="Play full screen" onClick={() => setWatching({ songId: a.scope === "song" && a.song_id ? a.song_id : "", path: a.id, alone: audioItem(a) })}>
+                        <Icon name="play" size="sm" />
+                      </button>
+                      <button className="icon" title="Remove (the file stays where it is)"
+                              onClick={() => update((s) => { removeAudio(s, a.id); if (a.song_id) syncAudioField(s, a.song_id); })}><Icon name="x" size="sm" /></button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>}
           </div>
-          {playing === a.id && <div className="lib-player"><MediaPlayer path={a.path} video={false} ltc={a.ltc?.channel} channels={a.info?.audio_channels} autoPlay /></div>}
-          </div>
-        ))}
+        )}
         {folders.map((f) => (
           <div key={f.id} className="lib-row">
             <span className="ic"><Icon name="folder" /></span>
@@ -557,7 +597,8 @@ function Library() {
           </div>
         ))}
       </div>
-      {watching && show.songs[watching.songId] && <MediaViewer song={show.songs[watching.songId]} start={watching.path} play onClose={() => setWatching(null)} />}
+      {watching && (show.songs[watching.songId] || watching.alone) &&
+        <MediaViewer song={show.songs[watching.songId] ?? null} alone={watching.alone} start={watching.path} play onClose={() => setWatching(null)} />}
     </div>
   );
 }

@@ -189,6 +189,12 @@ pub fn paths_exist(paths: Vec<String>) -> Vec<bool> {
     paths.iter().map(|p| Path::new(p).is_file()).collect()
 }
 
+/// The size in bytes of each of these files on this Mac, 0 for one that isn't here.
+#[tauri::command]
+pub fn path_sizes(paths: Vec<String>) -> Vec<u64> {
+    paths.iter().map(|p| fs::metadata(p).ok().filter(|m| m.is_file()).map_or(0, |m| m.len())).collect()
+}
+
 /// Which of these absolute paths are files whose data is on this Mac: not a cloud placeholder (Dropbox, iCloud) that
 /// an app reading it would sit and wait to download.
 #[tauri::command]

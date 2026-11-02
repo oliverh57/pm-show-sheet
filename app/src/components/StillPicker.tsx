@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { backend } from "../backend";
 import { pickStill } from "../jobs";
 import { categoryName, clipCategory, clipTimeAt, guessRecordLabel } from "../model/ops";
-import type { SourceRecord } from "../model/types";
+import type { Clip, SourceRecord } from "../model/types";
 import { type StillPick, useStore } from "../store";
 import { Icon } from "./icons";
 import { formatTime } from "./SongDrawer";
@@ -78,20 +78,23 @@ export function StillPicker() {
       </div>
       <p className="muted small" style={{ margin: "10px 0 0" }}>Click the best frame: it's saved full size in the record's category and the next song comes up.{p.replaces && !p.auto ? "" : " Until you pick, the song uses the top frame."}</p>
       {p.clip && <p className="muted small" style={{ margin: "6px 0 0" }}>{record?.name ?? "The record"} isn't on this Mac, so these frames come from the song's clip of it{song?.clips?.find((c) => c.path === p.clip)?.burn_tc ? ", with its TC drawn in" : ""}.</p>}
-      {record && <Scrubber key={p.id} pick={p} record={record} onUse={choose} />}
+      {record && <Scrubber key={p.id} pick={p} record={record} songClip={clip} onUse={choose} />}
     </div>
   );
 }
 
-/** Any frame of the song, not just the suggested ones: drag through it, then use the frame on screen. */
-function Scrubber({ pick, record, onUse }: { pick: StillPick; record: SourceRecord; onUse: (time: number) => void }) {
+/** Any frame of the song, not just the suggested ones: drag through it, then use the frame on screen. A record that
+ * won't play (macOS hasn't let the app into its Dropbox folder, say) gives way to the song's clip of it. */
+function Scrubber({ pick, record, songClip, onUse }: { pick: StillPick; record: SourceRecord; songClip?: Clip; onUse: (time: number) => void }) {
   const { in: lo, out: hi } = pick.mark;
   const [t, setT] = useState(pick.current ?? pick.candidates[0]?.time ?? lo);
   const [failed, setFailed] = useState(false);
+  const [onClip, setOnClip] = useState(false);
   const video = useRef<HTMLVideoElement>(null);
   const bundle = useStore((s) => s.bundle)!;
   // Times are the record's; the song's clip (when the record isn't here) starts at its in, less any pauses cut out.
-  const at = (time: number) => (pick.clip ? Math.max(0, clipTimeAt(pick.mark, time)) : time);
+  const clip = pick.clip ? { path: pick.clip, cut: pick.mark } : onClip && songClip ? { path: songClip.path, cut: songClip } : null;
+  const at = (time: number) => (clip ? Math.max(0, clipTimeAt(clip.cut, time)) : time);
   const seek = (to: number) => {
     const next = Math.min(hi, Math.max(lo, to));
     setT(next);
@@ -100,8 +103,8 @@ function Scrubber({ pick, record, onUse }: { pick: StillPick; record: SourceReco
   return (
     <div className="sp-scrub">
       <div className="sp-frame">
-        <video ref={video} src={pick.clip ? backend.mediaUrl(bundle, pick.clip) : backend.streamUrl(record.path)} preload="auto" muted playsInline
-               onLoadedMetadata={(e) => { e.currentTarget.currentTime = at(t); }} onError={() => setFailed(true)} />
+        <video ref={video} src={clip ? backend.mediaUrl(bundle, clip.path) : backend.streamUrl(record.path)} preload="auto" muted playsInline
+               onLoadedMetadata={(e) => { e.currentTarget.currentTime = at(t); }} onError={() => (clip || !songClip ? setFailed(true) : setOnClip(true))} />
         {failed && <span className="ph">This video won't play here</span>}
         <span className="tm">{formatTime(t)}</span>
       </div>

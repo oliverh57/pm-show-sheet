@@ -114,7 +114,7 @@ function SongSlide({ show, song, position, tab, onTab }: { show: Show; song: Son
           {item && <span className="pv-caption">{item.label}</span>}
           {item && (
             <div className="pv-save">
-              <SaveCopy key={item.key} path={item.kind === "image" ? `${bundle}/${item.src}` : item.path} ltc={item.kind === "video" ? item.ltc : null} video={item.kind === "video"} />
+              <SaveCopy key={item.key} path={item.kind === "image" ? `${bundle}/${item.src}` : item.path} ltc={item.kind === "image" ? null : item.ltc} video={item.kind === "video"} />
               <SongSaveMenu show={show} bundle={bundle} song={song} />
             </div>
           )}
@@ -125,7 +125,7 @@ function SongSlide({ show, song, position, tab, onTab }: { show: Show; song: Son
             {items.map((x) => (
               <button key={x.key} className={x.key === item?.key ? "on" : ""} title={x.label} onClick={() => setPick(x.key)}>
                 {x.kind === "image" ? <img src={backend.mediaUrl(bundle, x.src)} alt="" draggable={false} />
-                  : x.thumb ? <img src={backend.mediaUrl(bundle, x.thumb)} alt="" draggable={false} /> : <span className="ph"><Icon name="film" /></span>}
+                  : x.kind === "video" && x.thumb ? <img src={backend.mediaUrl(bundle, x.thumb)} alt="" draggable={false} /> : <span className="ph"><Icon name="film" /></span>}
                 {x.kind === "video" && <span className="play"><Icon name="play" size="sm" /></span>}
                 <CommentBadge count={itemComments(show, x).filter((c) => !c.done).length} />
               </button>

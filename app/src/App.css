@@ -657,6 +657,7 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; }
 .player-inline { display: grid; gap: 6px; width: 100%; margin-top: 6px; }
 .player-inline video { width: 100%; max-height: 380px; border-radius: 8px; background: #000; }
 .player-inline audio { width: 100%; }
+.player-inline .audio video { aspect-ratio: 16 / 9; } /* no picture of its own, so the poster's shape */
 /* Over a video: the swipe-to-scrub readout and the loading note (components/videoGestures.tsx) */
 .video-wrap { position: relative; }
 .scrub-hud { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: flex; align-items: baseline; gap: 10px; padding: 8px 14px; border-radius: 10px; background: rgba(0,0,0,.72); color: #fff; pointer-events: none; z-index: 2; }
@@ -676,6 +677,10 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; }
 .clip-item .thumb { flex: none; width: 40px; height: 23px; border-radius: 3px; overflow: hidden; background: var(--line); cursor: pointer; margin-right: 4px; }
 .clip-item .hero-tag { margin-left: 7px; color: var(--accent); font-size: 10.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
 .clip-item .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* An audio file's version on the Media page: reads as a label, edits in place */
+.clip-item input.audio-version { flex: none; height: 24px; min-width: 64px; max-width: 160px; padding: 0 6px; font-size: 12px; font-weight: 600; color: var(--accent); background: var(--accent-bg); border-color: transparent; }
+.clip-item input.audio-version:placeholder-shown { color: var(--muted); background: transparent; border-style: dashed; border-color: var(--line-2); font-weight: 500; }
+.clip-item input.audio-version:hover, .clip-item input.audio-version:focus { border-color: var(--line-2); border-style: solid; }
 .lib-still { display: block; max-width: 100%; max-height: 360px; border-radius: 6px; }
 .lib-player { padding: 10px 12px 12px; background: var(--surface-2); border-bottom: 1px solid var(--line); }
 
@@ -1587,3 +1592,28 @@ button.cbadge:hover:not(:disabled) { background: var(--bad); filter: brightness(
 .popout .popout-pin { position: absolute; right: 8px; top: 8px; z-index: 3; background: rgba(0,0,0,.6); color: rgba(255,255,255,.6); opacity: 0; transition: opacity .15s; }
 .popout:hover .popout-pin { opacity: 1; }
 .popout .popout-pin:hover:not(:disabled) { background: rgba(0,0,0,.8); color: #fff; }
+
+/* --- add both or replace ------------------------------------------------------ */
+
+.replace-dialog { width: min(640px, 94vw); }
+.replace-rows { display: grid; gap: 16px; }
+.replace-all { display: flex; gap: 16px; justify-content: flex-end; margin-bottom: -6px; font-size: 12.5px; }
+.replace-row { display: grid; gap: 10px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.replace-row:last-child { padding-bottom: 0; border-bottom: 0; }
+.replace-row-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.replace-pair { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 14px; align-items: center; }
+.replace-side { display: grid; gap: 12px; align-content: start; min-width: 0; }
+.replace-side .label { margin-bottom: -4px; }
+.replace-arrow { display: grid; place-items: center; width: 28px; height: 28px; margin-top: 20px; border-radius: 50%; background: var(--surface-3); color: var(--muted); }
+.replace-pic { display: grid; gap: 2px; min-width: 0; }
+.replace-pic .clip-pic { width: 100%; margin-bottom: 6px; }
+.replace-pic .clip-pic video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.replace-pic strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.replace-pic.gone .clip-pic > img, .replace-pic.gone .clip-pic > video { opacity: .35; }
+.replace-pic.gone strong { color: var(--muted); text-decoration: line-through; }
+.replace-audio { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
+.replace-audio .ic { display: grid; place-items: center; flex: none; width: 32px; height: 32px; border-radius: 6px; background: var(--surface-3); color: var(--ok); }
+.replace-audio-text { display: grid; gap: 1px; min-width: 0; flex: 1; }
+.replace-audio-text span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.replace-pic audio { width: 100%; height: 32px; margin-top: 6px; }
+.replace-pic.gone .replace-audio .ic, .replace-pic.gone audio { opacity: .35; }

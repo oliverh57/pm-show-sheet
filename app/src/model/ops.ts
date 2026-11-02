@@ -1093,6 +1093,14 @@ export function removeAudio(show: Show, id: string) {
   show.audio = (show.audio ?? []).filter((a) => a.id !== id);
 }
 
+/** Relabel an audio file's version; the song's AUDIO VERSION follows if it's the newest. */
+export function setAudioVersion(show: Show, id: string, version: string) {
+  const a = (show.audio ?? []).find((x) => x.id === id);
+  if (!a) return;
+  a.version = version.trim();
+  if (a.scope === "song" && a.song_id) syncAudioField(show, a.song_id);
+}
+
 /** A song's audio versions, newest first. */
 export function songAudio(show: Show, songId: string): AudioFile[] {
   return (show.audio ?? []).filter((a) => a.scope === "song" && a.song_id === songId).reverse();
@@ -1104,6 +1112,16 @@ export function showAudio(show: Show): AudioFile[] {
 
 export function songRecords(show: Show, songId: string): SourceRecord[] {
   return (show.records ?? []).filter((r) => r.scope === "song" && r.song_id === songId);
+}
+
+/**
+ * Take a song's videos in one category off it, for new ones to replace: its own videos (with their stills), and its
+ * clips there. Clips cut from `except` (the record the new clip is from) stay.
+ */
+export function removeSongVideos(show: Show, songId: string, category: string, except?: string) {
+  for (const r of songRecords(show, songId)) if ((r.image_col ?? GENERAL) === category) removeRecord(show, r.id);
+  const song = show.songs[songId];
+  if (song?.clips) song.clips = song.clips.filter((c) => c.record_id === except || clipCategory(show, c) !== category);
 }
 
 export function showRecords(show: Show): SourceRecord[] {

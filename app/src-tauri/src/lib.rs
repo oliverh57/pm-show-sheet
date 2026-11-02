@@ -584,6 +584,11 @@ async fn frame_grab(bundle: String, source: String, time: f64, name: String) -> 
         if !output.status.success() || !dir.join(&file).exists() {
             // Say why: ffmpeg's last line, or (no picture written) that the time is past the end of the video.
             let why = String::from_utf8_lossy(&output.stderr).lines().last().unwrap_or("").trim().to_string();
+            // macOS keeps apps out of other apps' cloud folders (Dropbox, Google Drive) until someone lets them in.
+            if why.contains("Operation not permitted") {
+                let file = Path::new(&source).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                return Err(format!("macOS isn't letting the app read {file}: allow it in System Settings › Privacy & Security › Files & Folders"));
+            }
             let why = if why.is_empty() { format!("nothing at {time:.2}s") } else { why };
             return Err(format!("ffmpeg couldn't grab that frame ({why})"));
         }
@@ -665,7 +670,7 @@ pub fn run() {
             thumbs::thumb_candidates, stream::media_server,
             google::google_client_configured, google::google_set_client, google::google_sign_in,
             google::google_current_user, google::google_sign_out, google::google_api, google::google_upload,
-            drive::drive_cache_root, drive::drive_download, drive::drive_upload, drive::drive_fetch, drive::paths_exist, drive::paths_local, drive::drive_evict, drive::drive_forget,
+            drive::drive_cache_root, drive::drive_download, drive::drive_upload, drive::drive_fetch, drive::paths_exist, drive::path_sizes, drive::paths_local, drive::drive_evict, drive::drive_forget,
             drive::drive_cached_shows, drive::drive_cache_size, drive::drive_open_cache, drive::drive_storage, drive::drive_set_cache_limit
         ])
         .run(tauri::generate_context!())

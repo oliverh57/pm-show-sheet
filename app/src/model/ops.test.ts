@@ -134,7 +134,7 @@ describe("store history", () => {
   });
 });
 
-import { addAudio, groupSessions, guessSong, guessVersion, songAudio, syncAudioField } from "./ops";
+import { addAudio, groupSessions, guessSong, guessVersion, setAudioVersion, songAudio, syncAudioField } from "./ops";
 
 describe("media helpers", () => {
   it("guesses version labels from filenames", () => {
@@ -155,6 +155,17 @@ describe("media helpers", () => {
     expect(songAudio(show, "s_lights").map((a) => a.version)).toEqual(["V3", "V2"]);
     syncAudioField(show, "s_lights");
     expect(show.songs.s_lights.fields.audio).toBe("V3");
+  });
+  it("relabels an audio version, and AUDIO VERSION when it's the newest", () => {
+    const show = fresh();
+    const v2 = addAudio(show, { path: "/a/v2.wav", scope: "song", song_id: "s_lights", version: "V2" });
+    const v3 = addAudio(show, { path: "/a/v3.wav", scope: "song", song_id: "s_lights", version: "V3" });
+    syncAudioField(show, "s_lights");
+    setAudioVersion(show, v2, " V2.1 ");
+    expect(songAudio(show, "s_lights").map((a) => a.version)).toEqual(["V3", "V2.1"]);
+    expect(show.songs.s_lights.fields.audio).toBe("V3");
+    setAudioVersion(show, v3, "V4");
+    expect(show.songs.s_lights.fields.audio).toBe("V4");
   });
   it("leaves AUDIO VERSION out once it's deleted", () => {
     const show = fresh();
@@ -665,6 +676,33 @@ describe("show records and their clips", () => {
     expect(s.songs[a].clips).toEqual([]);
     expect(s.songs[a].gallery).toEqual(["media/renders/keep.png"]);
     expect(s.songs[a].hero).toBe("media/renders/keep.png");
+  });
+
+  it("replacing a song's videos takes only those in the same category", async () => {
+    const { addSongWith, addRecord, addClip, deptCategory, removeSongVideos, songRecords } = await import("./ops");
+    const s = newShow("T");
+    const a = addSongWith(s, "GUNK");
+    const lx = deptCategory("LX");
+    const show = addRecord(s, { path: "/x/r.mp4", scope: "show" });
+    addClip(s, a, { path: "media/clips/04 GUNK.mp4", record_id: show, in: 0, out: 10, source: "auto_tc" });
+    addRecord(s, { path: "/x/gunk.mov", scope: "song", song_id: a, image_col: "hero" });
+    const lit = addRecord(s, { path: "/x/gunk lx.mov", scope: "song", song_id: a, image_col: lx });
+    removeSongVideos(s, a, "hero");
+    expect(songRecords(s, a).map((r) => r.id)).toEqual([lit]);
+    expect(s.songs[a].clips).toEqual([]);
+    expect(s.records!.map((r) => r.id)).toEqual([show, lit]); // the show record stays, to be split again
+  });
+
+  it("a new clip replaces the song's videos in its category from other records, not its own record's", async () => {
+    const { addSongWith, addRecord, addClip, removeSongVideos } = await import("./ops");
+    const s = newShow("T");
+    const a = addSongWith(s, "GUNK");
+    const moda = addRecord(s, { path: "/x/moda.mp4", scope: "show" });
+    const td = addRecord(s, { path: "/x/td.mp4", scope: "show" });
+    addClip(s, a, { path: "media/clips/MODA 04 GUNK.mp4", record_id: moda, in: 0, out: 10, source: "manual" });
+    addClip(s, a, { path: "media/clips/TD 04 GUNK.mp4", record_id: td, in: 5, out: 15, source: "manual" });
+    removeSongVideos(s, a, "hero", td);
+    expect(s.songs[a].clips!.map((c) => c.path)).toEqual(["media/clips/TD 04 GUNK.mp4"]);
   });
 });
 

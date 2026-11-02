@@ -97,6 +97,21 @@ export async function fileStates(bundle: string, paths: string[]): Promise<Recor
   }));
 }
 
+/**
+ * Bytes of these files of the show at `bundle` that are in Google Drive: all of them (`total`), and the ones downloaded
+ * to this Mac (`local`). Records and audio aren't in Drive, so they don't count. A file not on this Mac counts what
+ * Drive said its size was (0 until the show's opened once with sizes in its manifest).
+ */
+export async function mediaSize(bundle: string, paths: string[]): Promise<{ local: number; total: number }> {
+  const m = await readManifest(bundle);
+  const inDrive = paths.filter((p) => p.startsWith(`${bundle}/`) && m.files[p.slice(bundle.length + 1)]);
+  const sizes = await backend.pathSizes(inDrive);
+  return inDrive.reduce((n, p, i) => ({
+    local: n.local + sizes[i],
+    total: n.total + (sizes[i] || (m.files[p.slice(bundle.length + 1)].size ?? 0)),
+  }), { local: 0, total: 0 });
+}
+
 /** Remove a show's media from this Mac, the files that are in Drive (it downloads again when it's shown). How many went. */
 export async function removeDownloads(bundle: string, paths: string[]): Promise<number> {
   const m = await readManifest(bundle);

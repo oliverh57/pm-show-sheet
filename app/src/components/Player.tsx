@@ -1,8 +1,9 @@
-// Video and audio playback. When a file carries LTC on one audio channel (found by the timecode scan),
-// that channel is left out so you hear the programme audio, not the timecode buzz.
+// Video and audio playback. An audio file played as video (the media viewer, the pop-out) has a music note as
+// its picture. When a file carries LTC on one audio channel (found by the timecode scan), that channel is left out so you
+// hear the programme audio, not the timecode buzz.
 import { useEffect, useRef } from "react";
 import { backend } from "../backend";
-import { ltcFromName } from "../model/ops";
+import { AUDIO_EXTENSIONS, extension, ltcFromName } from "../model/ops";
 import { popOut as openPopOut } from "../popout";
 import { Icon } from "./icons";
 import { useVideoHelpers } from "./videoGestures";
@@ -57,9 +58,18 @@ export function useDropLtc(ref: React.RefObject<HTMLMediaElement | null>, ltc: n
   }, [ref, ltc, channels, key]);
 }
 
+/** The picture an audio file shows in the player: a music note (icons.tsx) on dark, 16:9. */
+const AUDIO_POSTER = "data:image/svg+xml," + encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">` +
+  `<defs><radialGradient id="g" cx="50%" cy="45%" r="70%"><stop offset="0" stop-color="#2a2d36"/><stop offset="1" stop-color="#101114"/></radialGradient></defs>` +
+  `<rect width="1280" height="720" fill="url(#g)"/>` +
+  `<path transform="translate(568 288) scale(6)" d="M9 18V5l12-2v13M6 15a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM18 13a3 3 0 1 0 0 6 3 3 0 0 0 0-6z" ` +
+  `fill="none" stroke="#fff" stroke-opacity=".55" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+);
+
 interface Props {
   path: string; // absolute path on disk
-  video: boolean;
+  video: boolean; // false for a plain audio bar
   ltc?: number | null; // 0-based audio channel carrying LTC (read from an `_LTC-L`/`_LTC-R` name if not given)
   channels?: number | null;
   autoPlay?: boolean;
@@ -77,6 +87,7 @@ export function MediaPlayer({ path, video, ltc: given, channels, autoPlay, media
   useDropLtc(ref, ltc, channels, path);
   const { overlay } = useVideoHelpers(ref, path);
   const hasLtc = ltc !== null && ltc !== undefined;
+  const audio = AUDIO_EXTENSIONS.includes(extension(path));
   const common = { controls, autoPlay, preload: "metadata" as const, src: backend.streamUrl(path), crossOrigin: hasLtc ? ("anonymous" as const) : undefined };
   // Carries on in the pop-out window from the same moment; this one pauses.
   const popOutNow = () => {
@@ -90,7 +101,9 @@ export function MediaPlayer({ path, video, ltc: given, channels, autoPlay, media
   );
   return (
     <div className="player-inline">
-      {video ? <div className="video-wrap"><video key={path} ref={ref} {...common} playsInline />{overlay}{popButton}</div> : <audio key={path} ref={ref as React.RefObject<HTMLAudioElement | null>} {...common} />}
+      {video
+        ? <div className={`video-wrap ${audio ? "audio" : ""}`}><video key={path} ref={ref} {...common} poster={audio ? AUDIO_POSTER : undefined} playsInline />{overlay}{popButton}</div>
+        : <audio key={path} ref={ref as React.RefObject<HTMLAudioElement | null>} {...common} />}
       {hasLtc && <span className="muted small"><Icon name="radio" size="sm" /> Timecode (channel {ltc + 1}) muted</span>}
     </div>
   );

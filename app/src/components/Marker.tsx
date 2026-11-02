@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { backend } from "../backend";
 import { runClipJobs } from "../jobs";
+import { askToReplace } from "./ReplaceDialog";
 import { useVideoHelpers } from "./videoGestures";
 import { addImages, addRecordStill, addSong, clipName, GAP, marksFromStarts, marksToMake, setMarks, startsFromMarks } from "../model/ops";
 import type { SourceRecord } from "../model/types";
@@ -365,7 +366,7 @@ export function Marker({ record, initialMake = "clips", asked, more, onDone }: {
     window.addEventListener("pointerup", up);
   }
 
-  function create() {
+  async function create() {
     update((s) => setMarks(s, record.id, marks));
     if (!todo.length) {
       toast(`Saved the marks. Every song already has its ${make === "clips" ? "clip" : "thumbnail"}.`);
@@ -373,7 +374,10 @@ export function Marker({ record, initialMake = "clips", asked, more, onDone }: {
       useStore.getState().setView("media");
       return;
     }
-    runClipJobs(bundle, { ...record, song_marks: marks }, todo, true, make === "clips");
+    const split = { ...(useStore.getState().show?.records?.find((r) => r.id === record.id) ?? record), song_marks: marks };
+    const replace = make === "clips" ? await askToReplace(split, todo) : [];
+    if (!replace) return; // cancelled: back to marking
+    runClipJobs(bundle, split, todo, true, make === "clips", replace);
     onDone();
   }
 

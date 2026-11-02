@@ -14,6 +14,7 @@ import { CommentsPage } from "./components/Comments";
 import { SettingsPage, SharePage, SheetPage } from "./components/OtherPages";
 import { ClashBanner, OfflineBanner, ReadOnlyBanner, Sidebar, Toasts } from "./components/Shell";
 import { RemoteEditsNotice } from "./components/RemoteEdits";
+import { ReplaceDialog } from "./components/ReplaceDialog";
 import { SignIn } from "./components/SignIn";
 import { SongDrawer } from "./components/SongDrawer";
 import { SongsPage } from "./components/SongsPage";
@@ -74,6 +75,7 @@ export default function App() {
       </div>
       {drawerSongId && show.songs[drawerSongId] && <SongDrawer key={drawerSongId} />}
       {columnsOpen && <ColumnsDialog />}
+      <ReplaceDialog />
       {dragging && <div className="drop-overlay">Drop to add media</div>}
       <RemoteEditsNotice />
       <TransferProgress />

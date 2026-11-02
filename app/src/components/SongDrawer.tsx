@@ -225,7 +225,7 @@ export function SongDrawer() {
               </div>
               <div className="panel">
                 <div className="label">Audio versions</div>
-                <AudioList files={songAudio(show, song.id)} empty="No audio for this song yet."
+                <AudioList files={songAudio(show, song.id)} empty="No audio for this song yet." onPlay={setWatching}
                            onRemove={(id) => update((s) => { removeAudio(s, id); syncAudioField(s, song.id); })} />
                 <div style={{ marginTop: 10 }}><button className="sm" onClick={() => addFiles("audio")}><Icon name="plus" size="sm" /> Add a version</button></div>
               </div>
