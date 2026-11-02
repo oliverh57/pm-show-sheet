@@ -289,7 +289,7 @@ describe("REVIEW tab", () => {
     const ria = (min: number) => rev(min, "Ria", "ria@pm.com");
     const sam = (min: number) => rev(min, "Sam", "sam@pm.com");
     expect(sheetAuthor([sam(5), me(11), ria(12)], since, [])).toEqual({ name: "Ria", email: "ria@pm.com" }); // Sam's edit was before the last read
-    expect(sheetAuthor([me(11), me(12)], since, [])).toEqual({ name: "Oliver", email: "oliver@pm.com" }); // only you: it's yours
+    expect(sheetAuthor([me(11), me(12)], since, [])).toBeNull(); // only you: maybe your Mac's push, hiding someone's typing
     expect(sheetAuthor([ria(11), sam(12)], since, ["sam@pm.com"])).toEqual({ name: "Ria", email: "ria@pm.com" }); // Sam syncs from the app
     expect(sheetAuthor([ria(11), sam(12)], since, ["SAM@pm.com"])).toEqual({ name: "Ria", email: "ria@pm.com" });
     expect(sheetAuthor([ria(11), sam(12)], since, [])).toBeNull(); // can't tell

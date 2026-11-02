@@ -870,9 +870,9 @@ export interface SheetAuthor { name: string; email?: string }
 
 /**
  * Who typed what a pull found new in the Sheet (a comment or reply with no name), from who edited the Sheet since the
- * pull before it: Google doesn't say who edited a cell. The one person besides you; else you, when you're the only one
- * (rows the app hasn't seen yet are never its own); with several, the one who doesn't use the app (whose only way to
- * edit is the Sheet). Null when it can't tell.
+ * pull before it: Google doesn't say who edited a cell. The one person besides you; with several, the one who doesn't
+ * use the app (whose only way to edit is the Sheet). Null when it can't tell, as when you're the only one: the syncing
+ * Mac's own pushes are versions by you, and Google folds others' typing into them (a version names only its last editor).
  */
 export function sheetAuthor(revisions: SheetRevision[], since: number, appEditors: string[]): SheetAuthor | null {
   const people = new Map<string, SheetAuthor & { me: boolean }>();
@@ -886,7 +886,7 @@ export function sheetAuthor(revisions: SheetRevision[], since: number, appEditor
   const all = [...people.values()];
   const others = all.filter((p) => !p.me);
   if (others.length === 1) return named(others[0]);
-  if (!others.length) return all.length ? named(all[0]) : null;
+  if (!others.length) return null;
   const app = new Set(appEditors.map(emailKey));
   const outside = others.filter((p) => !p.email || !app.has(emailKey(p.email)));
   return outside.length === 1 ? named(outside[0]) : null;
