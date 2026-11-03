@@ -2,6 +2,7 @@
 // move it, drag a corner to resize it. The original stays in the gallery so it can be cropped again.
 import { useRef, useState } from "react";
 import { backend } from "../backend";
+import { changeAndBin } from "../library";
 import { clipName, setHero, setHeroCrop } from "../model/ops";
 import type { CropRect, Song } from "../model/types";
 import { useStore } from "../store";
@@ -23,7 +24,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
 export function HeroCrop({ song, src, onClose, onPickFrame }: { song: Song; src: string; onClose: () => void; onPickFrame?: () => void }) {
   const show = useStore((s) => s.show)!;
   const bundle = useStore((s) => s.bundle)!;
-  const { update, toast } = useStore.getState();
+  const { toast } = useStore.getState();
   const [imgAspect, setImgAspect] = useState<number | null>(null);
   const [crop, setCrop] = useState<CropRect | null>(null);
   const [saving, setSaving] = useState(false);
@@ -72,7 +73,7 @@ export function HeroCrop({ song, src, onClose, onPickFrame }: { song: Song; src:
     setSaving(true);
     try {
       const path = await backend.cropImage(bundle, src.startsWith("/") ? src : `${bundle}/${src}`, crop, clipName(show, song.id));
-      update((s) => setHeroCrop(s, song.id, src, crop, path));
+      void changeAndBin((s) => setHeroCrop(s, song.id, src, crop, path)); // the old crop goes to the bin
       toast("Image cropped");
       onClose();
     } catch (e) {
@@ -82,7 +83,7 @@ export function HeroCrop({ song, src, onClose, onPickFrame }: { song: Song; src:
   }
 
   function uncrop() {
-    update((s) => setHero(s, song.id, src));
+    void changeAndBin((s) => setHero(s, song.id, src));
     toast("Showing the whole image");
     onClose();
   }

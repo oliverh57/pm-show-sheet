@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { backend, type ThumbCandidate } from "../backend";
 import { replaceStill } from "../jobs";
-import { addImages, clipCategory, clipLength, clipName, setSongImage, songImage } from "../model/ops";
+import { changeAndBin } from "../library";
+import { addImages, clipCategory, clipLength, clipName, pruneRecordStills, setSongImage, songImage } from "../model/ops";
 import type { Clip, Show, Song } from "../model/types";
 import { useStore } from "../store";
 import { Icon } from "./icons";
@@ -33,7 +34,7 @@ export const isGrab = (path: string) => path.startsWith("media/grabs/");
 export function ThumbPicker({ song, replace, clip, onClose }: { song: Song; replace: string | null; clip?: Clip; onClose: () => void }) {
   const show = useStore((s) => s.show)!;
   const bundle = useStore((s) => s.bundle)!;
-  const { update, toast } = useStore.getState();
+  const { toast } = useStore.getState();
   const source = clip ? clipSource(bundle, clip) : thumbSource(show, bundle, song)!;
   const [suggestions, setSuggestions] = useState<ThumbCandidate[] | null>(null);
   const [t, setT] = useState(source.start + Math.min(5, (source.end - source.start) / 2));
@@ -56,7 +57,8 @@ export function ThumbPicker({ song, replace, clip, onClose }: { song: Song; repl
     setSaving(true);
     try {
       const still = await backend.grabFrame(bundle, source.path, time, clipName(show, song.id));
-      update((s) => {
+      // The old still goes to the bin once nothing uses it.
+      void changeAndBin((s) => {
         const sg = s.songs[song.id];
         const c = clip && sg.clips?.find((x) => x.path === clip.path);
         // A still another clip uses too stays theirs: this clip's new one goes beside it, and into this clip's category
@@ -67,6 +69,7 @@ export function ThumbPicker({ song, replace, clip, onClose }: { song: Song; repl
           if (songImage(sg, col) === replace) setSongImage(s, song.id, col, still);
         } else replaceStill(s, song.id, replace, still);
         if (c) c.still = still;
+        pruneRecordStills(s);
       });
       toast("Thumbnail updated");
       onClose();

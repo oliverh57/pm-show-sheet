@@ -151,7 +151,7 @@ async function fileStill(bundle: string, record: SourceRecord, pick: StillPick, 
     ? await fromClip(pick.clip, pick.mark)
     : await backend.grabFrame(bundle, record.path, time, name).catch((e) => (songClip ? fromClip(songClip.path, songClip) : Promise.reject(e)));
   if (useStore.getState().bundle !== bundle) return null;
-  useStore.getState().update((s) => {
+  await changeAndBin((s) => {
     if (!s.songs[pick.songId]) return;
     const clip = s.songs[pick.songId].clips?.find((c) => c.record_id === record.id && Math.abs(c.in - pick.mark.in) < 0.5);
     const col = clip ? clipCategory(s, clip) : record.image_col ?? GENERAL;
@@ -159,7 +159,7 @@ async function fileStill(bundle: string, record: SourceRecord, pick: StillPick, 
     else addImages(s, pick.songId, [still], col);
     const rec = s.records?.find((r) => r.id === record.id);
     // The still it replaces (the top frame used while waiting, or one picked before) isn't the record's any more: no
-    // song uses it, so it's binned with other unused stills.
+    // song uses it, so it goes to the bin.
     if (rec && pick.replaces) rec.stills = (rec.stills ?? []).filter((p) => p !== pick.replaces);
     addRecordStill(s, record.id, still);
     for (const c of s.songs[pick.songId].clips ?? []) if (c.record_id === record.id && Math.abs(c.in - pick.mark.in) < 0.5) c.still = still;

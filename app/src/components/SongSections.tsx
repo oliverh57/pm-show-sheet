@@ -7,7 +7,7 @@ import { CategoriesDialog } from "./Categories";
 import { useFileStates } from "./CloudFiles";
 import { repickStill } from "../jobs";
 import type { Clip, ColourSwatch, Song } from "../model/types";
-import { deleteSongImage } from "../library";
+import { changeAndBin, deleteSongImage } from "../library";
 import { useStore } from "../store";
 import { DraftInput } from "./fields";
 import { Icon } from "./icons";
@@ -137,14 +137,14 @@ export function Media({ song, onOpen }: { song: Song; onOpen: (path: string) => 
     const { view, setView, focusSong } = useStore.getState();
     return () => { setView(view); focusSong(song.id, "media"); };
   };
-  /** Put an image file someone chooses in this image's place. */
+  /** Put an image file someone chooses in this image's place. The old file goes to the bin once nothing uses it. */
   async function replaceFromFile(old: string) {
     setError(null);
     try {
       const [path] = await backend.chooseFiles("image", false);
       if (!path) return;
       const rel = await backend.importMedia(bundle, path, "renders");
-      update((s) => replaceImage(s, song.id, old, rel));
+      void changeAndBin((s) => replaceImage(s, song.id, old, rel));
     } catch (e) {
       setError(String(e));
     }

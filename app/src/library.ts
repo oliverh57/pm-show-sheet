@@ -203,6 +203,7 @@ function usedPaths(show: Show): Set<string> {
   return new Set([
     ...Object.values(show.songs).flatMap((s) => [...(s.clips ?? []).flatMap((c) => [c.path, c.still ?? ""]), ...(s.gallery ?? []), s.hero ?? ""]),
     ...(show.audio ?? []).map((a) => a.path),
+    ...(show.reviews ?? []).flatMap((c) => (c.still ? [c.still] : [])),
   ]);
 }
 

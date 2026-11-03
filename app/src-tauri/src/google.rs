@@ -451,12 +451,12 @@ pub fn multipart_body(boundary: &str, metadata: &serde_json::Value, mime: &str, 
 }
 
 /// Upload a file to Drive (create in `parent`, or replace `file_id`'s content). Images can be
-/// downsized first (renders are 4096px; `max_px` = 2560 for Drive). Returns the file id.
+/// downsized first (renders are 4096px; `max_px` = 2560 for Drive), as JPEG: Slides can't take WebP. Returns the file id.
 #[tauri::command]
 pub async fn google_upload(app: AppHandle, path: String, name: String, parent: Option<String>, file_id: Option<String>, max_px: Option<u32>) -> Result<String, String> {
     let src = PathBuf::from(&path);
     let mut mime = mime_for(&src);
-    let bytes = if let (Some(px), "image/jpeg" | "image/png") = (max_px, mime) {
+    let bytes = if let (Some(px), "image/jpeg" | "image/png" | "image/webp") = (max_px, mime) {
         let tmp = std::env::temp_dir().join(format!("pmss-upload-{}.jpg", std::process::id()));
         let ok = std::process::Command::new("sips")
             .args(["-Z", &px.to_string(), "-s", "format", "jpeg", "-s", "formatOptions", "80"])
