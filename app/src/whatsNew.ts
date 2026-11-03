@@ -7,6 +7,17 @@ export interface ReleaseNotes {
 }
 
 export const WHATS_NEW: Record<string, ReleaseNotes> = {
+  "0.10.0": {
+    summary: "Keep a show downloaded on this Mac, and song audio now syncs through Google Drive.",
+    items: [
+      "The download button on a show's card now keeps it downloaded: it downloads all its media and keeps new media coming down as it's added. Space-saving leaves it alone.",
+      "The download bar says about how long is left, and Cancel stops the downloads in it.",
+      "Hover the show's size on the Media page to see what's downloaded, by kind of media, and what's online only.",
+      "Song audio is copied into the show and uploads to Google Drive like clips, so everyone in the show has it. The Sheet gets an AUDIO LINK column.",
+      "Burned-in TC on a record with no LTC still puts the song's card in the corner of each clip.",
+      "Edits a collaborator makes in the Google Sheet are no longer shown as yours.",
+    ],
+  },
   "0.9.0": {
     summary: "Replace a song's video or audio, or keep both, with the two side by side.",
     items: [
