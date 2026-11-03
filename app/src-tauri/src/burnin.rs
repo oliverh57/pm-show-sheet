@@ -1,6 +1,7 @@
 //! Burned-in timecode for clips: a card in the bottom-right corner with the song ("03  GOOD LIES") over the
 //! record's TC and rate ("● 09:01:42:19   25 fps"). The green dot is lit while the clip has TC; outside
-//! the record's TC blocks (pre-show, gaps between songs) the TC shows as dashes rather than made up.
+//! the record's TC blocks (pre-show, gaps between songs) the TC shows as dashes rather than made up. A record with
+//! no LTC at all gets a card with just the song.
 //!
 //! A clip with long pauses cut out of it shows "GAP CUT  2:14" above the card for a few seconds after each jump
 //! (with no card when the TC isn't burned in).
@@ -266,10 +267,13 @@ impl Clock {
         let rate = format!("{} fps", if is_drop(fps) { format!("{fps:.2}") } else { format!("{fps}") });
         let rate_w = small.width(&rate, 0.0);
         let (tc_layout, tc_w) = mono.layout(NO_TC, 0.0);
-        let bottom_w = (DOT + GAP * 2.0) * s + tc_w + rate_w;
-        let top_h = if top_w > 0.0 { (LABEL_LINE + LINE_GAP) * s } else { 0.0 };
+        // No LTC in the record: the card is just the song's line.
+        let has_tc = !burn.blocks.is_empty();
+        let bottom_w = if has_tc { (DOT + GAP * 2.0) * s + tc_w + rate_w } else { 0.0 };
+        let top_h = if top_w > 0.0 { (LABEL_LINE + if has_tc { LINE_GAP } else { 0.0 }) * s } else { 0.0 };
         let width = (top_w.max(bottom_w) + PAD.0 * 2.0 * s).ceil() as usize;
-        let height = ((PAD.1 + TC_LINE + PAD.2) * s + top_h).ceil() as usize;
+        let height = ((PAD.1 + if has_tc { TC_LINE } else { 0.0 } + PAD.2) * s + top_h).ceil() as usize;
+        let show_card = burn.tc && (has_tc || top_w > 0.0);
 
         // A notice for each jump, saying how long a pause was cut there.
         let notice = Face::load(SANS, SANS_MEDIUM, NOTICE_SIZE * s)?;
@@ -286,8 +290,8 @@ impl Clock {
             pill.text(&notice, &text, NOTICE_PAD.0 * s, (h / 2.0 + notice.cap() / 2.0).round(), tracking, CARD, 1.0);
             notices.push((at, pill));
         }
-        let (card_w, card_h) = if burn.tc { (width, height) } else { (0, 0) };
-        let notice_h = notices.first().map_or(0, |(_, p)| p.h + if burn.tc { (NOTICE_GAP * s).round() as usize } else { 0 });
+        let (card_w, card_h) = if show_card { (width, height) } else { (0, 0) };
+        let notice_h = notices.first().map_or(0, |(_, p)| p.h + if show_card { (NOTICE_GAP * s).round() as usize } else { 0 });
         let canvas_w = notices.iter().map(|(_, p)| p.w).fold(card_w, usize::max);
         let length: f64 = parts.iter().map(|(_, len)| len).sum();
 
@@ -308,13 +312,15 @@ impl Clock {
             }
         }
         let row = PAD.1 * s + top_h + TC_LINE * s / 2.0;
-        base.text(&small, &rate, width as f32 - left - rate_w, (row + small.cap() / 2.0).round(), 0.0, WHITE, 0.55);
+        if has_tc {
+            base.text(&small, &rate, width as f32 - left - rate_w, (row + small.cap() / 2.0).round(), 0.0, WHITE, 0.55);
+        }
         Ok(Clock {
             blocks: burn.blocks,
             fps,
             parts,
             frames: (length * real_rate(fps)).ceil() as usize + 1,
-            tc: burn.tc,
+            tc: show_card,
             notices,
             card_w,
             card_h,
@@ -382,6 +388,9 @@ impl Clock {
     /// The TC card at `t` seconds into the clip.
     fn card(&self, t: f64) -> Canvas {
         let mut card = self.base.clone();
+        if self.blocks.is_empty() {
+            return card;
+        }
         let tc = tc_at(&self.blocks, self.fps, self.record_time(t));
         let (text, alpha, dot, dot_alpha) = match &tc {
             Some(tc) => (tc.as_str(), 1.0, GREEN, 1.0),
@@ -484,6 +493,21 @@ mod tests {
         let during = clock.frame(5 * 25);
         assert!(green(&during) > 30, "no green dot");
         assert_ne!(before, during);
+    }
+
+    #[test]
+    fn draws_just_the_song_without_ltc() {
+        let burn = |song: Option<&str>| BurnIn { fps: 25.0, blocks: vec![], song: song.map(Into::into), number: Some("03".into()), tc: true };
+        let Ok(clock) = Clock::new(burn(Some("Good Lies")), vec![(5.0, 10.0)], 720) else { return };
+        let Ok(with_tc) = Clock::new(BurnIn { blocks: vec![block(0.0, 20.0, "01:00:00:00")], ..burn(Some("Good Lies")) }, vec![(5.0, 10.0)], 720) else { return };
+        assert!(clock.height < with_tc.height, "room left for the TC");
+        let first = clock.frame(0);
+        assert!(first.chunks(4).filter(|p| p[3] > 150).count() > clock.width * clock.height / 2, "no card");
+        assert!(first.chunks(4).all(|p| !(p[3] > 200 && p[1] > 180 && p[0] < 120)), "a dot with no TC");
+        assert_eq!(first, clock.frame(5 * 25));
+        // With neither a name nor a number there's nothing to draw.
+        let Ok(blank) = Clock::new(BurnIn { number: None, ..burn(None) }, vec![(5.0, 10.0)], 720) else { return };
+        assert_eq!(blank.width * blank.height, 0);
     }
 
     #[test]

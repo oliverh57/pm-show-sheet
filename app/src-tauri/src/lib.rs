@@ -310,7 +310,7 @@ async fn clip_cut(app: AppHandle, job: String, bundle: String, source: String, s
         let file = format!("{}{suffix}.mp4", safe_stem(&name));
         let part = dir.join(format!(".{file}.part"));
         let burn_in = burn_in.filter(|b| b.tc || parts.len() > 1);
-        let clock = burn_in.map(|b| burnin::Clock::new(b, parts.clone(), CLIP_HEIGHT)).transpose()?;
+        let clock = burn_in.map(|b| burnin::Clock::new(b, parts.clone(), CLIP_HEIGHT)).transpose()?.filter(|c| c.width > 0 && c.height > 0);
         cut_with_ffmpeg(&ffmpeg, &source, &parts, audio.is_some(), pan.as_deref(), clock, &part, |fraction| {
             let _ = app.emit("clip-progress", Progress { id: job.clone(), fraction });
         })?;

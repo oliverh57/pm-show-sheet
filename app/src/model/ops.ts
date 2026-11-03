@@ -1558,9 +1558,9 @@ export function recordStillOf(show: Show, recordId: string, songId: string): str
   return stills.find((p) => mine.has(p));
 }
 
-/** Whether a record's clips get its TC burned into the corner: asked for, and it has LTC to draw. */
+/** Whether a record's clips get the card burned into the corner: the song and the record's TC, or just the song when it has no LTC. */
 export function burnsTc(record: SourceRecord | undefined): boolean {
-  return Boolean(record?.burn_tc && record.ltc?.blocks.length);
+  return Boolean(record?.burn_tc);
 }
 
 /**

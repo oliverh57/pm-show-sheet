@@ -36,13 +36,13 @@ async function cutClips(bundle: string, record: SourceRecord, queue: { mark: Son
   const stillOpen = () => useStore.getState().bundle === bundle;
   const ltc = record.ltc?.channel ?? null; // clips keep the LTC, on one side, and say so in their name
   const burn = burnsTc(record);
-  // The burned-in card names the song and its place in the running order ("03 GOOD LIES"). A clip with pauses cut
-  // out of it says GAP CUT where it jumps, with the card or without.
+  // The burned-in card names the song and its place in the running order ("03 GOOD LIES"), over the TC when the
+  // record has LTC. A clip with pauses cut out of it says GAP CUT where it jumps, with the card or without.
   const burnIn = (songId: string, cut: boolean) => {
     const s = useStore.getState().show;
-    if (!(burn || cut) || !record.ltc || !s) return null;
+    if (!(burn || cut) || !s) return null;
     const at = s.set_order.indexOf(songId);
-    return { fps: record.ltc.fps ?? 25, blocks: record.ltc.blocks, song: s.songs[songId]?.fields.name ?? "", number: at >= 0 ? String(at + 1).padStart(2, "0") : null, tc: burn };
+    return { fps: record.ltc?.fps ?? 25, blocks: record.ltc?.blocks ?? [], song: s.songs[songId]?.fields.name ?? "", number: at >= 0 ? String(at + 1).padStart(2, "0") : null, tc: burn };
   };
 
   for (const { mark, id, name } of queue) {

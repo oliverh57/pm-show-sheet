@@ -340,11 +340,9 @@ describe("set lists and timecode", () => {
     // A moved mark is cut again; a clip from another record doesn't count.
     expect(marksToMake(show, "r1", [mark("s_harbour", 100, 260)], true)).toHaveLength(1);
     expect(marksToMake(show, "r2", [mark("s_harbour", 100, 200)], true)).toHaveLength(1);
-    // Turning burned-in TC on cuts Harbour again, once the record has LTC to draw.
+    // Turning burned-in TC on cuts Harbour again, LTC or not (without it the card has just the song).
     expect(marksToMake(show, "r1", [mark("s_harbour", 100, 200)], true, true)).toHaveLength(1);
     show.records[0].burn_tc = true;
-    expect(marksToMake(show, "r1", [mark("s_harbour", 100, 200)], true)).toHaveLength(0);
-    show.records[0].ltc = { channel: 1, fps: 25, blocks: [{ file_start: 0, file_end: 300, tc_start: "01:00:00:00", tc_end: "01:05:00:00" }], duration: 300 };
     expect(marksToMake(show, "r1", [mark("s_harbour", 100, 200)], true)).toHaveLength(1);
     show.songs.s_harbour.clips[0].burn_tc = true;
     expect(marksToMake(show, "r1", [mark("s_harbour", 100, 200)], true)).toHaveLength(0);

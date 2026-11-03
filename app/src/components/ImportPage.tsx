@@ -330,7 +330,7 @@ function WhatStep({ files, onNext }: { files: string[]; onNext: (step: Step, sou
       {current === "burn" && (
         <div className="question">
           {card(!burn, () => setBurn(false), "No", "Clips as recorded.")}
-          {card(burn, () => setBurn(true), "Yes, bottom right", <>A card with the song, show TC and frame rate in each clip's corner.<br /><BurnSample /></>)}
+          {card(burn, () => setBurn(true), "Yes, bottom right", <>A card with the song, show TC and frame rate in each clip's corner (just the song if the record has no TC).<br /><BurnSample /></>)}
         </div>
       )}
       {current === "name" && <ClipLabel value={label} onChange={setLabel} asked />}
