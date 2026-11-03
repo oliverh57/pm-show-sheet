@@ -2,7 +2,8 @@
 // settings are under the show's name in the sidebar. Laid out like Show settings (see OtherPages.tsx).
 import { useEffect, useState } from "react";
 import logo from "../assets/logo.png";
-import { backend } from "../backend";
+import { backend, type Storage } from "../backend";
+import { readManifest } from "../drive/show";
 import { cachedShows } from "../library";
 import { LIMIT_OPTIONS, removeAllDownloads, setCacheLimit, setUnusedDays, UNUSED_OPTIONS, useStorage } from "../storage";
 import { useStore } from "../store";
@@ -82,8 +83,9 @@ function StorageGroup() {
   const openBundle = useStore((s) => s.bundle);
   const toast = useStore((s) => s.toast);
   const [progress, setProgress] = useState<string | null>(null);
-  const [space, setSpace] = useState<{ cache: number; total: number; free: number } | null>(null);
-  const measure = () => { backend.driveStorage().then(setSpace, () => setSpace(null)); };
+  const [space, setSpace] = useState<Storage | null>(null);
+  const [names, setNames] = useState<Record<string, string>>({});
+  const measure = () => { backend.driveStorage().then((s) => { setSpace(s); showNames(s.shows.map((x) => x.bundle)).then(setNames); }, () => setSpace(null)); };
   useEffect(measure, []);
   const size = space?.cache ?? null;
 
@@ -118,7 +120,7 @@ function StorageGroup() {
     <section className="sgroup">
       <div className="label">Storage</div>
       <div className="panel slist">
-        {space && space.total > 0 && <StorageBar space={space} limit={limit} />}
+        {space && space.total > 0 && <StorageBar space={space} limit={limit} names={names} />}
         <SRow title="Remove downloads of unused shows" hint="Clips of shows not opened on this Mac for a while. They stay in Google Drive and download again when they're shown.">
           <select value={days} aria-label="Remove downloads of unused shows" onChange={(e) => setUnusedDays(Number(e.target.value))}>
             {UNUSED_OPTIONS.map((o) => <option key={o.days} value={o.days}>{o.label}</option>)}
@@ -140,15 +142,24 @@ function StorageGroup() {
   );
 }
 
+/** The names of these shows copied to this Mac: as All shows last listed them, else as their manifest last had them. */
+async function showNames(bundles: string[]): Promise<Record<string, string>> {
+  const listed = new Map(cachedShows().map((s) => [s.path, s.name]));
+  const open = useStore.getState();
+  if (open.bundle && open.show) listed.set(open.bundle, open.show.name);
+  const names = await Promise.all(bundles.map(async (b) => listed.get(b) ?? (await readManifest(b).catch(() => null))?.summary?.name ?? null));
+  return Object.fromEntries(bundles.flatMap((b, i) => (names[i] ? [[b, names[i]]] : [])));
+}
+
 /**
  * The media cache as a bar: against its maximum when there is one, else against the disk it's on (show media, everything
- * else, free).
+ * else, free). Hover for what each show takes up.
  */
-function StorageBar({ space, limit }: { space: { cache: number; total: number; free: number }; limit: number }) {
+function StorageBar({ space, limit, names }: { space: Storage; limit: number; names: Record<string, string> }) {
   const pct = (n: number, of: number) => `${Math.min(100, (n / of) * 100)}%`;
   const other = Math.max(0, space.total - space.free - space.cache);
   return (
-    <div className="srow storage-bar">
+    <div className="srow storage-bar size-hover">
       <div className="bar" role="img" aria-label={limit ? `${formatSize(space.cache)} of ${formatSize(limit)}` : `${formatSize(space.cache)} of show media, ${formatSize(space.free)} free`}>
         {limit ? <i className={`media ${space.cache >= limit * 0.95 ? "full" : ""}`} style={{ width: pct(space.cache, limit) }} />
           : <><i className="media" style={{ width: pct(space.cache, space.total) }} /><i className="other" style={{ width: pct(other, space.total) }} /></>}
@@ -158,6 +169,29 @@ function StorageBar({ space, limit }: { space: { cache: number; total: number; f
         {!limit && <span><span className="key other" />Everything else · {formatSize(other)}</span>}
         <span className="free">{formatSize(space.free)} free on this Mac</span>
       </div>
+      {space.shows.length > 0 && <ShowsBreakdown shows={space.shows} names={names} />}
+    </div>
+  );
+}
+
+const SHOW_COLOURS = ["var(--accent)", "var(--tc)", "var(--ok)", "var(--collab)", "var(--gdeck)"];
+
+/** On hovering the storage bar: a bar of the media cache by show, the biggest few by name and the rest together. */
+function ShowsBreakdown({ shows, names }: { shows: Storage["shows"]; names: Record<string, string> }) {
+  const top = shows.length > SHOW_COLOURS.length ? shows.slice(0, SHOW_COLOURS.length - 1) : shows;
+  const rest = shows.slice(top.length);
+  const parts = [
+    ...top.map((s, i) => ({ key: s.bundle, label: names[s.bundle] ?? "A show no longer listed", bytes: s.bytes, colour: SHOW_COLOURS[i] })),
+    ...(rest.length ? [{ key: "rest", label: `${rest.length} other shows`, bytes: rest.reduce((n, s) => n + s.bytes, 0), colour: "var(--faint)" }] : []),
+  ];
+  const total = parts.reduce((n, p) => n + p.bytes, 0);
+  return (
+    <div className="size-pop">
+      <div className="size-bar">{parts.map((p) => <i key={p.key} style={{ flexGrow: p.bytes / total, background: p.colour }} />)}</div>
+      <div className="size-legend">
+        {parts.map((p) => <span key={p.key}><i style={{ background: p.colour }} /><span className="nm">{p.label}</span><b>{formatSize(p.bytes)}</b></span>)}
+      </div>
+      <div className="muted small">Each show's clips and images on this Mac. They stay in Google Drive.</div>
     </div>
   );
 }

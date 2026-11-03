@@ -39,6 +39,17 @@ export interface GoogleUser {
   picture?: string | null;
 }
 
+/**
+ * Space on this Mac, in bytes: what the media cache takes up and each show in it (biggest first), and the size of the
+ * disk it's on and what's free there.
+ */
+export interface Storage {
+  cache: number;
+  shows: { bundle: string; bytes: number }[];
+  total: number;
+  free: number;
+}
+
 /** A show bundle as listed on the All shows page. */
 export interface ShowSummary {
   path: string;
@@ -176,7 +187,7 @@ export interface Backend {
   /** Open the shows folder in Finder. */
   driveOpenCache(): Promise<void>;
   /** What the shows folder takes up, and the size of the disk it's on and what's free there, in bytes. */
-  driveStorage(): Promise<{ cache: number; total: number; free: number }>;
+  driveStorage(): Promise<Storage>;
   /** The most the shows folder may take up (0: no limit): over it, the media used longest ago is deleted. Trims it now; returns the bytes freed. */
   driveSetCacheLimit(bytes: number): Promise<number>;
   /** Which of these absolute paths are files on this Mac. */
@@ -409,7 +420,7 @@ const desktop: Backend = {
     await invoke("drive_open_cache");
   },
   async driveStorage() {
-    return (await invoke("drive_storage")) as { cache: number; total: number; free: number };
+    return (await invoke("drive_storage")) as Storage;
   },
   async driveSetCacheLimit(bytes) {
     return (await invoke("drive_set_cache_limit", { bytes })) as number;
@@ -610,7 +621,7 @@ const browser: Backend = {
   },
   async driveOpenCache() {},
   async driveStorage() {
-    return { cache: 0, total: 0, free: 0 };
+    return { cache: 0, shows: [], total: 0, free: 0 };
   },
   async driveSetCacheLimit() {
     return 0;

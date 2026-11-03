@@ -307,12 +307,31 @@ fn dir_size(dir: &Path) -> u64 {
     }).sum()
 }
 
-/// Space on this Mac: what the shows folder takes up, and the size of the disk it's on and what's free there, in bytes.
+/// Space on this Mac: what the shows folder takes up, and each show in it (biggest first), and the size of the disk
+/// it's on and what's free there, in bytes.
 #[derive(serde::Serialize)]
 pub struct Storage {
     cache: u64,
+    shows: Vec<ShowSpace>,
     total: u64,
     free: u64,
+}
+
+#[derive(serde::Serialize)]
+pub struct ShowSpace {
+    bundle: String,
+    bytes: u64,
+}
+
+/// The shows in the shows folder and what each takes up, biggest first, leaving out empty ones.
+fn show_sizes(root: &Path) -> Vec<ShowSpace> {
+    let Ok(entries) = fs::read_dir(root) else { return vec![] };
+    let mut shows: Vec<ShowSpace> = entries.flatten().map(|e| e.path()).filter(|p| p.is_dir())
+        .map(|p| ShowSpace { bytes: dir_size(&p), bundle: p.to_string_lossy().to_string() })
+        .filter(|s| s.bytes > 0)
+        .collect();
+    shows.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+    shows
 }
 
 #[tauri::command]
@@ -321,7 +340,7 @@ pub async fn drive_storage(app: AppHandle) -> Result<Storage, String> {
     fs::create_dir_all(&root).map_err(err("create the shows folder"))?;
     tauri::async_runtime::spawn_blocking(move || {
         let (total, free) = disk_space(&root);
-        Storage { cache: dir_size(&root), total, free }
+        Storage { cache: dir_size(&root), shows: show_sizes(&root), total, free }
     })
     .await
     .map_err(err("measure storage"))
