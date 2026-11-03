@@ -676,7 +676,7 @@ pub fn run() {
             google::google_client_configured, google::google_set_client, google::google_sign_in,
             google::google_current_user, google::google_sign_out, google::google_api, google::google_upload,
             drive::drive_cache_root, drive::drive_download, drive::drive_upload, drive::drive_fetch, drive::paths_exist, drive::path_sizes, drive::paths_local, drive::drive_evict, drive::drive_forget,
-            drive::drive_cached_shows, drive::drive_cache_size, drive::drive_open_cache, drive::drive_storage, drive::drive_set_cache_limit
+            drive::drive_cached_shows, drive::drive_cache_size, drive::drive_open_cache, drive::drive_storage, drive::drive_set_cache_limit, drive::drive_cancel_downloads
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

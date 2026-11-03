@@ -13,7 +13,9 @@ use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::future::Future;
 use std::sync::{Mutex, OnceLock};
+use std::task::Poll;
 use std::time::{Duration, Instant, SystemTime};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Semaphore;
@@ -34,6 +36,10 @@ static FETCHING: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
 static CACHE_LIMIT: AtomicU64 = AtomicU64::new(0);
 /// One trim at a time.
 static TRIMMING: Mutex<()> = Mutex::new(());
+/// Bumped by Cancel on the download progress bar (drive_cancel_downloads): a download in the bar that started before
+/// stops, and fails with `CANCELLED`.
+static CANCELS: AtomicU64 = AtomicU64::new(0);
+pub const CANCELLED: &str = "cancelled";
 
 /// How far an upload has got, in bytes, for the upload progress bar (src/components/UploadProgress.tsx). `id` is the
 /// file's path.
@@ -114,12 +120,16 @@ async fn get_json(app: &AppHandle, url: &str) -> Result<Value, String> {
 
 /// Download a Drive file to `dest` (through a .part file, so a half-downloaded file is never mistaken for the file).
 /// `revision`: an earlier version of the file instead of the current one. `progress` gets the bytes received so far, and
-/// the size (0 if Drive doesn't say), every so often.
-async fn download_to(app: &AppHandle, file_id: &str, revision: Option<&str>, dest: &Path, progress: &(dyn Fn(u64, u64) + Send + Sync)) -> Result<u64, String> {
+/// the size (0 if Drive doesn't say), every so often. `cancels`: stop once Cancel is pressed after this (`CANCELS` then).
+async fn download_to(app: &AppHandle, file_id: &str, revision: Option<&str>, dest: &Path, progress: &(dyn Fn(u64, u64) + Send + Sync), cancels: Option<u64>) -> Result<u64, String> {
     if !valid_id(file_id) || revision.is_some_and(|r| !valid_id(r)) {
         return Err(format!("not a Drive file id: {file_id}"));
     }
+    let cancelled = || cancels.is_some_and(|n| CANCELS.load(Ordering::SeqCst) != n);
     let _slot = DOWNLOADS.acquire().await.map_err(err("download"))?;
+    if cancelled() {
+        return Err(CANCELLED.into());
+    }
     let url = match revision {
         Some(rev) => format!("{FILES}/{file_id}/revisions/{rev}?alt=media&supportsAllDrives=true"),
         None => format!("{FILES}/{file_id}?alt=media&supportsAllDrives=true"),
@@ -149,8 +159,30 @@ async fn download_to(app: &AppHandle, file_id: &str, revision: Option<&str>, des
     let mut n = 0u64;
     let mut reported = Instant::now();
     progress(0, size);
+    let mut tick = tokio::time::interval(Duration::from_millis(200));
     loop {
-        match res.chunk().await {
+        // The next bytes, or None once Cancel is pressed (looked at every so often, so a stalled download stops too).
+        let next = {
+            let mut chunk = std::pin::pin!(res.chunk());
+            std::future::poll_fn(|cx| {
+                if let Poll::Ready(c) = chunk.as_mut().poll(cx) {
+                    return Poll::Ready(Some(c));
+                }
+                while cancels.is_some() && tick.poll_tick(cx).is_ready() {
+                    if cancelled() {
+                        return Poll::Ready(None);
+                    }
+                }
+                Poll::Pending
+            })
+            .await
+        };
+        let Some(next) = next else {
+            drop(file);
+            let _ = fs::remove_file(&part);
+            return Err(CANCELLED.into());
+        };
+        match next {
             Ok(Some(bytes)) => {
                 file.write_all(&bytes).map_err(err("write download"))?;
                 n += bytes.len() as u64;
@@ -180,7 +212,13 @@ pub async fn drive_download(app: AppHandle, file_id: String, dest: String, revis
     if !in_cache(&app, &dest) {
         return Err("Downloads only go into the app's shows folder".into());
     }
-    download_to(&app, &file_id, revision.as_deref(), &dest, &|_, _| {}).await.map(|_| ())
+    download_to(&app, &file_id, revision.as_deref(), &dest, &|_, _| {}, None).await.map(|_| ())
+}
+
+/// Cancel on the download progress bar: stop every download it shows.
+#[tauri::command]
+pub fn drive_cancel_downloads() {
+    CANCELS.fetch_add(1, Ordering::SeqCst);
 }
 
 /// Which of these files are on this Mac.
@@ -311,7 +349,7 @@ pub async fn drive_set_cache_limit(app: AppHandle, bytes: u64) -> u64 {
 
 /// Over `limit` bytes, delete the shows folder's least recently used media until it's under: only files that are in
 /// Google Drive (in their show's manifest), so they download again when they're shown. Never `keep` (a file just
-/// downloaded) or one downloading. Returns the bytes freed.
+/// downloaded), one downloading, or a show kept downloaded (`keep` in its manifest). Returns the bytes freed.
 fn trim_cache(root: &Path, limit: u64, keep: Option<&Path>) -> u64 {
     if limit == 0 {
         return 0;
@@ -326,6 +364,9 @@ fn trim_cache(root: &Path, limit: u64, keep: Option<&Path>) -> u64 {
     for show in fs::read_dir(root).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
         let manifest: Value = fs::read_to_string(show.join(MANIFEST)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
         let Some(listed) = manifest["files"].as_object() else { continue };
+        if manifest["keep"] == true {
+            continue;
+        }
         for rel in listed.keys() {
             let p = Path::new(rel);
             if !rel.starts_with("media/") || p.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
@@ -515,6 +556,7 @@ async fn file_id(app: &AppHandle, show: &Path, rel: &str) -> Result<String, Stri
 async fn fetch(app: &AppHandle, path: &Path, report: bool) -> Result<(), String> {
     let root = cache_root(app).ok_or("no app data folder")?;
     let (show, rel) = split_cached(&root, path).ok_or("not in a show")?;
+    let cancels = report.then(|| CANCELS.load(Ordering::SeqCst));
     let started = Instant::now();
     loop {
         if path.exists() {
@@ -527,6 +569,9 @@ async fn fetch(app: &AppHandle, path: &Path, report: bool) -> Result<(), String>
         if mine {
             break;
         }
+        if cancels.is_some_and(|n| CANCELS.load(Ordering::SeqCst) != n) {
+            return Err(CANCELLED.into());
+        }
         if started.elapsed() > FETCH_WAIT {
             return Err("timed out waiting for a download".into());
         }
@@ -537,7 +582,7 @@ async fn fetch(app: &AppHandle, path: &Path, report: bool) -> Result<(), String>
     progress(0, 0, false);
     let result = async {
         let id = file_id(app, &show, &rel).await?;
-        download_to(app, &id, None, path, &|got, size| progress(got, size, false)).await.map(|_| ())
+        download_to(app, &id, None, path, &|got, size| progress(got, size, false), cancels).await.map(|_| ())
     }
     .await;
     progress(0, 0, true);
@@ -614,6 +659,11 @@ mod tests {
         assert_eq!(trim_cache(&root, 0, None), 0);
         // A file just downloaded stays, however old.
         assert_eq!(trim_cache(&root, 1500, Some(&media.join("new.mp4"))), 0);
+        // Nor does a show kept downloaded.
+        let kept = serde_json::json!({ "keep": true, "files": { "media/clips/new.mp4": {} } });
+        fs::write(root.join("show1").join(MANIFEST), kept.to_string()).unwrap();
+        assert_eq!(trim_cache(&root, 1, None), 0);
+        assert!(media.join("new.mp4").exists());
         fs::remove_dir_all(&root).unwrap();
     }
 

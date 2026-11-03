@@ -163,6 +163,8 @@ export interface Backend {
   driveUpload(path: string, to: { name?: string; parent?: string; fileId?: string; properties?: Record<string, string> }, onProgress?: (sent: number, total: number) => void): Promise<DriveFile>;
   /** Download any of a show's files (bundle-relative) that aren't on this Mac yet. Returns a note for each that couldn't be. `quiet`: not in the download progress bar. */
   driveFetch(bundle: string, paths: string[], quiet?: boolean): Promise<string[]>;
+  /** Stop the downloads in the download progress bar (not quiet ones): each fails with a note ending "cancelled". */
+  cancelDownloads(): Promise<void>;
   /** Delete downloaded files (bundle-relative, under media/) from a show's copy; they stay in Drive. Returns how many. */
   driveEvict(bundle: string, paths: string[]): Promise<number>;
   /** Delete a show's whole copy from this Mac. */
@@ -388,6 +390,9 @@ const desktop: Backend = {
   async driveFetch(bundle, paths, quiet) {
     return paths.length ? ((await invoke("drive_fetch", { bundle, paths, quiet: quiet ?? null })) as string[]) : [];
   },
+  async cancelDownloads() {
+    await invoke("drive_cancel_downloads");
+  },
   async driveEvict(bundle, paths) {
     return paths.length ? ((await invoke("drive_evict", { bundle, paths })) as number) : 0;
   },
@@ -589,6 +594,7 @@ const browser: Backend = {
   async driveUpload() {
     throw new Error("Google Drive needs the desktop app");
   },
+  async cancelDownloads() {},
   async driveFetch() {
     return [];
   },

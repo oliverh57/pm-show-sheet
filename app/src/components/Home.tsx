@@ -5,7 +5,7 @@ import { backend, type ShowSummary } from "../backend";
 import { isOffline } from "../drive/live";
 import { cachedShows, createShow, type DriveFolder, newShowFolder, openShow, rememberNewShowFolder, scanShows, timeAgo } from "../library";
 import { bundleName } from "../model/ops";
-import { downloadShow, showOnlineOnly } from "../storage";
+import { downloadShow, loadKept, setKeepDownloaded, showOnlineOnly, useKept } from "../storage";
 import { useStore } from "../store";
 import { DriveFolderPicker } from "./DriveFolderPicker";
 import { Avatar, GoogleDriveMark, Icon } from "./icons";
@@ -26,6 +26,8 @@ export function Home() {
   const [media, setMedia] = useState<{ path: string; text: string } | null>(null); // a show whose media is downloading or being removed
   const blocked = useUpdates(showsBlocked); // a newer version is on its way: shows stay shut until it's installed
   const updateReady = useUpdates((s) => s.status === "ready");
+  const kept = useKept((s) => s.kept);
+  useEffect(() => { loadKept(); }, []);
 
   async function refresh() {
     setScanning(true);
@@ -60,14 +62,26 @@ export function Home() {
     setOpening(null);
   }
 
-  async function downloadAll(s: ShowSummary) {
+  /** Keep all of a show's media downloaded on this Mac (downloading it now, and new media as it's added), or stop. */
+  async function toggleKeep(s: ShowSummary) {
     setError(null);
+    if (kept.includes(s.path)) {
+      try {
+        await setKeepDownloaded(s.path, false);
+        useStore.getState().toast(`${s.name} is no longer kept downloaded. Its media stays on this Mac until it's made online only or space is needed`);
+      } catch (e) {
+        setError(`Couldn't change ${s.name}: ${why(e)}`);
+      }
+      return;
+    }
     setMedia({ path: s.path, text: "Looking in Google Drive…" });
     try {
+      await setKeepDownloaded(s.path, true);
       const n = await downloadShow(s.path, (done, total) => setMedia({ path: s.path, text: `Downloading ${done} of ${total}` }));
-      useStore.getState().toast(n ? `Downloaded ${n} file${n === 1 ? "" : "s"} of ${s.name}` : `All of ${s.name}'s media is already on this Mac`);
+      useStore.getState().toast(`${s.name} is kept downloaded${n ? `: downloaded ${n} file${n === 1 ? "" : "s"}` : ""}. New media downloads when it's added`);
     } catch (e) {
-      setError(`Couldn't download all of ${s.name}: ${why(e)}`);
+      if (isOffline(e)) useStore.getState().toast(`${s.name} is kept downloaded. Its media downloads when Google Drive can be reached`);
+      else setError(`Couldn't download all of ${s.name}: ${why(e)}`);
     }
     setMedia(null);
   }
@@ -140,8 +154,10 @@ export function Home() {
               </div>
             </button>
             {backend.isDesktop && (
-              <div className="pcard-acts">
-                <button className="icon" disabled={media !== null} title="Download all its media to this Mac" aria-label="Download all media" onClick={() => downloadAll(s)}><Icon name="download" size="sm" /></button>
+              <div className={`pcard-acts ${kept.includes(s.path) ? "kept" : ""}`}>
+                <button className={`icon ${kept.includes(s.path) ? "on" : ""}`} disabled={media !== null} aria-pressed={kept.includes(s.path)} aria-label="Keep downloaded"
+                        title={kept.includes(s.path) ? "Kept downloaded on this Mac, with new media as it's added. Click to stop" : "Keep downloaded: download all its media to this Mac, and new media as it's added"}
+                        onClick={() => toggleKeep(s)}><Icon name="download" size="sm" /></button>
                 <button className="icon" disabled={media !== null} title="Make all its media online only: remove it from this Mac (it stays in Google Drive and downloads again when it's shown)" aria-label="Make all media online only" onClick={() => onlineOnly(s)}><Icon name="cloud" size="sm" /></button>
               </div>
             )}

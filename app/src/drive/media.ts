@@ -13,8 +13,11 @@ const SKIP = new Set(["Slides images", "presence", "thumbs", "proxies"]); // the
 
 /** A file going up or coming down now: its name, and the bytes moved so far of `size` (0 until Drive says). */
 export interface Transfer { id: string; name: string; sent: number; size: number }
-/** Files in a run of uploads (or downloads), how many are done, and the ones going now. Back to 0 once all are done. */
-export interface TransferRun { total: number; done: number; active: Transfer[] }
+/**
+ * Files in a run of uploads (or downloads), how many are done, and the ones going now, with the bytes moved by the ones
+ * done (for the time left). Back to 0 once all are done.
+ */
+export interface TransferRun { total: number; done: number; moved: number; active: Transfer[] }
 interface Transfers {
   /** Media paths uploading, for the "Uploading…" badges. */
   uploading: string[];
@@ -22,7 +25,7 @@ interface Transfers {
   up: TransferRun;
   down: TransferRun;
 }
-const IDLE: TransferRun = { total: 0, done: 0, active: [] };
+const IDLE: TransferRun = { total: 0, done: 0, moved: 0, active: [] };
 export const useTransfers = create<Transfers>(() => ({ uploading: [], up: IDLE, down: IDLE }));
 const setUploading = (fn: (cur: string[]) => string[]) => useTransfers.setState((s) => ({ uploading: fn(s.uploading) }));
 const setRun = (dir: "up" | "down", fn: (r: TransferRun) => TransferRun) => useTransfers.setState((s) => ({ [dir]: fn(s[dir]) }));
@@ -30,7 +33,8 @@ const report = (r: TransferRun, id: string, sent: number, size: number): Transfe
 function finish(r: TransferRun, id: string): TransferRun {
   const active = r.active.filter((t) => t.id !== id);
   const done = r.done + 1;
-  return active.length || done < r.total ? { ...r, active, done } : IDLE;
+  const moved = r.moved + (r.active.find((t) => t.id === id)?.sent ?? 0);
+  return active.length || done < r.total ? { ...r, active, done, moved } : IDLE;
 }
 let uploadSeq = 0;
 
@@ -62,6 +66,38 @@ export function watchDownloads(): () => void {
     return { ...r, total: r.total + 1, active: [...r.active, { id, name: id.split("/").pop() ?? id, sent: received, size: total }] };
   }));
 }
+
+/** The bytes a run has moved so far, and about how many are left: files whose size isn't known yet count the average. */
+export function runBytes(r: TransferRun): { moved: number; left: number | null } {
+  const moved = r.moved + r.active.reduce((n, t) => n + t.sent, 0);
+  const sized = r.active.filter((t) => t.size > 0);
+  if (!sized.length && !r.done) return { moved, left: null };
+  const average = (sized.reduce((n, t) => n + t.size, 0) + r.moved) / (sized.length + r.done);
+  const unsized = Math.max(r.total, r.done + r.active.length) - r.done - sized.length;
+  return { moved, left: sized.reduce((n, t) => n + Math.max(0, t.size - t.sent), 0) + unsized * average };
+}
+
+/** About how long is left, in words: "About 2 minutes left". */
+export function formatTimeLeft(secs: number): string {
+  if (secs < 10) return "A few seconds left";
+  if (secs < 50) return `About ${Math.ceil(secs / 10) * 10} seconds left`;
+  const min = Math.max(1, Math.round(secs / 60));
+  if (min < 60) return `About ${min} minute${min === 1 ? "" : "s"} left`;
+  const h = Math.floor(min / 60);
+  return `About ${h} hour${h === 1 ? "" : "s"}${min % 60 ? ` ${min % 60} min` : ""} left`;
+}
+
+let cancels = 0;
+
+/** Cancel on the download progress bar: stop the downloads in it, and the runs of them (`cancelsSoFar`). */
+export async function cancelDownloads() {
+  cancels++;
+  await backend.cancelDownloads();
+}
+/** How many times Cancel has been pressed: a run of downloads that started before it stops. */
+export const cancelsSoFar = () => cancels;
+/** A note from `backend.driveFetch` for a file that didn't download because of Cancel. */
+export const cancelledNote = (note: string) => note.endsWith(": cancelled");
 
 /** Every media path the show uses (bundle-relative): images, crops, clips and their stills, song audio, comment frames, the cover. */
 export function showMedia(show: Show): string[] {

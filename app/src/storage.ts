@@ -3,11 +3,16 @@
 // Mac (localStorage, like the theme): once a day after All shows looks for shows, the clips of shows not opened on
 // this Mac for that long are removed. Images stay: they're small, and the songs page shows them as soon as a show opens.
 // Records and audio are on this Mac's disks (or an external one), not in Drive, so they're never removed.
+//
+// A show can be kept downloaded on this Mac (`keep` in its manifest, so it's per Mac): all its media is downloaded,
+// neither the sweep nor the cache limit removes it, and new media in Drive comes down when the app starts, when it's
+// back online and every few minutes (`watchKeptShows`).
 import { create } from "zustand";
-import { backend } from "./backend";
-import { refreshManifest } from "./drive/media";
-import { readManifest } from "./drive/show";
-import { songImagePaths } from "./model/ops";
+import { backend, IMAGE_EXTENSIONS } from "./backend";
+import { cancelledNote, cancelsSoFar, refreshManifest } from "./drive/media";
+import { isOffline } from "./drive/live";
+import { readManifest, serial, updateManifest } from "./drive/show";
+import { AUDIO_EXTENSIONS, extension, songImagePaths } from "./model/ops";
 import type { Show } from "./model/types";
 import { useStore } from "./store";
 
@@ -102,49 +107,118 @@ export async function fileStates(bundle: string, paths: string[]): Promise<Recor
  * to this Mac (`local`). Records and show audio aren't in Drive, so they don't count. A file not on this Mac counts what
  * Drive said its size was (0 until the show's opened once with sizes in its manifest).
  */
-export async function mediaSize(bundle: string, paths: string[]): Promise<{ local: number; total: number }> {
+export async function mediaSize(bundle: string, paths: string[]): Promise<MediaSize> {
   const m = await readManifest(bundle);
   const inDrive = paths.filter((p) => p.startsWith(`${bundle}/`) && m.files[p.slice(bundle.length + 1)]);
   const sizes = await backend.pathSizes(inDrive);
-  return inDrive.reduce((n, p, i) => ({
-    local: n.local + sizes[i],
-    total: n.total + (sizes[i] || (m.files[p.slice(bundle.length + 1)].size ?? 0)),
-  }), { local: 0, total: 0 });
+  return inDrive.reduce((n, p, i) => {
+    const kind = mediaKind(p);
+    return {
+      local: n.local + sizes[i],
+      total: n.total + (sizes[i] || (m.files[p.slice(bundle.length + 1)].size ?? 0)),
+      kinds: { ...n.kinds, [kind]: n.kinds[kind] + sizes[i] },
+    };
+  }, { local: 0, total: 0, kinds: { video: 0, image: 0, audio: 0 } });
 }
+/** `kinds` is the downloaded bytes of each kind of media; what's not downloaded is `total - local`. */
+export type MediaSize = { local: number; total: number; kinds: Record<MediaKind, number> };
+export type MediaKind = "video" | "image" | "audio";
+const mediaKind = (path: string): MediaKind =>
+  AUDIO_EXTENSIONS.includes(extension(path)) ? "audio" : IMAGE_EXTENSIONS.includes(extension(path)) ? "image" : "video";
 
-/** Remove a show's media from this Mac, the files that are in Drive (it downloads again when it's shown). How many went. */
+/**
+ * Remove a show's media from this Mac, the files that are in Drive (it downloads again when it's shown). How many went.
+ * A show kept downloaded stops being kept, or they'd come straight back.
+ */
 export async function removeDownloads(bundle: string, paths: string[]): Promise<number> {
   const m = await readManifest(bundle);
   const rel = paths.map((p) => (p.startsWith(`${bundle}/`) ? p.slice(bundle.length + 1) : p)).filter((r) => m.files[r]);
+  if (rel.length && m.keep) await setKeepDownloaded(bundle, false);
   return rel.length ? backend.driveEvict(bundle, rel) : 0;
 }
 
 /** Download a show's media from Drive to this Mac. */
 export async function download(bundle: string, paths: string[]) {
-  const notes = await backend.driveFetch(bundle, paths.map((p) => (p.startsWith(`${bundle}/`) ? p.slice(bundle.length + 1) : p)));
+  const notes = (await backend.driveFetch(bundle, paths.map((p) => (p.startsWith(`${bundle}/`) ? p.slice(bundle.length + 1) : p)))).filter((n) => !cancelledNote(n));
   if (notes.length) throw new Error(notes.slice(0, 3).join(" · "));
 }
 
 /**
  * Download every one of a show's media files that's in Google Drive but not on this Mac (All shows, on the show's card).
- * `onProgress` gets the files done so far, of how many. Returns how many it downloaded.
+ * `onProgress` gets the files done so far, of how many. Returns how many it downloaded. Cancel on the progress bar stops it.
  */
-export async function downloadShow(bundle: string, onProgress?: (done: number, total: number) => void): Promise<number> {
+export function downloadShow(bundle: string, onProgress?: (done: number, total: number) => void): Promise<number> {
+  return serial(`download:${bundle}`, () => downloadAll(bundle, onProgress)); // the card's and the watcher's, one at a time
+}
+async function downloadAll(bundle: string, onProgress?: (done: number, total: number) => void): Promise<number> {
   const rel = Object.keys((await refreshManifest(bundle)).files).filter((r) => r.startsWith("media/"));
   const here = await backend.pathsExist(rel.map((r) => `${bundle}/${r}`));
   const todo = rel.filter((_, i) => !here[i]);
   const notes: string[] = [];
-  for (let i = 0; i < todo.length; i += FETCH_BATCH) {
+  const cancels = cancelsSoFar();
+  let i = 0;
+  for (; i < todo.length && cancelsSoFar() === cancels; i += FETCH_BATCH) {
     onProgress?.(i, todo.length);
     notes.push(...(await backend.driveFetch(bundle, todo.slice(i, i + FETCH_BATCH))));
   }
-  onProgress?.(todo.length, todo.length);
-  if (notes.length) throw new Error(notes.slice(0, 3).join(" · "));
-  return todo.length;
+  const failed = notes.filter((n) => !cancelledNote(n));
+  if (failed.length) throw new Error(failed.slice(0, 3).join(" · "));
+  const downloaded = Math.min(i, todo.length) - (notes.length - failed.length); // fewer if it was cancelled
+  if (downloaded === todo.length) onProgress?.(todo.length, todo.length);
+  return downloaded;
 }
 const FETCH_BATCH = 6;
 
-/** Make a show's media online only: remove every file of it that's in Google Drive from this Mac. How many went. */
+/** The shows kept downloaded on this Mac (their bundles), for the toggle on their cards. */
+export const useKept = create<{ kept: string[] }>(() => ({ kept: [] }));
+
+/** Read which shows are kept downloaded, from the manifests of the shows copied to this Mac. */
+export async function loadKept(): Promise<string[]> {
+  if (!backend.isDesktop) return [];
+  const bundles = await backend.driveCachedShows().catch(() => [] as string[]);
+  const manifests = await Promise.all(bundles.map((b) => readManifest(b).catch(() => null)));
+  const kept = bundles.filter((_, i) => manifests[i]?.keep);
+  useKept.setState({ kept });
+  return kept;
+}
+
+/** Keep a show's media downloaded on this Mac, or stop (its files stay until the cache limit or the sweep removes them). */
+export async function setKeepDownloaded(bundle: string, keep: boolean) {
+  await updateManifest(bundle, (m) => { if (keep) m.keep = true; else delete m.keep; });
+  useKept.setState((s) => ({ kept: keep ? [...new Set([...s.kept, bundle])] : s.kept.filter((b) => b !== bundle) }));
+}
+
+const KEEP_EVERY_MS = 15 * 60 * 1000;
+let keeping = false;
+
+/** Download whatever's new in Drive for every show kept downloaded. Quiet: offline, it waits for the next time. */
+export async function topUpKeptShows() {
+  if (keeping || !backend.isDesktop) return;
+  keeping = true;
+  try {
+    for (const bundle of await loadKept()) {
+      try {
+        await downloadShow(bundle);
+      } catch (e) {
+        if (isOffline(e)) break; // try them all again when back online
+      }
+    }
+  } finally {
+    keeping = false;
+  }
+}
+
+/** Keep the kept shows topped up: now, whenever the connection comes back, and every few minutes. Returns a function that stops. */
+export function watchKeptShows(): () => void {
+  const run = () => { topUpKeptShows().catch(() => {}); };
+  run();
+  const t = window.setInterval(run, KEEP_EVERY_MS);
+  window.addEventListener("online", run);
+  const unsub = useStore.subscribe((s, prev) => { if (s.connection === "online" && prev.connection !== "online") run(); });
+  return () => { window.clearInterval(t); window.removeEventListener("online", run); unsub(); };
+}
+
+/** Make a show's media online only: remove every file of it that's in Google Drive from this Mac (and stop keeping it downloaded). How many went. */
 export async function showOnlineOnly(bundle: string): Promise<number> {
   const m = await readManifest(bundle);
   return removeDownloads(bundle, Object.keys(m.files).filter((r) => r.startsWith("media/")));
@@ -161,12 +235,12 @@ export async function sweepShowsDaily(bundles: string[]) {
   for (const bundle of bundles) {
     if (bundle === useStore.getState().bundle) continue;
     const m = await readManifest(bundle).catch(() => null);
-    if (!m?.openedAt || Date.now() - m.openedAt < days * DAY_MS) continue;
+    if (!m?.openedAt || m.keep || Date.now() - m.openedAt < days * DAY_MS) continue;
     await removeDownloads(bundle, Object.keys(m.files).filter((r) => r.startsWith("media/clips/"))).catch(() => 0);
   }
 }
 
-/** Remove every show's downloaded media from this Mac, images too. `onProgress` gets the shows done so far. */
+/** Remove every show's downloaded media from this Mac, images too, and stop keeping any downloaded. `onProgress` gets the shows done so far. */
 export async function removeAllDownloads(bundles: string[], onProgress?: (done: number, total: number) => void): Promise<number> {
   let done = 0;
   for (const [i, bundle] of bundles.entries()) {

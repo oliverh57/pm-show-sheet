@@ -16,7 +16,7 @@ import { RenderInbox } from "./RenderInbox";
 import { MenuPopup, SaveCopy, useMenu } from "./SaveCopy";
 import { CloudButton, useFileStates } from "./CloudFiles";
 import { repickStill, repickStills, runClipJobs } from "../jobs";
-import { download, mediaSize, removeDownloads, type FileState } from "../storage";
+import { download, mediaSize, removeDownloads, type FileState, type MediaSize } from "../storage";
 import { formatSize } from "./AppSettings";
 import type { Clip, SourceRecord } from "../model/types";
 import { linkWatchFolder, unlinkWatchFolder, useWatchFolders } from "../watchFolders";
@@ -157,6 +157,25 @@ export function MediaPage() {
   return <div className="page">{head}<AddMedia /><Library /></div>;
 }
 
+/** On hovering the show's size: a bar of what's downloaded, by kind of media, and what's online only. */
+function SizeBreakdown({ size }: { size: MediaSize }) {
+  const parts = [
+    { label: "Video", bytes: size.kinds.video, colour: "var(--tc)" },
+    { label: "Photos", bytes: size.kinds.image, colour: "var(--accent)" },
+    { label: "Audio", bytes: size.kinds.audio, colour: "var(--ok)" },
+    { label: "Not downloaded", bytes: size.total - size.local, colour: "var(--line-2)" },
+  ].filter((p) => p.bytes > 0);
+  return (
+    <div className="size-pop">
+      <div className="size-bar">{parts.map((p) => <i key={p.label} style={{ flexGrow: p.bytes / size.total, background: p.colour }} />)}</div>
+      <div className="size-legend">
+        {parts.map((p) => <span key={p.label}><i style={{ background: p.colour }} />{p.label}<b>{formatSize(p.bytes)}</b></span>)}
+      </div>
+      <div className="muted small">The show's media in Google Drive. Show records stay on the Mac they were added on, so they aren't counted.</div>
+    </div>
+  );
+}
+
 function AddMedia() {
   const startImport = useStore((s) => s.startImport);
   const kind = (icon: IconName, colour: string, title: string, desc: string) => (
@@ -292,7 +311,7 @@ function Library() {
   const [states, refreshStates] = useFileStates(statePaths);
   // The clips and images in Google Drive, and how much of that is downloaded: measured again as files come and go.
   const sizeKey = [...statePaths, ...[...fromRecords].map(inBundle)].join("\n");
-  const [size, setSize] = useState<{ local: number; total: number } | null>(null);
+  const [size, setSize] = useState<MediaSize | null>(null);
   useEffect(() => {
     if (!sizeKey) return setSize(null);
     mediaSize(bundle, sizeKey.split("\n")).then(setSize, () => setSize(null));
@@ -331,7 +350,7 @@ function Library() {
 
   return (
     <div className="lib">
-      <div className="section-head"><h2 title="The size is the show's clips and images in Google Drive. Show records and audio stay on the Mac they were added on, so they aren't counted.">In this show{size?.total ? ` (${sizeText(size)})` : ""}</h2><button className="sm" onClick={linkFolder}><Icon name="folder" size="sm" /> Link a render folder…</button></div>
+      <div className="section-head"><h2 className="size-hover">In this show{size?.total ? <> ({sizeText(size)})<SizeBreakdown size={size} /></> : ""}</h2><button className="sm" onClick={linkFolder}><Icon name="folder" size="sm" /> Link a render folder…</button></div>
       <div className="lib-list">
         {groups.map(({ key, label, recs }) => {
           const ids = recs.map((r) => r.id);

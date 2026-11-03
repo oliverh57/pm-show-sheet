@@ -24,7 +24,7 @@ import { addImages, deptCategory, ensureCategory, extension, keepResolvedDays, r
 import { useAdoptWatchFolders } from "./watchFolders";
 import { useStore, type View } from "./store";
 import { useAutoUpdate } from "./updates";
-import { applyCacheLimit } from "./storage";
+import { applyCacheLimit, watchKeptShows } from "./storage";
 import { watchDownloads } from "./drive/media";
 import { useGoogleSync } from "./google/sync";
 import { goOffline, isOffline, pushShow, useDriveLive } from "./drive/live";
@@ -52,6 +52,8 @@ export default function App() {
   useTidyResolved();
   useEffect(() => { applyCacheLimit().catch(() => {}); }, []);
   useEffect(() => watchDownloads(), []);
+  const signedIn = Boolean(user);
+  useEffect(() => (signedIn ? watchKeptShows() : undefined), [signedIn]);
 
   if (!authChecked) return null;
   if (!user) return <div className="app"><UpdateBar /><WhatsNew /><SignIn /></div>;

@@ -25,6 +25,7 @@ export interface Manifest {
   folders: Record<string, string>; // bundle-relative folder ("media/clips") → Drive folder id
   summary?: Record<string, string>; // the properties last written on the show's folder (see list.ts)
   openedAt?: number;
+  keep?: boolean; // keep all its media downloaded on this Mac, fetching new media as it's added (storage.ts)
   held?: number; // when edits made offline began waiting to be approved (ms): nothing syncs until they are
 }
 
