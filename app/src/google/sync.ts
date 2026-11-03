@@ -145,10 +145,13 @@ async function ensureImages(songIds: string[], extra: string[] = []): Promise<{ 
   const out: Record<string, { url: string; id: string }> = {};
   let missing = 0;
   const paths = [...new Set([...songIds.flatMap((sid) => (show.songs[sid] ? songImagePaths(show.songs[sid]) : [])), ...extra])];
-  const todo = paths.filter((p) => !g().images?.[p]).length;
+  const stale = new Set<string>();
+  for (const p of paths) { const id = g().images?.[p]; if (id && (await unconverted(p, id))) stale.add(p); }
+  const todo = paths.filter((p) => !g().images?.[p] || stale.has(p)).length;
   let n = 0;
   for (const img of paths) {
-    let id = g().images?.[img];
+    const before = g().images?.[img];
+    let id = stale.has(img) ? undefined : before;
     if (!id) {
       step(`Uploading image ${++n} of ${todo}`);
       const path = img.startsWith("/") ? img : `${bundle}/${img}`;
@@ -161,10 +164,25 @@ async function ensureImages(songIds: string[], extra: string[] = []): Promise<{ 
       }
       const fileId = id;
       meta((x) => { x.images = { ...x.images, [img]: fileId }; });
+      if (before) await api("PATCH", `${DRIVE}/${before}?${ALL}`, { trashed: true }).catch(() => {}); // the unconverted copy
     }
     out[img] = { url: imageUrl(id), id };
   }
   return { images: out, missing };
+}
+
+const converted = new Set<string>(); // Drive copies of images checked this session to be ones Slides can take
+
+/**
+ * A Drive copy of an image (not a JPEG, PNG or GIF) uploaded as it was, before uploads turned images into JPEGs: Slides
+ * can't take it (WebP), so it's uploaded again.
+ */
+async function unconverted(path: string, id: string): Promise<boolean> {
+  if (/\.(jpe?g|png|gif)$/i.test(path) || converted.has(id)) return false;
+  const file = await api<{ mimeType?: string }>("GET", `${DRIVE}/${id}?fields=mimeType&${ALL}`).catch(() => null);
+  if (!file) return false; // try again next sync
+  if (file.mimeType === "image/jpeg") converted.add(id);
+  return file.mimeType !== "image/jpeg";
 }
 
 /** Bin the Drive copies of images no song uses any more (removed images, replaced heroes, deleted songs). */

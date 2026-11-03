@@ -473,6 +473,7 @@ pub async fn google_upload(app: AppHandle, path: String, name: String, parent: O
     } else {
         fs::read(&src).map_err(err("read file"))?
     };
+    let name = if mime != mime_for(&src) { Path::new(&name).with_extension("jpg").to_string_lossy().into_owned() } else { name };
     let metadata = match (&file_id, &parent) {
         (Some(_), _) => serde_json::json!({}),
         (None, Some(p)) => serde_json::json!({ "name": name, "parents": [p] }),
