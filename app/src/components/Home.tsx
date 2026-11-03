@@ -10,7 +10,7 @@ import { useStore } from "../store";
 import { DriveFolderPicker } from "./DriveFolderPicker";
 import { Avatar, GoogleDriveMark, Icon } from "./icons";
 import { VersionLine } from "./UpdateBar";
-import { restartToUpdate, showsBlocked, useUpdates } from "../updates";
+import { showsBlocked, useUpdates } from "../updates";
 
 /** An error, said plainly: Drive not being reachable says so, rather than the request that failed. */
 const why = (e: unknown) => isOffline(e) ? "Google Drive can't be reached" : String(e).replace(/^Error: /, "");
@@ -25,7 +25,7 @@ export function Home() {
   const [offline, setOffline] = useState(false); // Drive couldn't be reached: the shows are the ones found last time
   const [media, setMedia] = useState<{ path: string; text: string } | null>(null); // a show whose media is downloading or being removed
   const blocked = useUpdates(showsBlocked); // a newer version is on its way: shows stay shut until it's installed
-  const updateReady = useUpdates((s) => s.status === "ready");
+  const updateReady = useUpdates((s) => s.status === "ready"); // the update bar above says so, with Restart to update
   const kept = useKept((s) => s.kept);
   useEffect(() => { loadKept(); }, []);
 
@@ -125,11 +125,10 @@ export function Home() {
               Shows you've opened on this Mac before still open. Changes you make are saved on this Mac, and you approve them before they upload when you're back online.</span>
           </p>
         )}
-        {blocked && (
+        {blocked && !updateReady && (
           <p className="offline-note home-offline">
             <Icon name="alert" size="sm" />
             <span>{blocked}</span>
-            {updateReady && <button className="primary" onClick={restartToUpdate}>Restart to update</button>}
           </p>
         )}
         {error && <p className="error">{error}</p>}

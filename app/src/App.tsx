@@ -59,7 +59,7 @@ export default function App() {
   if (!user) return <div className="app"><UpdateBar /><WhatsNew /><SignIn /></div>;
   if (!show && toolsReady === null) return null;
   if (!show && !toolsReady) return <div className="app"><UpdateBar /><WhatsNew /><ToolsSetup onDone={skipTools} /></div>;
-  if (!show) return <div className="app"><UpdateBar /><WhatsNew />{view === "prefs" ? <HomeSettings /> : <Home />}<TransferProgress /><Toasts /></div>;
+  if (!show) return <div className="app"><UpdateBar holdsShows /><WhatsNew />{view === "prefs" ? <HomeSettings /> : <Home />}<TransferProgress /><Toasts /></div>;
 
   const page = { songs: <SongsPage />, media: <MediaPage />, comments: <CommentsPage />, import: <ImportPage key={importSeq} />, share: <SharePage />, sheet: <SheetPage />, settings: <SettingsPage />, prefs: <AppSettings /> }[view];
   return (

@@ -3,12 +3,16 @@ import { useEffect, useState } from "react";
 import { lastSeenVersion, markVersionSeen, WHATS_NEW } from "../whatsNew";
 import { checkForUpdates, restartToUpdate, useUpdates } from "../updates";
 
-export function UpdateBar() {
+/** `holdsShows`: on the shows list, which stays shut until the restart (see showsBlocked), so the bar says so. */
+export function UpdateBar({ holdsShows = false }: { holdsShows?: boolean }) {
   const { status, version, notes } = useUpdates();
   if (status !== "ready") return null;
   return (
     <div className="update-bar">
-      <span><strong>PM Show Sheet {version}</strong> is ready{notes ? `: ${notes.split("\n")[0]}` : ""}</span>
+      <span>
+        <strong>PM Show Sheet {version}</strong> is ready{notes ? `: ${notes.split("\n")[0]}` : ""}
+        {holdsShows && <> <strong>Restart to open shows</strong>, so edits from two versions can't clash.</>}
+      </span>
       <button className="primary" onClick={restartToUpdate}>Restart to update</button>
     </div>
   );
