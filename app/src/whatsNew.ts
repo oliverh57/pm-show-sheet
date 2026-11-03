@@ -7,6 +7,15 @@ export interface ReleaseNotes {
 }
 
 export const WHATS_NEW: Record<string, ReleaseNotes> = {
+  "0.10.1": {
+    summary: "WebP images no longer stop the Slides deck syncing, and replaced thumbnails leave the show.",
+    items: [
+      "A WebP image on a song no longer stops the deck updating with a Google error. Images already uploaded as WebP are fixed on the next sync.",
+      "Changing a thumbnail, picking another frame or cropping again moves the old file to the bin, as long as nothing else in the show uses it.",
+      "One Restart to update banner shows instead of two.",
+      "Hover the storage bar to see each show's share of the media cache.",
+    ],
+  },
   "0.10.0": {
     summary: "Keep a show downloaded on this Mac, and song audio now syncs through Google Drive.",
     items: [
